@@ -1,0 +1,49 @@
+__pycache__/
+*.py[cod]
+
+.sessions/
+.claude/
+.task_sessions/
+.task_sandbox/
+.tasks/
+.team/
+.transcripts/
+.gateway/
+.users/
+.runs/
+.evals/
+.backup/
+storage/
+qdrant_storage/
+postgres_data/
+
+# Local model caches / downloaded weights.
+# Keep the tracked Python package under models/, but do not add downloaded models.
+models/bge-m3/
+models/*/.cache/
+models/**/.cache/
+*.safetensors
+*.gguf
+*.onnx
+*.pt
+*.pth
+memory/RECENT_CONTEXT.json
+memory/*.md
+
+.env
+
+# Runtime logs and evaluation artifacts
+logs/
+*.log
+
+# Personal / scratch / non-project data
+scratch/
+job-search-cases/
+*.pdf
+*.zip
+
+# Misc local artifacts
+/coding_tasks.json
+hfd.sh*
+gpt-*.json
+security_rag_eval.jsonl

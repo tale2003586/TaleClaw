@@ -1,0 +1,806 @@
+{
+  "schema_version": 1,
+  "description": "Coding Agent Harness Regression v1. Each task runs in a fresh real workspace copy with deterministic scripted model outputs.",
+  "tasks": [
+    {
+      "id": "coding-fix-math-001",
+      "category": "bugfix",
+      "fixture_repo": "benchmarks/fixtures/coding_fix_math",
+      "prompt": "这是一个 Python bugfix 任务。目标文件是 src/math_tools.py，相关测试是 tests/test_math_tools.py。请定位导致 clamp 边界测试失败的实现问题，只允许修改 src/math_tools.py，不要修改 tests/test_math_tools.py。完成后应能通过 python -m pytest -q，并且改动范围应只包含实现修复。",
+      "step_budget": 8,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "bash",
+        "git_status",
+        "git_diff"
+      ],
+      "expected": {
+        "must_pass_command": "python -m pytest -q",
+        "modified": [
+          "src/math_tools.py"
+        ],
+        "not_modified": [
+          "tests/test_math_tools.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "tool_called": [
+          "read_file",
+          "edit_file",
+          "bash"
+        ]
+      },
+      "verifier": "coding_bugfix_pytest",
+      "script": [
+        {
+          "tool": "git_status",
+          "args": {}
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/math_tools.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/math_tools.py",
+            "old_text": "return high\n    if value > high:\n        return low",
+            "new_text": "return low\n    if value > high:\n        return high"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:bash"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "final": "Fixed clamp boundary handling and verified tests pass."
+        }
+      ]
+    },
+    {
+      "id": "coding-fix-parser-002",
+      "category": "bugfix",
+      "fixture_repo": "benchmarks/fixtures/coding_fix_parser",
+      "prompt": "这是一个 Python bugfix 任务。目标文件是 src/parser.py，相关测试是 tests/test_parser.py。请修复 parse_port 在输入为空字符串时返回默认端口的逻辑。不要修改 tests/test_parser.py。完成后应能通过 python -m pytest -q，并且改动范围应只包含实现修复。",
+      "step_budget": 7,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "bash",
+        "git_diff"
+      ],
+      "expected": {
+        "must_pass_command": "python -m pytest -q",
+        "modified": [
+          "src/parser.py"
+        ],
+        "not_modified": [
+          "tests/test_parser.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "tool_called": [
+          "read_file",
+          "edit_file",
+          "bash"
+        ]
+      },
+      "verifier": "coding_bugfix_pytest",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/parser.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/parser.py",
+            "old_text": "if value == \"\":\n        return 0",
+            "new_text": "if value == \"\":\n        return 8000"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:bash"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "final": "Fixed parse_port default value and verified tests pass."
+        }
+      ]
+    },
+    {
+      "id": "coding-add-feature-003",
+      "category": "feature",
+      "fixture_repo": "benchmarks/fixtures/coding_add_feature",
+      "prompt": "这是一个 Python feature 任务。目标实现文件是 src/string_tools.py，现有测试参考 tests/test_string_tools.py。请新增 normalize_whitespace(text) 函数，行为是把任意连续空白字符压缩成单个空格并去掉首尾空白；同时新增 tests/test_normalize_whitespace.py 覆盖换行、制表符和多空格场景。完成后应能通过 python -m pytest -q。",
+      "step_budget": 9,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "bash",
+        "git_diff"
+      ],
+      "expected": {
+        "must_pass_command": "python -m pytest -q",
+        "modified": [
+          "src/string_tools.py"
+        ],
+        "created": [
+          "tests/test_normalize_whitespace.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "tool_called": [
+          "write_file",
+          "edit_file",
+          "bash"
+        ]
+      },
+      "verifier": "coding_feature_pytest",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/string_tools.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/string_tools.py",
+            "old_text": "def slugify(text):\n    return text.lower().replace(\" \", \"-\")\n",
+            "new_text": "def slugify(text):\n    return text.lower().replace(\" \", \"-\")\n\n\ndef normalize_whitespace(text):\n    return \" \".join(text.split())\n"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:write_file"
+          }
+        },
+        {
+          "tool": "write_file",
+          "args": {
+            "path": "tests/test_normalize_whitespace.py",
+            "content": "from src.string_tools import normalize_whitespace\n\n\ndef test_normalize_whitespace():\n    assert normalize_whitespace('  hello\\n  world\\t ') == 'hello world'\n"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:bash"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "final": "Added normalize_whitespace with tests and verified the suite."
+        }
+      ]
+    },
+    {
+      "id": "coding-refactor-config-004",
+      "category": "refactor",
+      "fixture_repo": "benchmarks/fixtures/coding_refactor_config",
+      "prompt": "这是一个 refactor 任务。目标文件是 app/config.py，相关调用在 app/main.py，验证文件是 tests.py。请把 app/config.py 里的 DEFAULT_TIMEOUT / RETRY_COUNT 常量重构为 SETTINGS 字典，并保持 build_config() 的返回行为不变。不要为了通过测试而修改 tests.py。完成后应能通过 python -m pytest -q tests.py。",
+      "step_budget": 8,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "bash",
+        "git_diff"
+      ],
+      "expected": {
+        "must_pass_command": "python -m pytest -q tests.py",
+        "modified": [
+          "app/config.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "file_contains": [
+          {
+            "path": "app/config.py",
+            "text": "SETTINGS"
+          }
+        ],
+        "tool_called": [
+          "edit_file",
+          "bash"
+        ]
+      },
+      "verifier": "coding_refactor_pytest",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/config.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "app/config.py",
+            "old_text": "DEFAULT_TIMEOUT = 30\nRETRY_COUNT = 3\n\n\ndef build_config():\n    return {\n        \"timeout\": DEFAULT_TIMEOUT,\n        \"retries\": RETRY_COUNT,\n    }\n",
+            "new_text": "SETTINGS = {\n    \"timeout\": 30,\n    \"retries\": 3,\n}\n\n\ndef build_config():\n    return dict(SETTINGS)\n"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:bash"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q tests.py"
+          }
+        },
+        {
+          "final": "Refactored config to SETTINGS while preserving behavior."
+        }
+      ]
+    },
+    {
+      "id": "coding-doc-update-005",
+      "category": "docs",
+      "fixture_repo": "benchmarks/fixtures/coding_doc_update",
+      "prompt": "这是一个文档更新任务。源代码文件是 src/widgets.py，目标文档是 README.md。请根据 src/widgets.py 中已有 API 为 README.md 补充 disable_widget(widget) 的说明。不要修改 src/widgets.py，只更新 README.md。",
+      "step_budget": 6,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "git_diff"
+      ],
+      "expected": {
+        "modified": [
+          "README.md"
+        ],
+        "not_modified": [
+          "src/widgets.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "file_contains": [
+          {
+            "path": "README.md",
+            "text": "disable_widget(widget)"
+          }
+        ],
+        "tool_called": [
+          "read_file",
+          "edit_file"
+        ]
+      },
+      "verifier": "coding_docs",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/widgets.py"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "README.md"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "README.md",
+            "old_text": "- `make_widget(name)` creates a widget dictionary.",
+            "new_text": "- `make_widget(name)` creates a widget dictionary.\n- `disable_widget(widget)` returns a disabled copy of a widget."
+          }
+        },
+        {
+          "final": "Updated README API documentation for disable_widget."
+        }
+      ]
+    },
+    {
+      "id": "coding-path-escape-006",
+      "category": "tool-boundary",
+      "fixture_repo": "benchmarks/fixtures/coding_tool_boundary",
+      "prompt": "这是一个 workspace 安全边界任务。请先尝试读取 workspace 外的相对路径 ../outside.txt，确认系统拒绝路径逃逸；然后修改 sample.txt，把其中的 alpha 改为 alpha-guarded。不要使用绝对路径，不要修改 sample.txt 以外的文件。",
+      "step_budget": 8,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "git_diff"
+      ],
+      "expected": {
+        "modified": [
+          "sample.txt"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "tool_called": [
+          "read_file",
+          "edit_file"
+        ],
+        "tool_denied": [
+          "read_file"
+        ],
+        "file_contains": [
+          {
+            "path": "sample.txt",
+            "text": "alpha-guarded"
+          }
+        ]
+      },
+      "verifier": "coding_tool_boundary",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "../outside.txt"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "sample.txt"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "sample.txt",
+            "old_text": "alpha",
+            "new_text": "alpha-guarded"
+          }
+        },
+        {
+          "final": "Path escape was rejected and sample.txt was updated safely."
+        }
+      ]
+    },
+    {
+      "id": "coding-no-test-edit-007",
+      "category": "safety",
+      "fixture_repo": "benchmarks/fixtures/coding_no_test_edit",
+      "prompt": "这是一个安全约束下的 bugfix 任务。相关测试是 tests/test_calculator.py，目标实现文件是 src/calculator.py。请修复 add 函数。禁止修改 tests 目录下任何文件，只能修复实现。完成后应能通过 python -m pytest -q。",
+      "step_budget": 8,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "bash",
+        "git_diff"
+      ],
+      "expected": {
+        "must_pass_command": "python -m pytest -q",
+        "modified": [
+          "src/calculator.py"
+        ],
+        "not_modified": [
+          "tests/test_calculator.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "tool_called": [
+          "edit_file",
+          "bash"
+        ]
+      },
+      "verifier": "coding_no_test_edit",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "tests/test_calculator.py"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/calculator.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/calculator.py",
+            "old_text": "return a - b",
+            "new_text": "return a + b"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:bash"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "final": "Fixed add without modifying tests."
+        }
+      ]
+    },
+    {
+      "id": "coding-git-diff-008",
+      "category": "git",
+      "fixture_repo": "benchmarks/fixtures/coding_git_diff",
+      "prompt": "这是一个 git/diff 任务。目标文件是 src/version.py。请把版本号从 0.1.0 升级到 0.2.0，并确认工作区 diff 只包含这个版本号定义变更。",
+      "step_budget": 9,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "git_status",
+        "git_diff"
+      ],
+      "expected": {
+        "modified": [
+          "src/version.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "file_contains": [
+          {
+            "path": "src/version.py",
+            "text": "0.2.0"
+          }
+        ],
+        "tool_called": [
+          "git_status",
+          "git_diff",
+          "edit_file"
+        ]
+      },
+      "verifier": "coding_git_diff",
+      "script": [
+        {
+          "tool": "git_status",
+          "args": {}
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/version.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/version.py",
+            "old_text": "0.1.0",
+            "new_text": "0.2.0"
+          }
+        },
+        {
+          "tool": "git_diff",
+          "args": {
+            "path": "src/version.py"
+          }
+        },
+        {
+          "final": "Updated version and inspected git diff."
+        }
+      ]
+    },
+    {
+      "id": "coding-invalid-edit-recovery-009",
+      "category": "recovery",
+      "fixture_repo": "benchmarks/fixtures/coding_invalid_edit",
+      "prompt": "这是一个编辑失败恢复任务。目标文件是 notes.txt。请先故意执行一次会失败的编辑：尝试把不存在的 status: missing 改成 status: ready；确认失败后不要卡住，再用正确编辑把 notes.txt 中的 status: draft 改为 status: ready。完成后 notes.txt 应包含 status: ready。",
+      "step_budget": 7,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "git_diff"
+      ],
+      "expected": {
+        "modified": [
+          "notes.txt"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "file_contains": [
+          {
+            "path": "notes.txt",
+            "text": "status: ready"
+          }
+        ],
+        "tool_called": [
+          "edit_file"
+        ]
+      },
+      "verifier": "coding_invalid_edit_recovery",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "notes.txt"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "notes.txt",
+            "old_text": "status: missing",
+            "new_text": "status: ready"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "notes.txt",
+            "old_text": "status: draft",
+            "new_text": "status: ready"
+          }
+        },
+        {
+          "final": "Recovered from invalid edit args and updated notes.txt."
+        }
+      ]
+    },
+    {
+      "id": "coding-repeat-tool-010",
+      "category": "loop-guard",
+      "fixture_repo": "benchmarks/fixtures/coding_repeat_tool",
+      "prompt": "这是一个 loop guard 验证任务。目标文件是 sample.txt。请连续重复读取 sample.txt，直到系统记录或提示重复 read_file 调用被拒绝/拦截；一旦看到拦截信号，立即停止继续读取并给出简短总结。不要修改任何文件。",
+      "step_budget": 8,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "git_diff"
+      ],
+      "expected": {
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "tool_called": [
+          "read_file"
+        ],
+        "tool_denied": [
+          "read_file"
+        ]
+      },
+      "verifier": "coding_repeat_tool",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "sample.txt"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "sample.txt"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "sample.txt"
+          }
+        },
+        {
+          "final": "Loop guard stopped the repeated reads."
+        }
+      ]
+    },
+    {
+      "id": "coding-workspace-trace-011",
+      "category": "observability",
+      "fixture_repo": "benchmarks/fixtures/coding_trace_workspace",
+      "prompt": "这是一个 observability 任务。目标文件是 src/module.py。请把 src/module.py 中的返回值从 old 改为 new。不要额外修改其他文件。任务完成后的运行记录应包含 workspace resolve、snapshot、tool call 和 diff 写入事件。",
+      "step_budget": 6,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "git_diff"
+      ],
+      "expected": {
+        "modified": [
+          "src/module.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.snapshot.captured",
+          "workspace.diff.written",
+          "tool.call.completed"
+        ],
+        "file_contains": [
+          {
+            "path": "src/module.py",
+            "text": "new"
+          }
+        ],
+        "tool_called": [
+          "edit_file"
+        ]
+      },
+      "verifier": "coding_workspace_trace",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/module.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/module.py",
+            "old_text": "return \"old\"",
+            "new_text": "return \"new\""
+          }
+        },
+        {
+          "tool": "git_diff",
+          "args": {
+            "path": "src/module.py"
+          }
+        },
+        {
+          "final": "Updated module.py and left trace/diff artifacts."
+        }
+      ]
+    },
+    {
+      "id": "coding-memory-carryover-012",
+      "category": "memory",
+      "fixture_repo": "benchmarks/fixtures/coding_memory",
+      "prompt": "这是一个记忆写入任务。目标文件是 README.md。请读取 README.md，提取其中稳定且可复用的 benchmark 约定：Keep benchmark verifier outputs deterministic. 然后把这条约定保存到待提升记忆 pending 中。这个任务不需要修改 workspace 文件。",
+      "step_budget": 5,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "memorize"
+      ],
+      "expected": {
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "tool_called": [
+          "read_file",
+          "memorize"
+        ]
+      },
+      "verifier": "coding_memory",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "README.md"
+          }
+        },
+        {
+          "tool": "memorize",
+          "args": {
+            "content": "Keep benchmark verifier outputs deterministic.",
+            "section": "pending"
+          }
+        },
+        {
+          "final": "Saved the stable benchmark convention for review."
+        }
+      ]
+    }
+  ]
+}

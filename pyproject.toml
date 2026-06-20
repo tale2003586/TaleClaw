@@ -1,0 +1,55 @@
+[project]
+name = "taleclaw"
+version = "0.1.0"
+description = "An agent runtime platform with a coding agent, multi-gateway entrypoints (CLI/Web/Telegram/Feishu), long-term memory, and a code-security RAG knowledge base."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "tale" }]
+keywords = ["agent", "llm", "coding-agent", "rag", "runtime"]
+
+dependencies = [
+    "openai==2.38.0",
+    "httpx==0.28.1",
+    "pydantic==2.13.4",
+    "python-dotenv==1.2.2",
+    "PyYAML==6.0.3",
+    "mistune==3.2.1",
+    "reportlab==4.5.1",
+    "qdrant-client==1.16.1",
+    "fastembed==0.7.3",
+    "FlagEmbedding==1.3.5",
+    "huggingface-hub==0.36.2",
+    "hf_transfer==0.1.9",
+    "transformers==4.57.3",
+    "numexpr==2.14.1",
+    "bottleneck==1.6.0",
+    "psycopg[binary]==3.3.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["cli", "config", "user_scope"]
+
+[tool.setuptools.packages.find]
+include = [
+    "runtime*",
+    "agents*",
+    "models*",
+    "modes*",
+    "tools*",
+    "memory*",
+    "sessions*",
+    "bus*",
+    "gateway*",
+    "plugins*",
+    "retrieval*",
+    "knowledge*",
+    "evaluation*",
+]

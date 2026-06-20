@@ -1,0 +1,111 @@
+services:
+  agent-console:
+    build:
+      context: .
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+        PIP_DEFAULT_TIMEOUT: ${PIP_DEFAULT_TIMEOUT:-180}
+        PIP_RETRIES: ${PIP_RETRIES:-10}
+    container_name: agent-console
+    restart: unless-stopped
+    env_file:
+      - ${AGENT_CONSOLE_ENV_FILE:-.env}
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./storage:/app/storage
+      - ./memory:/app/memory
+      - ./.sessions:/app/.sessions
+      - ./.task_sessions:/app/.task_sessions
+      - ./.task_sandbox:/app/.task_sandbox
+      - ./.tasks:/app/.tasks
+      - ./.team:/app/.team
+      - ./.transcripts:/app/.transcripts
+      - ./.users:/app/.users
+
+  telegram-worker:
+    profiles:
+      - telegram
+    build:
+      context: .
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+        PIP_DEFAULT_TIMEOUT: ${PIP_DEFAULT_TIMEOUT:-180}
+        PIP_RETRIES: ${PIP_RETRIES:-10}
+    container_name: taleclaw-telegram
+    restart: unless-stopped
+    env_file:
+      - ${AGENT_CONSOLE_ENV_FILE:-.env}
+    command: ["python", "telegram_worker.py"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./storage:/app/storage
+      - ./memory:/app/memory
+      - ./.sessions:/app/.sessions
+      - ./.task_sessions:/app/.task_sessions
+      - ./.task_sandbox:/app/.task_sandbox
+      - ./.tasks:/app/.tasks
+      - ./.team:/app/.team
+      - ./.transcripts:/app/.transcripts
+      - ./.gateway:/app/.gateway
+      - ./.users:/app/.users
+
+  feishu-worker:
+    profiles:
+      - feishu
+    build:
+      context: .
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_EXTRA_INDEX_URL: ${PIP_EXTRA_INDEX_URL:-}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+        PIP_DEFAULT_TIMEOUT: ${PIP_DEFAULT_TIMEOUT:-180}
+        PIP_RETRIES: ${PIP_RETRIES:-10}
+    container_name: taleclaw-feishu
+    restart: unless-stopped
+    env_file:
+      - ${AGENT_CONSOLE_ENV_FILE:-.env}
+    command: ["python", "feishu_worker.py"]
+    ports:
+      - "127.0.0.1:8010:8010"
+    volumes:
+      - ./storage:/app/storage
+      - ./memory:/app/memory
+      - ./.sessions:/app/.sessions
+      - ./.task_sessions:/app/.task_sessions
+      - ./.task_sandbox:/app/.task_sandbox
+      - ./.tasks:/app/.tasks
+      - ./.team:/app/.team
+      - ./.transcripts:/app/.transcripts
+      - ./.gateway:/app/.gateway
+      - ./.users:/app/.users
+
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - ./qdrant_storage:/qdrant/storage
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agent_console}
+      POSTGRES_USER: ${POSTGRES_USER:-agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-agent_dev_password}
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-55432}:5432"
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data

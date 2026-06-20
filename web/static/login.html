@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>登录 | taleclaw</title>
+    <link rel="stylesheet" href="/static/auth.css">
+    <script defer src="/static/login.js"></script>
+  </head>
+  <body>
+    <main class="auth-shell">
+      <section class="auth-panel" aria-labelledby="authTitle">
+        <header class="auth-brand">
+          <div class="auth-mark" aria-hidden="true"><span></span></div>
+          <div>
+            <h1>taleclaw</h1>
+            <p id="authTitle">登录到你的工作区</p>
+          </div>
+        </header>
+
+        <div class="auth-tabs" role="tablist" aria-label="账号操作">
+          <button class="active" type="button" role="tab" aria-selected="true" data-auth-mode="login">登录</button>
+          <button type="button" role="tab" aria-selected="false" data-auth-mode="register">注册</button>
+        </div>
+
+        <form id="authForm" class="auth-form">
+          <label>
+            <span>用户名</span>
+            <input id="username" name="username" autocomplete="username" required maxlength="64">
+          </label>
+          <label>
+            <span>密码</span>
+            <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256">
+          </label>
+          <label id="confirmField" hidden>
+            <span>确认密码</span>
+            <input id="confirmPassword" name="confirm_password" type="password" autocomplete="new-password" maxlength="256">
+          </label>
+          <p id="authError" class="auth-error" role="alert"></p>
+          <button id="authSubmit" class="auth-submit" type="submit">登录</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

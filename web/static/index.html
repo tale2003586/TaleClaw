@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>taleclaw</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🤖</text></svg>">
+    <link rel="stylesheet" href="/static/styles.css">
+    <script defer src="/static/app.js"></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside id="sidebar" class="sidebar">
+        <header class="sidebar-top">
+          <div class="brand-row">
+            <div class="brand-mark" aria-hidden="true">
+              <span></span>
+            </div>
+            <div class="brand-copy">
+              <h1>taleclaw</h1>
+              <p id="workspaceLabel">workspace</p>
+            </div>
+            <span id="statusBadge" class="status-badge">启动中</span>
+          </div>
+          <button id="sidebarToggle" class="sidebar-toggle" type="button" title="折叠侧栏" aria-label="折叠侧栏">‹</button>
+        </header>
+
+        <nav class="sidebar-tabs" aria-label="侧栏视图">
+          <button class="active" data-sidebar-tab="sessions" data-main-view="chat" type="button">会话</button>
+          <button data-sidebar-tab="files" data-main-view="files" type="button">文件</button>
+          <button data-sidebar-tab="analysis" data-main-view="analysis" type="button">分析</button>
+          <button data-sidebar-tab="memory" data-main-view="chat" type="button">记忆</button>
+          <button data-sidebar-tab="activity" data-main-view="chat" type="button">状态</button>
+        </nav>
+
+        <div class="sidebar-content">
+          <section class="sidebar-panel active" data-sidebar-panel="sessions">
+            <div class="panel-head">
+              <h2>会话</h2>
+              <button id="newSessionBtn" class="icon-button" type="button" title="新会话" aria-label="新会话">+</button>
+            </div>
+            <div class="filter-row">
+            <input id="sessionSearch" type="search" placeholder="搜索会话" aria-label="搜索会话" autocomplete="off">
+            </div>
+            <div id="sessionsList" class="sessions-list"></div>
+          </section>
+
+          <section class="sidebar-panel" data-sidebar-panel="memory">
+            <div class="panel-head">
+              <h2>记忆</h2>
+              <button id="refreshMemoryBtn" class="text-button" type="button">刷新</button>
+            </div>
+            <div id="memoryTabs" class="memory-tabs"></div>
+            <pre id="memoryContent" class="memory-content"></pre>
+          </section>
+
+          <section class="sidebar-panel" data-sidebar-panel="files">
+            <div class="panel-head">
+              <h2>文件</h2>
+              <button id="refreshFilesBtn" class="text-button" type="button">刷新</button>
+            </div>
+            <div class="workspace-card">
+              <span>Path</span>
+              <p id="filePathLabel">/</p>
+            </div>
+            <div class="activity-grid">
+              <div class="activity-item">
+                <span>项目</span>
+                <strong id="fileCountMetric">0</strong>
+              </div>
+              <div class="activity-item">
+                <span>记录</span>
+                <strong>txt</strong>
+              </div>
+            </div>
+          </section>
+
+          <section class="sidebar-panel" data-sidebar-panel="analysis">
+            <div class="panel-head">
+              <h2>分析</h2>
+            </div>
+            <div class="workspace-card">
+              <span>Record</span>
+              <p id="analysisRecordPath">records/analysis.txt</p>
+            </div>
+          </section>
+
+          <section class="sidebar-panel" data-sidebar-panel="activity">
+            <div class="panel-head">
+              <h2>状态</h2>
+            </div>
+            <div class="activity-grid">
+              <div class="activity-item">
+                <span>当前会话</span>
+                <strong id="activeSessionMetric">default</strong>
+              </div>
+              <div class="activity-item">
+                <span>模式</span>
+                <strong id="modeMetric">hybrid</strong>
+              </div>
+              <div class="activity-item">
+                <span>会话数</span>
+                <strong id="sessionCountMetric">0</strong>
+              </div>
+              <div class="activity-item">
+                <span>记忆文件</span>
+                <strong id="memoryCountMetric">0</strong>
+              </div>
+              <div class="activity-item">
+                <span>当前账号</span>
+                <strong id="currentUserMetric">local</strong>
+              </div>
+            </div>
+            <div class="workspace-card">
+              <span>App Root</span>
+              <p id="workspacePath">-</p>
+            </div>
+            <form id="workspaceForm" class="workspace-card workspace-form">
+              <label for="workspaceInput">Coding Workspace</label>
+              <input id="workspaceInput" type="text" placeholder="/path/to/project" autocomplete="off" spellcheck="false">
+              <div class="workspace-form-actions">
+                <button id="workspaceSaveBtn" class="text-button" type="submit">保存</button>
+                <button id="workspaceResetBtn" class="text-button" type="button">默认</button>
+              </div>
+              <p id="codingWorkspacePath">-</p>
+            </form>
+          </section>
+        </div>
+
+        <footer class="sidebar-account">
+          <div class="sidebar-account-copy">
+            <span>当前账号</span>
+            <strong id="sidebarUserLabel">local</strong>
+          </div>
+          <button id="logoutBtn" class="logout-button" type="button">退出登录</button>
+        </footer>
+      </aside>
+      <button id="sidebarOverlay" class="sidebar-overlay" type="button" aria-label="关闭侧栏"></button>
+
+      <div class="workspace-area">
+        <section class="main-view chat-pane active" data-main-view-panel="chat">
+          <header class="chat-header">
+            <div class="chat-title-row">
+              <button id="mobileSidebarOpen" class="mobile-sidebar-button" type="button" aria-label="打开侧栏" aria-controls="sidebar" aria-expanded="false">☰</button>
+              <div class="chat-session-copy">
+                <p class="eyebrow"><span class="presence-dot" aria-hidden="true"></span>当前会话</p>
+                <h2 id="sessionTitle">default</h2>
+              </div>
+            </div>
+            <div class="mode-actions" aria-label="模式切换">
+              <span class="mode-caption">Mode</span>
+              <button data-command="/hybrid" type="button">Hybrid</button>
+              <button data-command="/chat" type="button">Chat</button>
+              <button data-command="/coding" data-required-role="admin" type="button">Coding</button>
+            </div>
+          </header>
+
+          <div id="chatScroll" class="chat-scroll">
+            <div id="messages" class="messages" aria-live="polite"></div>
+          </div>
+
+          <div class="composer-dock">
+            <form id="composer" class="composer">
+              <label class="composer-label" for="messageInput">
+                <span class="composer-mark" aria-hidden="true"></span>
+                写给 taleclaw
+              </label>
+              <textarea id="messageInput" rows="3" placeholder="输入消息" spellcheck="false"></textarea>
+              <div class="composer-actions">
+                <span id="composerState"></span>
+                <button id="stopBtn" class="stop-button" type="button" hidden>停止</button>
+                <button id="sendBtn" type="submit">发送</button>
+              </div>
+            </form>
+          </div>
+        </section>
+
+        <section class="main-view files-pane" data-main-view-panel="files">
+          <header class="tool-header">
+            <div class="chat-title-row">
+              <button class="mobile-sidebar-button mobile-secondary-open" type="button" aria-label="打开侧栏" aria-controls="sidebar" aria-expanded="false">☰</button>
+              <div>
+                <p class="eyebrow">Storage</p>
+                <h2>文件</h2>
+              </div>
+            </div>
+            <div class="file-actions">
+              <button id="fileUpBtn" class="text-button" type="button">上级</button>
+              <button id="fileUploadBtn" class="text-button" type="button">上传</button>
+              <button id="fileMkdirBtn" class="text-button" type="button">新建文件夹</button>
+            </div>
+          </header>
+          <input id="fileUploadInput" type="file" multiple hidden>
+          <div class="file-browser">
+            <div id="fileBreadcrumb" class="file-breadcrumb"></div>
+            <div id="fileList" class="file-list"></div>
+          </div>
+        </section>
+
+        <section class="main-view analysis-pane" data-main-view-panel="analysis">
+          <header class="tool-header">
+            <div class="chat-title-row">
+              <button class="mobile-sidebar-button mobile-secondary-open" type="button" aria-label="打开侧栏" aria-controls="sidebar" aria-expanded="false">☰</button>
+              <div>
+                <p class="eyebrow">Text</p>
+                <h2>分析记录</h2>
+              </div>
+            </div>
+            <a id="analysisDownloadLink" class="text-link" href="/api/files/download?path=records%2Fanalysis.txt">下载记录</a>
+          </header>
+          <div class="analysis-grid">
+            <form id="analysisForm" class="analysis-form">
+              <textarea id="analysisInput" rows="12" placeholder="粘贴需要分析的文字" aria-label="需要分析的文字" spellcheck="false"></textarea>
+              <div class="composer-actions">
+                <span id="analysisState"></span>
+                <button id="analysisSubmitBtn" type="submit">分析并保存</button>
+              </div>
+            </form>
+            <div class="analysis-result">
+              <div class="panel-head">
+                <h2>回复</h2>
+              </div>
+              <pre id="analysisOutput"></pre>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <dialog id="filePreviewModal" class="file-preview-modal" aria-labelledby="filePreviewModalTitle">
+      <section class="file-preview-dialog">
+        <header class="preview-modal-head">
+          <div>
+            <p class="eyebrow">Preview</p>
+            <h2 id="filePreviewModalTitle">文件预览</h2>
+          </div>
+          <button id="filePreviewClose" class="modal-close" type="button" aria-label="关闭文件预览" title="关闭">×</button>
+        </header>
+        <aside id="filePreview" class="file-preview"></aside>
+      </section>
+    </dialog>
+  </body>
+</html>
