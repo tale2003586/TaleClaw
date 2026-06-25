@@ -1,6 +1,7 @@
 # context.py
 
-from dataclasses import dataclass
+import hashlib
+from dataclasses import dataclass, field, replace
 import json
 from pathlib import Path
 import threading
@@ -14,6 +15,19 @@ from runtime.context_history import (
 )
 from runtime.context_build_state import BuildState
 from runtime.context_sections import ContextBuildReport, ContextSection, message_chars
+from runtime.trace.events import (
+    SECURITY_RAG_COMPLETED,
+    SECURITY_RAG_FAILED,
+    SECURITY_RAG_SEARCH_COMPLETED,
+    SECURITY_RAG_SEARCH_FAILED,
+    SECURITY_RAG_STARTED,
+)
+from runtime.trace.rag import (
+    append_security_rag_event,
+    rag_completed_payload,
+    search_trace_payload,
+    security_rag_span_id,
+)
 from runtime.working_memory import render_working_memory_block
 from memory.vector_runtime import history_vector_scope_for_session
 from knowledge.tracing import Timer, make_rag_trace, write_rag_trace_if_enabled
@@ -29,9 +43,28 @@ class ContextBundle:
     report: ContextBuildReport | None = None
 
 
+@dataclass
+class ContextPrefix:
+    """Stable prompt prefix reused across reasoning steps in one turn."""
+
+    system_prompt: str
+    profile_prompt: str
+    instruction_sections: list[ContextSection]
+    instruction_reductions: list[dict[str, Any]]
+    runtime_guidance: str
+    fingerprint: str
+    base_fingerprint: str = ""
+    messages: list[dict] = field(default_factory=list)
+    history_messages: list[dict] = field(default_factory=list)
+    budgeted_history: BudgetedMessages | None = None
+    active_turn_start_index: int | None = None
+    cache_hit: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 class ContextBuilder:
     _instruction_cache_lock = threading.Lock()
-    _instruction_cache: dict[Path, tuple[float, str]] = {}
+    _instruction_cache: dict[Path, tuple[int, int, str]] = {}
     _guidance_registry: list[str] = [
         "Use recall_memory when the user asks about prior preferences or project conventions.",
         "Use memorize when the user states a durable preference or important fact.",
@@ -74,18 +107,72 @@ class ContextBuilder:
         self.security_route_classifier = security_route_classifier
         self.security_knowledge_index = security_knowledge_index
         self.security_auto_context_enabled = bool(security_auto_context_enabled)
+        self._prefix_cache_lock = threading.Lock()
+        self._prefix_cache: dict[str, ContextPrefix] = {}
 
-    def build(
+    def build_prefix(
         self,
-        *,
-        session,
         profile,
-        inbox: list | None = None,
-        background_results: list | None = None,
+        *,
+        session=None,
         active_turn_start_index: int | None = None,
-        include_security_knowledge: bool = True,
+    ) -> ContextPrefix:
+        base = self._build_base_prefix(profile)
+        if session is None:
+            return base
 
-    ) -> ContextBundle:
+        session_messages = list(getattr(session, "messages", []) or [])
+        history_messages, _, _ = self._split_active_turn(
+            session_messages,
+            active_turn_start_index=active_turn_start_index,
+        )
+        budgeted_history = budget_conversation_history(
+            history_messages,
+            enabled=self.budgeter.enabled,
+            rule=self.budgeter.rules.get("conversation_history"),
+        )
+        messages = [
+            {"role": "system", "content": base.system_prompt},
+            *budgeted_history.rendered_messages,
+        ]
+        fingerprint = _prefix_messages_fingerprint(
+            base.fingerprint,
+            messages,
+            active_turn_start_index=active_turn_start_index,
+        )
+        metadata = {
+            **base.metadata,
+            "base_fingerprint": base.fingerprint,
+            "fingerprint": fingerprint,
+            "includes_history": True,
+            "history_message_count": len(history_messages),
+            "rendered_history_message_count": len(budgeted_history.rendered_messages),
+        }
+        return replace(
+            base,
+            fingerprint=fingerprint,
+            base_fingerprint=base.fingerprint,
+            messages=messages,
+            history_messages=history_messages,
+            budgeted_history=budgeted_history,
+            active_turn_start_index=active_turn_start_index,
+            metadata=metadata,
+        )
+
+    def _build_base_prefix(self, profile) -> ContextPrefix:
+        fingerprint = self._prefix_fingerprint(profile)
+        with self._prefix_cache_lock:
+            cached = self._prefix_cache.get(fingerprint)
+        if cached is not None:
+            return replace(
+                cached,
+                cache_hit=True,
+                metadata={
+                    **cached.metadata,
+                    "cache_hit": True,
+                },
+            )
+
         profile_prompt = str(getattr(profile, "system_prompt", "") or "")
         instruction_block, instruction_sections, instruction_reductions = (
             self._build_instruction_block(profile)
@@ -96,6 +183,49 @@ class ContextBuilder:
             instruction_block=instruction_block,
             runtime_guidance=runtime_guidance,
         )
+        prefix = ContextPrefix(
+            system_prompt=system_prompt,
+            profile_prompt=profile_prompt,
+            instruction_sections=instruction_sections,
+            instruction_reductions=instruction_reductions,
+            runtime_guidance=runtime_guidance,
+            fingerprint=fingerprint,
+            base_fingerprint=fingerprint,
+            messages=[{"role": "system", "content": system_prompt}],
+            metadata={
+                "fingerprint": fingerprint,
+                "base_fingerprint": fingerprint,
+                "cache_hit": False,
+                "mode": str(getattr(profile, "tool_mode", "bot") or "bot"),
+                "includes_history": False,
+            },
+        )
+        with self._prefix_cache_lock:
+            self._prefix_cache[fingerprint] = prefix
+        return prefix
+
+    def build(
+        self,
+        *,
+        session,
+        profile,
+        prefix: ContextPrefix | None = None,
+        inbox: list | None = None,
+        background_results: list | None = None,
+        active_turn_start_index: int | None = None,
+        include_security_knowledge: bool = True,
+        trace_store=None,
+        run_state=None,
+        trace_parent_span_id: str | None = None,
+        reasoning_step: int | None = None,
+
+    ) -> ContextBundle:
+        prefix = prefix or self.build_prefix(profile)
+        profile_prompt = prefix.profile_prompt
+        instruction_sections = prefix.instruction_sections
+        instruction_reductions = prefix.instruction_reductions
+        runtime_guidance = prefix.runtime_guidance
+        system_prompt = prefix.system_prompt
         session_messages = list(session.messages)
         history_messages, active_turn_messages, current_request = (
             self._split_active_turn(
@@ -103,6 +233,18 @@ class ContextBuilder:
                 active_turn_start_index=active_turn_start_index,
             )
         )
+        if (
+            prefix.budgeted_history is not None
+            and prefix.active_turn_start_index == active_turn_start_index
+        ):
+            history_messages = list(prefix.history_messages)
+            budgeted_history = prefix.budgeted_history
+        else:
+            budgeted_history = budget_conversation_history(
+                history_messages,
+                enabled=self.budgeter.enabled,
+                rule=self.budgeter.rules.get("conversation_history"),
+            )
 
         raw_memory_block = self._build_memory_block(
             session,
@@ -125,7 +267,13 @@ class ContextBuilder:
         )
         if include_security_knowledge:
             raw_security_knowledge, security_decision, security_hits = (
-                self._build_security_knowledge_block(current_request=current_request)
+                self._build_security_knowledge_block(
+                    current_request=current_request,
+                    trace_store=trace_store,
+                    run_state=run_state,
+                    trace_parent_span_id=trace_parent_span_id,
+                    reasoning_step=reasoning_step,
+                )
             )
         else:
             raw_security_knowledge, security_decision, security_hits = "", None, []
@@ -150,20 +298,18 @@ class ContextBuilder:
             task_runtime_events_block=budgeted_task_runtime_events.rendered_text,
         )
 
-        budgeted_history = budget_conversation_history(
-            history_messages,
-            enabled=self.budgeter.enabled,
-            rule=self.budgeter.rules.get("conversation_history"),
-        )
         budgeted_active_turn = budget_active_turn(
             active_turn_messages,
             enabled=self.budgeter.enabled,
             rule=self.budgeter.rules.get("active_turn"),
         )
-        messages = [
-            {"role": "system", "content": system_prompt},
-            *budgeted_history.rendered_messages,
-        ]
+        if prefix.budgeted_history is not None and prefix.messages:
+            messages = list(prefix.messages)
+        else:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                *budgeted_history.rendered_messages,
+            ]
 
         if context_frame:
             messages.append({
@@ -218,6 +364,9 @@ class ContextBuilder:
                     budgeted_task_runtime_events,
                 ),
             ],
+            prefix_fingerprint=prefix.fingerprint,
+            prefix_cache_hit=prefix.cache_hit,
+            prefix_metadata=dict(prefix.metadata),
         )
         report = self._build_report(build_state)
         return ContextBundle(messages=messages, report=report)
@@ -382,24 +531,53 @@ class ContextBuilder:
             return "", "", False
         path = path.resolve()
         try:
-            mtime = path.stat().st_mtime
+            stat = path.stat()
         except OSError:
             return "", "", False
+        mtime_ns = stat.st_mtime_ns
+        size = stat.st_size
         with self._instruction_cache_lock:
             cached = self._instruction_cache.get(path)
-        if cached is not None and cached[0] == mtime:
-            text = cached[1]
+        if cached is not None and cached[0] == mtime_ns and cached[1] == size:
+            text = cached[2]
         else:
             try:
                 text = path.read_text(encoding="utf-8", errors="replace").strip()
             except OSError:
                 return "", "", False
             with self._instruction_cache_lock:
-                self._instruction_cache[path] = (mtime, text)
+                self._instruction_cache[path] = (mtime_ns, size, text)
         if len(text) <= self.instruction_limit:
             return text, text, False
         rendered = text[: self.instruction_limit].rstrip() + "\n\n...[truncated]"
         return rendered, text, True
+
+    def _prefix_fingerprint(self, profile) -> str:
+        mode = str(getattr(profile, "tool_mode", "bot") or "bot")
+        payload = {
+            "profile_name": str(getattr(profile, "name", "") or ""),
+            "tool_mode": mode,
+            "profile_prompt": str(getattr(profile, "system_prompt", "") or ""),
+            "runtime_guidance": self._runtime_guidance(),
+            "instruction_root": str(self.instruction_root),
+            "instruction_limit": self.instruction_limit,
+            "budgeter_enabled": self.budgeter.enabled,
+            "budget_rules": {
+                name: _budget_rule_signature(self.budgeter.rules.get(name))
+                for name in ("mode_instructions", "project_instructions")
+            },
+            "instruction_files": [
+                _instruction_file_signature(section, path)
+                for section, path in self._instruction_files(mode)
+            ],
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
     
     def _build_memory_block(self, session, *, current_request: str = "") -> str:
         if self.memory_store is None:
@@ -473,6 +651,10 @@ class ContextBuilder:
         self,
         *,
         current_request: str,
+        trace_store=None,
+        run_state=None,
+        trace_parent_span_id: str | None = None,
+        reasoning_step: int | None = None,
     ) -> tuple[str, Any | None, list]:
         if not self.security_auto_context_enabled:
             return "", None, []
@@ -481,14 +663,74 @@ class ContextBuilder:
         if self.security_retrieval_router is None or self.security_knowledge_index is None:
             return "", None, []
         total_timer = Timer()
+        source = "context_auto"
+        rag_span_id = security_rag_span_id(run_state, trace_parent_span_id, source)
+
+        def append_runtime_event(event_name: str, payload: dict[str, Any]) -> None:
+            append_security_rag_event(
+                trace_store,
+                run_state,
+                event_name,
+                {"source": source, **payload},
+                span_id=rag_span_id if event_name in {SECURITY_RAG_STARTED, SECURITY_RAG_COMPLETED, SECURITY_RAG_FAILED} else None,
+                parent_span_id=(
+                    trace_parent_span_id
+                    if event_name in {SECURITY_RAG_STARTED, SECURITY_RAG_COMPLETED, SECURITY_RAG_FAILED}
+                    else rag_span_id
+                ),
+                step=reasoning_step,
+            )
+
+        append_runtime_event(SECURITY_RAG_STARTED, {
+            "query": current_request,
+            "entrypoint": "context_builder",
+        })
+        plan = None
         try:
             route_timer = Timer()
-            decision = self.security_retrieval_router.route(
-                current_request,
-                llm_classifier=self.security_route_classifier,
-            )
+            router_trace_events: list[dict[str, Any]] = []
+
+            def capture_router_trace(item: dict[str, Any]) -> None:
+                if not isinstance(item, dict):
+                    return
+                event_name = str(item.get("event") or SECURITY_RAG_SEARCH_COMPLETED)
+                payload = item.get("payload") if isinstance(item.get("payload"), dict) else item
+                router_trace_events.append(dict(payload))
+                append_runtime_event(event_name, dict(payload))
+
+            if hasattr(self.security_retrieval_router, "route_with_retrieval"):
+                plan = self.security_retrieval_router.route_with_retrieval(
+                    current_request,
+                    index=self.security_knowledge_index,
+                    llm_classifier=self.security_route_classifier,
+                    trace_callback=capture_router_trace,
+                )
+                decision = plan.decision
+                hits = plan.hits
+                route_action = getattr(plan, "action", "")
+                search_trace = {
+                    "router_searches": [
+                        record.__dict__ for record in getattr(plan, "searches", [])
+                    ],
+                    "runtime_events": router_trace_events,
+                }
+            else:
+                decision = self.security_retrieval_router.route(
+                    current_request,
+                    llm_classifier=self.security_route_classifier,
+                )
+                hits = []
+                route_action = ""
+                search_trace = {}
             route_ms = route_timer.ms()
         except Exception as exc:
+            append_runtime_event(SECURITY_RAG_FAILED, {
+                "query": current_request,
+                "stage": "route",
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+                "latency_ms": {"total": total_timer.ms()},
+            })
             write_rag_trace_if_enabled(make_rag_trace(
                 source="context_auto",
                 query=current_request,
@@ -503,41 +745,88 @@ class ContextBuilder:
                 [],
             )
         if not getattr(decision, "use_rag", False):
+            append_runtime_event(SECURITY_RAG_COMPLETED, rag_completed_payload(
+                source=source,
+                query=current_request,
+                rewritten_query=getattr(decision, "query", current_request),
+                decision=decision,
+                action=route_action or "no_rag",
+                reason=getattr(decision, "reason", "") or "Router skipped security RAG.",
+                hits=[],
+                latency_ms={"route_with_retrieval": route_ms, "total": total_timer.ms()},
+                searches=getattr(plan, "searches", []) if plan is not None else [],
+            ))
             write_rag_trace_if_enabled(make_rag_trace(
                 source="context_auto",
                 query=current_request,
                 rewritten_query=getattr(decision, "query", current_request),
                 router_decision=decision,
-                latency_ms={"route": route_ms, "total": total_timer.ms()},
+                latency_ms={"route_with_retrieval": route_ms, "total": total_timer.ms()},
             ))
             return "", decision, []
-        try:
-            search_timer = Timer()
-            search_trace = {}
-            hits = self.security_knowledge_index.search(
-                query=decision.query,
-                top_k=getattr(decision, "top_k", 5) or 5,
-                min_score=getattr(decision, "min_score", 0.0) or 0.0,
-                trace_callback=search_trace.update,
-            )
-            search_ms = search_timer.ms()
-        except Exception as exc:
-            write_rag_trace_if_enabled(make_rag_trace(
-                source="context_auto",
-                query=current_request,
-                rewritten_query=getattr(decision, "query", current_request),
-                router_decision=decision,
-                latency_ms={"route": route_ms, "total": total_timer.ms()},
-                error=f"search_error:{type(exc).__name__}: {exc}",
-            ))
-            return (
-                "<security_knowledge status=\"search_error\">\n"
-                f"route={getattr(decision, 'route', '')} query={getattr(decision, 'query', '')}\n"
-                f"{type(exc).__name__}: {exc}\n"
-                "</security_knowledge>",
-                decision,
-                [],
-            )
+        if not hits:
+            try:
+                search_timer = Timer()
+                legacy_search_trace: dict[str, Any] = {}
+                hits = self.security_knowledge_index.search(
+                    query=decision.query,
+                    top_k=getattr(decision, "top_k", 5) or 5,
+                    min_score=getattr(decision, "min_score", 0.0) or 0.0,
+                    trace_callback=legacy_search_trace.update,
+                )
+                search_trace["legacy_search_ms"] = search_timer.ms()
+                search_trace.update(legacy_search_trace)
+                append_runtime_event(SECURITY_RAG_SEARCH_COMPLETED, search_trace_payload(
+                    source=source,
+                    query=decision.query,
+                    stage="legacy_search",
+                    retrieval_mode=str(legacy_search_trace.get("retrieval_mode") or ""),
+                    top_k=getattr(decision, "top_k", 5) or 5,
+                    min_score=getattr(decision, "min_score", 0.0) or 0.0,
+                    hit_count=len(hits),
+                    trace=legacy_search_trace,
+                ))
+            except Exception as exc:
+                append_runtime_event(SECURITY_RAG_FAILED, {
+                    "query": current_request,
+                    "rewritten_query": getattr(decision, "query", current_request),
+                    "stage": "search",
+                    "route": getattr(decision, "route", ""),
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                    "latency_ms": {"route": route_ms, "total": total_timer.ms()},
+                })
+                write_rag_trace_if_enabled(make_rag_trace(
+                    source="context_auto",
+                    query=current_request,
+                    rewritten_query=getattr(decision, "query", current_request),
+                    router_decision=decision,
+                    latency_ms={"route": route_ms, "total": total_timer.ms()},
+                    error=f"search_error:{type(exc).__name__}: {exc}",
+                ))
+                return (
+                    "<security_knowledge status=\"search_error\">\n"
+                    f"route={getattr(decision, 'route', '')} query={getattr(decision, 'query', '')}\n"
+                    f"{type(exc).__name__}: {exc}\n"
+                    "</security_knowledge>",
+                    decision,
+                    [],
+                )
+        append_runtime_event(SECURITY_RAG_COMPLETED, rag_completed_payload(
+            source=source,
+            query=current_request,
+            rewritten_query=decision.query,
+            decision=decision,
+            action=route_action,
+            reason=getattr(plan, "reason", "") if plan is not None else "",
+            hits=hits,
+            latency_ms={
+                "route_with_retrieval": route_ms,
+                **(search_trace.get("latency_ms") or {}),
+                "total": total_timer.ms(),
+            },
+            searches=getattr(plan, "searches", []) if plan is not None else [],
+        ))
         write_rag_trace_if_enabled(make_rag_trace(
             source="context_auto",
             query=current_request,
@@ -545,8 +834,7 @@ class ContextBuilder:
             router_decision=decision,
             hits=hits,
             latency_ms={
-                "route": route_ms,
-                "search": search_ms,
+                "route_with_retrieval": route_ms,
                 **(search_trace.get("latency_ms") or {}),
                 "total": total_timer.ms(),
             },
@@ -557,7 +845,7 @@ class ContextBuilder:
         lines = [
             "<security_knowledge>",
             "Use these local code-security knowledge snippets as evidence. Prefer cited source paths when answering.",
-            f"route={decision.route} confidence={decision.confidence:.4f} query={decision.query}",
+            f"route={decision.route} action={route_action} confidence={decision.confidence:.4f} query={decision.query}",
         ]
         for index, hit in enumerate(hits, start=1):
             lines.append(
@@ -760,6 +1048,9 @@ class ContextBuilder:
             metadata={
                 "message_count": len(messages),
                 "section_budget_enabled": self.budgeter.enabled,
+                "prefix_fingerprint": state.prefix_fingerprint,
+                "prefix_cache_hit": state.prefix_cache_hit,
+                "prefix": state.prefix_metadata,
             },
         )
 
@@ -850,6 +1141,60 @@ def _relative_or_name(path: Path, root: Path) -> str:
         return path.relative_to(root).as_posix()
     except ValueError:
         return path.name
+
+
+def _instruction_file_signature(section: str, path: Path) -> dict[str, Any]:
+    try:
+        resolved = path.resolve()
+        stat = resolved.stat()
+    except OSError:
+        return {
+            "section": section,
+            "path": str(path),
+            "exists": False,
+        }
+    return {
+        "section": section,
+        "path": str(resolved),
+        "exists": True,
+        "mtime_ns": stat.st_mtime_ns,
+        "size": stat.st_size,
+    }
+
+
+def _budget_rule_signature(rule) -> dict[str, Any] | None:
+    if rule is None:
+        return None
+    return {
+        "budget_chars": getattr(rule, "budget_chars", None),
+        "floor_chars": getattr(rule, "floor_chars", None),
+        "strategy": getattr(rule, "strategy", None),
+        "keep_head_turns": getattr(rule, "keep_head_turns", None),
+        "keep_tail_turns": getattr(rule, "keep_tail_turns", None),
+        "summary_chars": getattr(rule, "summary_chars", None),
+        "keep_recent_results": getattr(rule, "keep_recent_results", None),
+        "preserve_tools": list(getattr(rule, "preserve_tools", ()) or ()),
+    }
+
+
+def _prefix_messages_fingerprint(
+    base_fingerprint: str,
+    messages: list[dict],
+    *,
+    active_turn_start_index: int | None,
+) -> str:
+    payload = {
+        "base_fingerprint": base_fingerprint,
+        "active_turn_start_index": active_turn_start_index,
+        "messages": messages,
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _message_text(message: dict) -> str:

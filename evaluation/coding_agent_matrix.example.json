@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "name": "coding-agent-matrix-example",
+  "notes": [
+    "agents and feature_sets are crossed into matrix cells.",
+    "Each cell runs in a fresh Python subprocess, so env flags affect import-time config constants.",
+    "Keep real-model agents disabled until you are ready to spend tokens."
+  ],
+  "benchmark_path": "benchmarks/coding_tasks.json",
+  "env": {
+    "LLM_HEALTHCHECK_ON_STARTUP": "0"
+  },
+  "agents": [
+    {
+      "name": "scripted-baseline",
+      "enabled": false,
+      "runner": "scripted",
+      "dimensions": {
+        "agent": "scripted"
+      }
+    },
+    {
+      "name": "real-default",
+      "enabled": true,
+      "runner": "real",
+      "env": {
+        "LLM_ROUTE_CODING": "openai_relay,deepseek,mimo"
+      },
+      "dimensions": {
+        "agent": "real",
+        "model_route": "default"
+      }
+    }
+  ],
+  "feature_sets": [
+    {
+      "name": "budget-on",
+      "env": {
+        "CONTEXT_ENABLE_SECTION_BUDGET": "1",
+        "WORKING_MEMORY_RESUME_ENABLED": "1"
+      },
+      "harness": {
+        "no_step_budget": false
+      },
+      "dimensions": {
+        "context_budget": "on",
+        "working_memory_resume": "on",
+        "reasoning_step_budget": "on"
+      }
+    },
+    {
+      "name": "context-budget-off",
+      "env": {
+        "CONTEXT_ENABLE_SECTION_BUDGET": "0",
+        "WORKING_MEMORY_RESUME_ENABLED": "1"
+      },
+      "harness": {
+        "no_step_budget": false
+      },
+      "dimensions": {
+        "context_budget": "off",
+        "working_memory_resume": "on",
+        "reasoning_step_budget": "on"
+      }
+    },
+    {
+      "name": "working-memory-resume-off",
+      "env": {
+        "CONTEXT_ENABLE_SECTION_BUDGET": "1",
+        "WORKING_MEMORY_RESUME_ENABLED": "0"
+      },
+      "harness": {
+        "no_step_budget": false
+      },
+      "dimensions": {
+        "context_budget": "on",
+        "working_memory_resume": "off",
+        "reasoning_step_budget": "on"
+      }
+    },
+    {
+      "name": "reasoning-step-budget-off",
+      "env": {
+        "CONTEXT_ENABLE_SECTION_BUDGET": "1",
+        "WORKING_MEMORY_RESUME_ENABLED": "1"
+      },
+      "harness": {
+        "no_step_budget": true
+      },
+      "dimensions": {
+        "context_budget": "on",
+        "working_memory_resume": "on",
+        "reasoning_step_budget": "off"
+      }
+    }
+  ],
+  "metrics": [
+    "pass_rate",
+    "total_tokens",
+    "input_tokens",
+    "output_tokens",
+    "wall_duration_ms",
+    "avg_reasoning_steps",
+    "avg_tool_calls_per_task",
+    "tool_calls",
+    "model_calls",
+    "tool_failures",
+    "tool_denials",
+    "context_build_compressed_count"
+  ]
+}

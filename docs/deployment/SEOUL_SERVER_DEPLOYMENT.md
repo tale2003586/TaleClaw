@@ -222,6 +222,12 @@ WEB_MAX_BODY_BYTES=52428800
 
 TAVILY_API_KEY=替换为你的TavilyKey
 SCHEDULER_TIMEZONE=Asia/Shanghai
+
+# 当前部署暂不启用 RAG / Qdrant / 向量历史。
+RAG_ENABLED=0
+HISTORY_VECTOR_ENABLED=0
+SECURITY_RAG_AUTO_CONTEXT_ENABLED=0
+SECURITY_RAG_PLUGIN_ENABLED=0
 ```
 
 说明：
@@ -230,6 +236,7 @@ SCHEDULER_TIMEZONE=Asia/Shanghai
 - 需要让其他人注册时，临时改成 `1`，注册完成后再改回 `0`。
 - 暂时没有 Tavily Key 时，可以保留 `TAVILY_API_KEY=replace-me`，但 Web search 不可用。
 - 配置 HTTPS 之前保持 `WEB_COOKIE_SECURE=0`。
+- 当前部署默认不安装 RAG 重依赖，也不启动 Qdrant；这样容器更小、构建更快。
 - 服务器物理位置不会决定日报时间。按北京时间执行时使用 `Asia/Shanghai`；按韩国时间执行时
   改成 `Asia/Seoul`。
 - 默认主模型使用 DeepSeek。要切到小米 MiMo，见下一节。
@@ -301,6 +308,41 @@ WEB_PASSWORD=
 ```
 
 使用 `WEB_USERS_JSON` 后，可以删除这两行，避免运维时误判。
+
+### 8.1.3 暂不部署 RAG
+
+当前服务器部署默认关闭 RAG 相关组件：
+
+```env
+RAG_ENABLED=0
+HISTORY_VECTOR_ENABLED=0
+SECURITY_RAG_AUTO_CONTEXT_ENABLED=0
+SECURITY_RAG_PLUGIN_ENABLED=0
+```
+
+这会带来三个效果：
+
+- Docker 镜像默认只安装 `requirements-deploy.txt`，不会安装 `fastembed`、`FlagEmbedding`、`transformers`、`qdrant-client` 等 RAG 重依赖。
+- `docker compose up` 默认不会启动 `qdrant`，因为 qdrant 被放在 `rag` profile 下。
+- 运行时不会初始化代码安全 RAG，也不会注册 `security_rag_search` 工具。
+
+以后要恢复 RAG 时，再显式打开：
+
+```bash
+INSTALL_RAG_DEPS=1 RAG_ENABLED=1 sudo docker compose --profile rag up -d --build \
+  qdrant agent-console
+```
+
+同时把 `.env` 中相关开关改为：
+
+```env
+RAG_ENABLED=1
+HISTORY_VECTOR_ENABLED=1
+SECURITY_RAG_AUTO_CONTEXT_ENABLED=1
+SECURITY_RAG_PLUGIN_ENABLED=1
+QDRANT_URL=http://qdrant:6333
+SECURITY_RAG_QDRANT_URL=http://qdrant:6333
+```
 
 ### 8.2 Telegram 配置
 

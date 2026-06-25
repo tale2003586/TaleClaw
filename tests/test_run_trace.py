@@ -281,6 +281,75 @@ class RunTraceTests(unittest.TestCase):
             self.assertEqual(2, metrics["subagent_incomplete_count"])
             self.assertEqual(1, metrics["subagent_fanout_count"])
 
+    def test_trace_metrics_include_context_compression_and_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            trace_store = TraceStore(Path(tmp) / ".runs")
+            run_state = RunState.create(session_id="web:test")
+            trace_store.start_run(run_state)
+            trace_store.append_event(
+                run_state,
+                "context.build.completed",
+                {
+                    "duration_ms": 12.5,
+                    "context_report": {
+                        "total_chars": 450,
+                        "budget_chars": 1000,
+                        "over_budget": False,
+                        "sections": {
+                            "conversation_history": {
+                                "raw_chars": 1000,
+                                "rendered_chars": 400,
+                                "budget_chars": 400,
+                                "truncated": True,
+                                "metadata": {"strategy": "summary_middle"},
+                            },
+                            "active_turn": {
+                                "raw_chars": 200,
+                                "rendered_chars": 200,
+                                "budget_chars": 300,
+                                "truncated": False,
+                                "metadata": {},
+                            },
+                        },
+                        "reductions": [
+                            {
+                                "section": "conversation_history",
+                                "before_chars": 1000,
+                                "after_chars": 400,
+                                "strategy": "summary_middle",
+                            }
+                        ],
+                    },
+                },
+                step=3,
+            )
+            run_state.finish_success("done")
+            trace_store.write_report(run_state, {"reply": "done"})
+
+            run_dir = trace_store.run_dir(run_state)
+            metrics = json.loads(
+                (run_dir / "metrics.json").read_text(encoding="utf-8")
+            )
+            context_metrics = json.loads(
+                (run_dir / "context_metrics.json").read_text(encoding="utf-8")
+            )
+
+            self.assertEqual(1, metrics["context_builds"])
+            self.assertEqual(1, metrics["context_build_compressed_count"])
+            self.assertEqual(12.5, metrics["total_context_build_duration_ms"])
+            self.assertEqual(0.4, metrics["context_compression_ratio"])
+            self.assertEqual(0.6, metrics["context_compression_savings_ratio"])
+            self.assertEqual(1000, metrics["context_compression_before_chars"])
+            self.assertEqual(400, metrics["context_compression_after_chars"])
+            self.assertEqual(600, metrics["context_compression_saved_chars"])
+            self.assertEqual([3], context_metrics["aggregate"]["compressed_steps"])
+            self.assertEqual(12.5, context_metrics["builds"][0]["duration_ms"])
+            self.assertTrue(context_metrics["builds"][0]["compressed"])
+            self.assertEqual(
+                "conversation_history",
+                context_metrics["builds"][0]["reduced_sections"][0]["section"],
+            )
+
     def test_trace_summary_counts_subagent_retry_degrade_and_recovery(self) -> None:
         run_state = {
             "run_id": "run-test",

@@ -16,6 +16,20 @@ class ContextBuilder:
         return SimpleNamespace(messages=kwargs["session"].messages)
 
 
+class CountingPrefixContextBuilder:
+    def __init__(self) -> None:
+        self.prefix_calls = 0
+        self.prefixes_seen = []
+
+    def build_prefix(self, profile):
+        self.prefix_calls += 1
+        return {"profile": profile, "call": self.prefix_calls}
+
+    def build(self, **kwargs):
+        self.prefixes_seen.append(kwargs.get("prefix"))
+        return SimpleNamespace(messages=list(kwargs["session"].messages), report=None)
+
+
 class RepeatingProvider:
     def __init__(self, name: str, arguments=None) -> None:
         self.name = name
@@ -141,6 +155,30 @@ def _pipeline(registry, provider, *, hooks=None, max_reasoning_steps=24) -> Pipe
 
 
 class PipelineToolLoopGuardTests(unittest.TestCase):
+    def test_pipeline_reuses_context_prefix_across_reasoning_steps(self) -> None:
+        registry = _registry_with_tool("read_file", enabled_modes={"coding"}, always_on=True)
+        provider = ScriptedProvider([
+            _tool_response(1, "read_file", {}),
+            _final_response("done"),
+        ])
+        context_builder = CountingPrefixContextBuilder()
+        pipeline = Pipeline(
+            tools=registry,
+            provider=provider,
+            model="test-model",
+            tool_executor=ToolExecutor(),
+            context_builder=context_builder,
+            max_reasoning_steps=4,
+        )
+        session = Session(id="task:test", current_mode="coding")
+
+        reply = pipeline.run(session, SimpleNamespace(tool_mode="coding"))
+
+        self.assertEqual("done", reply)
+        self.assertEqual(1, context_builder.prefix_calls)
+        self.assertEqual(2, len(context_builder.prefixes_seen))
+        self.assertIs(context_builder.prefixes_seen[0], context_builder.prefixes_seen[1])
+
     def test_web_search_tool_description_mentions_runtime_budget(self) -> None:
         schema = WebSearchPlugin().tools()[0].schema
 

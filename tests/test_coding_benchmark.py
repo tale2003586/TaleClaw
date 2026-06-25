@@ -12,12 +12,16 @@ class CodingBenchmarkTests(unittest.TestCase):
     def test_coding_benchmark_schema_has_pico_sized_task_set(self) -> None:
         tasks = load_benchmark(Path("benchmarks/coding_tasks.json"))
 
-        self.assertEqual(12, len(tasks))
+        self.assertEqual(24, len(tasks))
         self.assertEqual({
             "bugfix",
             "feature",
             "refactor",
             "docs",
+            "data",
+            "json",
+            "cli",
+            "format",
             "tool-boundary",
             "safety",
             "git",
@@ -36,7 +40,7 @@ class CodingBenchmarkTests(unittest.TestCase):
                 workspace_root=root / "workspaces",
             )
 
-            self.assertEqual(12, payload["summary"]["total_tasks"])
+            self.assertEqual(24, payload["summary"]["total_tasks"])
             self.assertEqual(1.0, payload["summary"]["pass_rate"])
             self.assertEqual(1.0, payload["summary"]["verifier_pass_rate"])
             self.assertEqual(1.0, payload["summary"]["trace_completeness_rate"])

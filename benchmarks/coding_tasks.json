@@ -801,6 +801,892 @@
           "final": "Saved the stable benchmark convention for review."
         }
       ]
+    },
+    {
+      "id": "coding-env-default-013",
+      "category": "bugfix",
+      "fixture_repo": "benchmarks/fixtures/coding_env_default",
+      "prompt": "这是一个 Python bugfix 任务。目标文件是 src/settings.py，相关测试是 tests/test_settings.py。请修复 get_port()，让 APP_PORT 未设置时默认返回 8080，同时保留从环境变量读取端口的行为。不要修改 tests/test_settings.py。完成后应能通过 python -m pytest -q。",
+      "step_budget": 8,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "bash",
+        "git_diff"
+      ],
+      "expected": {
+        "must_pass_command": "python -m pytest -q",
+        "modified": [
+          "src/settings.py"
+        ],
+        "not_modified": [
+          "tests/test_settings.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "file_contains": [
+          {
+            "path": "src/settings.py",
+            "text": "os.getenv"
+          }
+        ],
+        "tool_called": [
+          "read_file",
+          "edit_file",
+          "bash"
+        ]
+      },
+      "verifier": "coding_env_default",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/settings.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/settings.py",
+            "old_text": "return int(os.environ[\"APP_PORT\"])",
+            "new_text": "return int(os.getenv(\"APP_PORT\", \"8080\"))"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:bash"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "final": "Added a safe default port and verified tests pass."
+        }
+      ]
+    },
+    {
+      "id": "coding-csv-summary-014",
+      "category": "data",
+      "fixture_repo": "benchmarks/fixtures/coding_csv_summary",
+      "prompt": "这是一个数据处理 bugfix 任务。目标文件是 src/report.py，相关测试是 tests/test_report.py。请修复 revenue_by_region(path)，让同一 region 的多行 amount 正确累加，而不是覆盖。不要修改 tests/test_report.py。完成后应能通过 python -m pytest -q。",
+      "step_budget": 8,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "bash",
+        "git_diff"
+      ],
+      "expected": {
+        "must_pass_command": "python -m pytest -q",
+        "modified": [
+          "src/report.py"
+        ],
+        "not_modified": [
+          "tests/test_report.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "file_contains": [
+          {
+            "path": "src/report.py",
+            "text": "totals.get"
+          }
+        ],
+        "tool_called": [
+          "read_file",
+          "edit_file",
+          "bash"
+        ]
+      },
+      "verifier": "coding_csv_summary",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/report.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/report.py",
+            "old_text": "        totals[row[\"region\"]] = int(row[\"amount\"])",
+            "new_text": "        region = row[\"region\"]\n        totals[region] = totals.get(region, 0) + int(row[\"amount\"])"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:bash"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "final": "Fixed CSV aggregation by summing repeated regions."
+        }
+      ]
+    },
+    {
+      "id": "coding-markdown-toc-015",
+      "category": "docs",
+      "fixture_repo": "benchmarks/fixtures/coding_markdown_toc",
+      "prompt": "这是一个 Markdown 文档任务。目标文件是 README.md。请根据 README.md 里的二级标题替换 <!-- TOC --> 占位符，生成包含 Install、Usage、Troubleshooting 的目录链接。不要改动章节正文。",
+      "step_budget": 6,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "git_diff"
+      ],
+      "expected": {
+        "modified": [
+          "README.md"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "file_contains": [
+          {
+            "path": "README.md",
+            "text": "- [Install](#install)"
+          },
+          {
+            "path": "README.md",
+            "text": "- [Troubleshooting](#troubleshooting)"
+          }
+        ],
+        "tool_called": [
+          "read_file",
+          "edit_file"
+        ]
+      },
+      "verifier": "coding_markdown_toc",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "README.md"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "README.md",
+            "old_text": "<!-- TOC -->",
+            "new_text": "- [Install](#install)\n- [Usage](#usage)\n- [Troubleshooting](#troubleshooting)"
+          }
+        },
+        {
+          "final": "Generated the README table of contents."
+        }
+      ]
+    },
+    {
+      "id": "coding-cli-argparse-016",
+      "category": "cli",
+      "fixture_repo": "benchmarks/fixtures/coding_cli_argparse",
+      "prompt": "这是一个 CLI bugfix 任务。目标文件是 app/cli.py，相关测试是 tests/test_cli.py。请修复 greet(argv=None)，让 --name 参数真正影响输出，同时保持默认输出 hello world。不要修改 tests/test_cli.py。完成后应能通过 python -m pytest -q。",
+      "step_budget": 8,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "bash",
+        "git_diff"
+      ],
+      "expected": {
+        "must_pass_command": "python -m pytest -q",
+        "modified": [
+          "app/cli.py"
+        ],
+        "not_modified": [
+          "tests/test_cli.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "file_contains": [
+          {
+            "path": "app/cli.py",
+            "text": "args.name"
+          }
+        ],
+        "tool_called": [
+          "read_file",
+          "edit_file",
+          "bash"
+        ]
+      },
+      "verifier": "coding_cli_argparse",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "app/cli.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "app/cli.py",
+            "old_text": "return \"hello world\"",
+            "new_text": "return f\"hello {args.name}\""
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:bash"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "final": "Fixed argparse output and verified CLI tests."
+        }
+      ]
+    },
+    {
+      "id": "coding-factory-feature-017",
+      "category": "feature",
+      "fixture_repo": "benchmarks/fixtures/coding_factory_feature",
+      "prompt": "这是一个 Python feature 任务。目标实现文件是 src/factory.py。请新增 make_admin(name) 函数，返回包含 name 和 role=admin 的字典；同时新增 tests/test_make_admin.py 覆盖这个行为。完成后应能通过 python -m pytest -q。",
+      "step_budget": 10,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "write_file",
+        "bash",
+        "git_diff"
+      ],
+      "expected": {
+        "must_pass_command": "python -m pytest -q",
+        "modified": [
+          "src/factory.py"
+        ],
+        "created": [
+          "tests/test_make_admin.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "tool_called": [
+          "edit_file",
+          "write_file",
+          "bash"
+        ]
+      },
+      "verifier": "coding_factory_feature",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/factory.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/factory.py",
+            "old_text": "def make_user(name):\n    return {\"name\": name}\n",
+            "new_text": "def make_user(name):\n    return {\"name\": name}\n\n\ndef make_admin(name):\n    return {\"name\": name, \"role\": \"admin\"}\n"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:write_file"
+          }
+        },
+        {
+          "tool": "write_file",
+          "args": {
+            "path": "tests/test_make_admin.py",
+            "content": "from src.factory import make_admin\n\n\ndef test_make_admin():\n    assert make_admin('Ada') == {'name': 'Ada', 'role': 'admin'}\n"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:bash"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "final": "Added make_admin with a focused test."
+        }
+      ]
+    },
+    {
+      "id": "coding-error-handling-018",
+      "category": "bugfix",
+      "fixture_repo": "benchmarks/fixtures/coding_error_handling",
+      "prompt": "这是一个错误处理 bugfix 任务。目标文件是 src/loader.py，相关测试是 tests/test_loader.py。请让 load_lines(path) 在文件不存在时返回空列表，同时保持正常读取已有文件的行为。不要修改 tests/test_loader.py。完成后应能通过 python -m pytest -q。",
+      "step_budget": 8,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "bash",
+        "git_diff"
+      ],
+      "expected": {
+        "must_pass_command": "python -m pytest -q",
+        "modified": [
+          "src/loader.py"
+        ],
+        "not_modified": [
+          "tests/test_loader.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "file_contains": [
+          {
+            "path": "src/loader.py",
+            "text": "FileNotFoundError"
+          }
+        ],
+        "tool_called": [
+          "read_file",
+          "edit_file",
+          "bash"
+        ]
+      },
+      "verifier": "coding_error_handling",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/loader.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/loader.py",
+            "old_text": "def load_lines(path):\n    return Path(path).read_text().splitlines()\n",
+            "new_text": "def load_lines(path):\n    try:\n        return Path(path).read_text().splitlines()\n    except FileNotFoundError:\n        return []\n"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:bash"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "final": "Handled missing files while preserving normal reads."
+        }
+      ]
+    },
+    {
+      "id": "coding-json-schema-019",
+      "category": "json",
+      "fixture_repo": "benchmarks/fixtures/coding_json_schema",
+      "prompt": "这是一个 JSON schema 修改任务。目标文件是 schemas/user.schema.json，相关测试是 tests/test_schema.py。请把 email 加入 required，并在 properties 中定义 email 为 string 且 format 为 email。保持 JSON 有效。完成后应能通过 python -m pytest -q。",
+      "step_budget": 8,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "bash",
+        "git_diff"
+      ],
+      "expected": {
+        "must_pass_command": "python -m pytest -q",
+        "modified": [
+          "schemas/user.schema.json"
+        ],
+        "not_modified": [
+          "tests/test_schema.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "file_contains": [
+          {
+            "path": "schemas/user.schema.json",
+            "text": "\"email\""
+          }
+        ],
+        "tool_called": [
+          "read_file",
+          "edit_file",
+          "bash"
+        ]
+      },
+      "verifier": "coding_json_schema",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "schemas/user.schema.json"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "schemas/user.schema.json",
+            "old_text": "  \"required\": [\"name\"],\n  \"properties\": {\n    \"name\": {\"type\": \"string\"}\n  }",
+            "new_text": "  \"required\": [\"name\", \"email\"],\n  \"properties\": {\n    \"name\": {\"type\": \"string\"},\n    \"email\": {\"type\": \"string\", \"format\": \"email\"}\n  }"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:bash"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "final": "Updated the user schema and verified it."
+        }
+      ]
+    },
+    {
+      "id": "coding-export-format-020",
+      "category": "format",
+      "fixture_repo": "benchmarks/fixtures/coding_export_format",
+      "prompt": "这是一个导出格式 bugfix 任务。目标文件是 src/exporter.py，相关测试是 tests/test_exporter.py。请把 to_lines(records) 改为输出 CSV 行：第一行是 id,name，后续每行用逗号分隔 id 和 name。不要修改 tests/test_exporter.py。完成后应能通过 python -m pytest -q。",
+      "step_budget": 8,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "bash",
+        "git_diff"
+      ],
+      "expected": {
+        "must_pass_command": "python -m pytest -q",
+        "modified": [
+          "src/exporter.py"
+        ],
+        "not_modified": [
+          "tests/test_exporter.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "file_contains": [
+          {
+            "path": "src/exporter.py",
+            "text": "id,name"
+          }
+        ],
+        "tool_called": [
+          "read_file",
+          "edit_file",
+          "bash"
+        ]
+      },
+      "verifier": "coding_export_format",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/exporter.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/exporter.py",
+            "old_text": "def to_lines(records):\n    return [f\"{item['id']}|{item['name']}\" for item in records]\n",
+            "new_text": "def to_lines(records):\n    lines = [\"id,name\"]\n    lines.extend(f\"{item['id']},{item['name']}\" for item in records)\n    return lines\n"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:bash"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "final": "Changed exporter output to CSV lines with a header."
+        }
+      ]
+    },
+    {
+      "id": "coding-dedupe-order-021",
+      "category": "bugfix",
+      "fixture_repo": "benchmarks/fixtures/coding_dedupe_order",
+      "prompt": "这是一个顺序保持 bugfix 任务。目标文件是 src/users.py，相关测试是 tests/test_users.py。请修复 unique_names(names)，让它去重但保留首次出现顺序。不要修改 tests/test_users.py。完成后应能通过 python -m pytest -q。",
+      "step_budget": 8,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "bash",
+        "git_diff"
+      ],
+      "expected": {
+        "must_pass_command": "python -m pytest -q",
+        "modified": [
+          "src/users.py"
+        ],
+        "not_modified": [
+          "tests/test_users.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "file_contains": [
+          {
+            "path": "src/users.py",
+            "text": "seen = set()"
+          }
+        ],
+        "tool_called": [
+          "read_file",
+          "edit_file",
+          "bash"
+        ]
+      },
+      "verifier": "coding_dedupe_order",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/users.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/users.py",
+            "old_text": "def unique_names(names):\n    return list(set(names))\n",
+            "new_text": "def unique_names(names):\n    seen = set()\n    result = []\n    for name in names:\n        if name in seen:\n            continue\n        seen.add(name)\n        result.append(name)\n    return result\n"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:bash"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "final": "Fixed de-duplication while preserving order."
+        }
+      ]
+    },
+    {
+      "id": "coding-type-fix-022",
+      "category": "bugfix",
+      "fixture_repo": "benchmarks/fixtures/coding_type_fix",
+      "prompt": "这是一个类型转换 bugfix 任务。目标文件是 src/coerce.py，相关测试是 tests/test_coerce.py。请修复 parse_bool(value)，让字符串 false 返回 False，字符串 true 返回 True，并保留 bool 输入原样返回。不要修改 tests/test_coerce.py。完成后应能通过 python -m pytest -q。",
+      "step_budget": 8,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "bash",
+        "git_diff"
+      ],
+      "expected": {
+        "must_pass_command": "python -m pytest -q",
+        "modified": [
+          "src/coerce.py"
+        ],
+        "not_modified": [
+          "tests/test_coerce.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "file_contains": [
+          {
+            "path": "src/coerce.py",
+            "text": "isinstance(value, bool)"
+          }
+        ],
+        "tool_called": [
+          "read_file",
+          "edit_file",
+          "bash"
+        ]
+      },
+      "verifier": "coding_type_fix",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/coerce.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/coerce.py",
+            "old_text": "def parse_bool(value):\n    return bool(value)\n",
+            "new_text": "def parse_bool(value):\n    if isinstance(value, bool):\n        return value\n    return str(value).strip().lower() in {\"1\", \"true\", \"yes\", \"on\"}\n"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:bash"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "final": "Fixed bool parsing for string inputs."
+        }
+      ]
+    },
+    {
+      "id": "coding-readme-sync-023",
+      "category": "docs",
+      "fixture_repo": "benchmarks/fixtures/coding_readme_sync",
+      "prompt": "这是一个 README 同步任务。源文件是 src/api.py，目标文档是 README.md。请根据 src/api.py 里的现有 API 为 README.md 补充 get_item(item_id) 的说明。不要修改 src/api.py，只更新 README.md。",
+      "step_budget": 6,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "git_diff"
+      ],
+      "expected": {
+        "modified": [
+          "README.md"
+        ],
+        "not_modified": [
+          "src/api.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "workspace.diff.written"
+        ],
+        "file_contains": [
+          {
+            "path": "README.md",
+            "text": "get_item(item_id)"
+          }
+        ],
+        "tool_called": [
+          "read_file",
+          "edit_file"
+        ]
+      },
+      "verifier": "coding_readme_sync",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/api.py"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "README.md"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "README.md",
+            "old_text": "- `list_items()` returns all item ids.",
+            "new_text": "- `list_items()` returns all item ids.\n- `get_item(item_id)` returns one item dictionary by id."
+          }
+        },
+        {
+          "final": "Synced README with get_item documentation."
+        }
+      ]
+    },
+    {
+      "id": "coding-context-trace-024",
+      "category": "observability",
+      "fixture_repo": "benchmarks/fixtures/coding_trace_metrics",
+      "prompt": "这是一个 trace observability 任务。目标文件是 src/message.py。请把 message() 的返回值从 before 改为 after。任务运行记录应包含 context.build.completed 和 workspace.diff.written 事件。",
+      "step_budget": 7,
+      "allowed_tools": [
+        "list_files",
+        "read_file",
+        "edit_file",
+        "git_diff"
+      ],
+      "expected": {
+        "modified": [
+          "src/message.py"
+        ],
+        "trace_events": [
+          "workspace.resolved",
+          "context.build.completed",
+          "workspace.diff.written"
+        ],
+        "file_contains": [
+          {
+            "path": "src/message.py",
+            "text": "after"
+          }
+        ],
+        "tool_called": [
+          "read_file",
+          "edit_file"
+        ]
+      },
+      "verifier": "coding_context_trace",
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/message.py"
+          }
+        },
+        {
+          "tool": "tool_search",
+          "args": {
+            "query": "select:edit_file"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/message.py",
+            "old_text": "return \"before\"",
+            "new_text": "return \"after\""
+          }
+        },
+        {
+          "tool": "git_diff",
+          "args": {
+            "path": "src/message.py"
+          }
+        },
+        {
+          "final": "Updated message.py and verified context trace emission."
+        }
+      ]
     }
   ]
 }

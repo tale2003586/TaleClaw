@@ -93,6 +93,7 @@ def build_trace_summary_payload(
     multi_agent = _multi_agent_summary(events)
     subagents = _subagent_summary(events)
     memory = _memory_summary(events)
+    security_rag = _security_rag_summary(events)
     perfectionism = _perfectionism_summary(events)
     timeline = _tool_timeline(events)
     execution_path = _execution_path(events, run_state)
@@ -126,6 +127,27 @@ def build_trace_summary_payload(
             "subagent_recovered_count": subagents["recovered_count"],
             "total_tokens": metrics.get("total_tokens", 0),
             "duration_ms": metrics.get("run_duration_ms", 0),
+            "context_builds": metrics.get("context_builds", 0),
+            "context_build_compressed_count": metrics.get(
+                "context_build_compressed_count",
+                0,
+            ),
+            "total_context_build_duration_ms": metrics.get(
+                "total_context_build_duration_ms",
+                0,
+            ),
+            "avg_context_build_duration_ms": metrics.get(
+                "avg_context_build_duration_ms",
+                0,
+            ),
+            "context_compression_ratio": metrics.get(
+                "context_compression_ratio",
+                1.0,
+            ),
+            "context_compression_savings_ratio": metrics.get(
+                "context_compression_savings_ratio",
+                0.0,
+            ),
         },
         "workspace": workspace,
         "tools": tool_summary,
@@ -133,6 +155,7 @@ def build_trace_summary_payload(
         "verification": verification,
         "multi_agent": multi_agent,
         "memory": memory,
+        "security_rag": security_rag,
         "execution_path": execution_path,
         "timeline": timeline,
     }
@@ -147,6 +170,7 @@ def render_trace_summary_markdown(summary: dict[str, Any]) -> str:
     verification = summary.get("verification") or {}
     multi_agent = summary.get("multi_agent") or {}
     memory = summary.get("memory") or {}
+    security_rag = summary.get("security_rag") or {}
     lines = [
         "# Trace Summary",
         "",
@@ -184,6 +208,26 @@ def render_trace_summary_markdown(summary: dict[str, Any]) -> str:
         f"- Subagent Recovered: {_value(metrics.get('subagent_recovered_count'))}",
         f"- Tokens: {_value(metrics.get('total_tokens'))}",
         f"- Duration: {_value(metrics.get('duration_ms'))} ms",
+        f"- Context Builds: {_value(metrics.get('context_builds'))}",
+        f"- Compressed Context Builds: {_value(metrics.get('context_build_compressed_count'))}",
+        f"- Context Build Duration: {_value(metrics.get('total_context_build_duration_ms'))} ms total / {_value(metrics.get('avg_context_build_duration_ms'))} ms avg",
+        f"- Context Compression Ratio: {_value(metrics.get('context_compression_ratio'))}",
+        f"- Context Compression Savings: {_value(metrics.get('context_compression_savings_ratio'))}",
+        "",
+        "## Security RAG",
+        "",
+        f"- Requests: {_value(security_rag.get('requests'))}",
+        f"- Completed: {_value(security_rag.get('completed'))}",
+        f"- Failed: {_value(security_rag.get('failed'))}",
+        f"- Searches: {_value(security_rag.get('searches'))}",
+        f"- Rerank Searches: {_value(security_rag.get('rerank_searches'))}",
+        f"- Rewrite Count: {_value(security_rag.get('rewrite_count'))}",
+        f"- Hit Count: {_value(security_rag.get('hit_count'))}",
+        f"- Actions: `{_value(_counts_text(security_rag.get('actions') or {}))}`",
+        f"- Routes: `{_value(_counts_text(security_rag.get('routes') or {}))}`",
+        f"- Last Query: `{_value(security_rag.get('last_query'))}`",
+        f"- Last Action: `{_value(security_rag.get('last_action'))}`",
+        f"- Last Hit Count: {_value(security_rag.get('last_hit_count'))}",
         "",
         "## Workspace",
         "",
@@ -488,6 +532,89 @@ def _memory_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _security_rag_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
+    requests = 0
+    completed = 0
+    failed = 0
+    searches = 0
+    failed_searches = 0
+    rerank_searches = 0
+    rewrite_count = 0
+    hit_count = 0
+    total_latency_ms = 0.0
+    sources: dict[str, int] = {}
+    actions: dict[str, int] = {}
+    routes: dict[str, int] = {}
+    stages: dict[str, int] = {}
+    last_query = ""
+    last_action = ""
+    last_hit_count = 0
+    for event in events:
+        name = str(event.get("event") or "")
+        if not name.startswith("security.rag."):
+            continue
+        payload = event.get("payload") or {}
+        source = str(payload.get("source") or "")
+        if source:
+            sources[source] = sources.get(source, 0) + 1
+        if name == "security.rag.started":
+            requests += 1
+            last_query = str(payload.get("query") or last_query)
+        elif name == "security.rag.completed":
+            completed += 1
+            action = str(payload.get("action") or "")
+            route = str(payload.get("route") or "")
+            if not route:
+                decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
+                route = str(decision.get("route") or "")
+            if action:
+                actions[action] = actions.get(action, 0) + 1
+            if route:
+                routes[route] = routes.get(route, 0) + 1
+            if payload.get("query_rewritten"):
+                rewrite_count += 1
+            hits = _int(payload.get("hit_count"))
+            hit_count += hits
+            last_query = str(payload.get("query") or last_query)
+            last_action = action
+            last_hit_count = hits
+            latency = payload.get("latency_ms") if isinstance(payload.get("latency_ms"), dict) else {}
+            total_latency_ms += _float(latency.get("total"))
+        elif name == "security.rag.failed":
+            failed += 1
+            last_query = str(payload.get("query") or last_query)
+        elif name == "security.rag.search.completed":
+            searches += 1
+            stage = str(payload.get("stage") or "")
+            if stage:
+                stages[stage] = stages.get(stage, 0) + 1
+            if payload.get("reranker_enabled"):
+                rerank_searches += 1
+        elif name == "security.rag.search.failed":
+            failed_searches += 1
+            stage = str(payload.get("stage") or "")
+            if stage:
+                stages[stage] = stages.get(stage, 0) + 1
+    return {
+        "requests": requests,
+        "completed": completed,
+        "failed": failed,
+        "searches": searches,
+        "failed_searches": failed_searches,
+        "rerank_searches": rerank_searches,
+        "rewrite_count": rewrite_count,
+        "hit_count": hit_count,
+        "total_latency_ms": round(total_latency_ms, 3),
+        "sources": sources,
+        "actions": actions,
+        "routes": routes,
+        "stages": stages,
+        "last_query": last_query,
+        "last_action": last_action,
+        "last_hit_count": last_hit_count,
+    }
+
+
 def _tool_timeline(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     timeline = []
     for event in events:
@@ -716,11 +843,29 @@ def _value(value: Any) -> str:
     return str(value)
 
 
+def _counts_text(counts: dict[str, Any]) -> str:
+    if not counts:
+        return ""
+    return ", ".join(
+        f"{key}:{counts[key]}"
+        for key in sorted(counts, key=lambda item: str(item))
+    )
+
+
 def _int(value: Any, *, default: int = 0) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _float(value: Any, *, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return float(default)
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def _escape(value: Any) -> str:

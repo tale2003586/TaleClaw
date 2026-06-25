@@ -6,6 +6,8 @@ ARG PIP_EXTRA_INDEX_URL=
 ARG PIP_TRUSTED_HOST=
 ARG PIP_DEFAULT_TIMEOUT=180
 ARG PIP_RETRIES=10
+ARG REQUIREMENTS_FILE=requirements-deploy.txt
+ARG INSTALL_RAG_DEPS=0
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -14,16 +16,27 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST} \
     PIP_DEFAULT_TIMEOUT=${PIP_DEFAULT_TIMEOUT} \
     PIP_RETRIES=${PIP_RETRIES} \
+    RAG_ENABLED=0 \
+    HISTORY_VECTOR_ENABLED=0 \
+    SECURITY_RAG_AUTO_CONTEXT_ENABLED=0 \
+    SECURITY_RAG_PLUGIN_ENABLED=0 \
     USE_LOCAL_PROXY=0
 
 WORKDIR /app
 
-COPY requirements.txt ./
+COPY requirements*.txt ./
 RUN python -m pip install \
     --prefer-binary \
     --timeout "${PIP_DEFAULT_TIMEOUT}" \
     --retries "${PIP_RETRIES}" \
-    -r requirements.txt
+    -r "${REQUIREMENTS_FILE}" \
+    && if [ "${INSTALL_RAG_DEPS}" = "1" ]; then \
+        python -m pip install \
+          --prefer-binary \
+          --timeout "${PIP_DEFAULT_TIMEOUT}" \
+          --retries "${PIP_RETRIES}" \
+          -r requirements-rag.txt; \
+    fi
 
 COPY . .
 

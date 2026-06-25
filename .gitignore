@@ -19,7 +19,8 @@ postgres_data/
 
 # Local model caches / downloaded weights.
 # Keep the tracked Python package under models/, but do not add downloaded models.
-models/bge-m3/
+models/bge-*/
+models/bge_*/
 models/*/.cache/
 models/**/.cache/
 *.safetensors

@@ -10,6 +10,7 @@ from typing import Any
 
 WORKING_MEMORY_METADATA_KEY = "working_memory"
 WORKING_MEMORY_RESUME_REQUESTED_KEY = "working_memory_resume_requested"
+STEP_CHECKPOINT_HISTORY_LIMIT = 50
 
 STATUS_RUNNING = "running"
 STATUS_SUSPENDED = "suspended"
@@ -36,6 +37,7 @@ class WorkingMemory:
     completed_units: list[dict[str, Any]] = field(default_factory=list)
     pending_units: list[dict[str, Any]] = field(default_factory=list)
     archived_findings: dict[str, Any] = field(default_factory=dict)
+    step_checkpoints: list[dict[str, Any]] = field(default_factory=list)
     last_checkpoint_step: int = 0
     status: str = STATUS_RUNNING
     updated_at: str = field(default_factory=_now_iso)
@@ -59,6 +61,7 @@ class WorkingMemory:
                 if isinstance(payload.get("archived_findings"), dict)
                 else {}
             ),
+            step_checkpoints=_list_of_dicts(payload.get("step_checkpoints")),
             last_checkpoint_step=_int(payload.get("last_checkpoint_step"), 0),
             status=str(payload.get("status") or STATUS_RUNNING),
             updated_at=str(payload.get("updated_at") or _now_iso()),
@@ -228,6 +231,42 @@ def checkpoint_subtask_results(
     return save_working_memory(session, memory)
 
 
+def checkpoint_reasoning_step(
+    session,
+    *,
+    step: int,
+    phase: str,
+    message_count: int | None = None,
+    assistant_summary: str = "",
+    tool_calls: list[dict[str, Any]] | None = None,
+    tool_results: list[dict[str, Any]] | None = None,
+    note: str = "",
+) -> WorkingMemory:
+    memory = _ensure_memory(session)
+    step_value = _int(step, 0)
+    if step_value > 0:
+        memory.last_checkpoint_step = max(memory.last_checkpoint_step, step_value)
+    memory.status = STATUS_RUNNING
+    checkpoint = {
+        "step": step_value,
+        "phase": str(phase or ""),
+        "message_count": _int(message_count, 0) if message_count is not None else None,
+        "assistant_summary": _clip(assistant_summary, 1000),
+        "tool_calls": _compact_tool_calls(tool_calls or []),
+        "tool_results": _compact_tool_results(tool_results or []),
+        "note": _clip(note, 500),
+        "timestamp": _now_iso(),
+    }
+    checkpoint = {
+        key: value
+        for key, value in checkpoint.items()
+        if value not in (None, "", [])
+    }
+    _upsert_step_checkpoint(memory, checkpoint)
+    memory.archived_findings["last_reasoning_step"] = checkpoint
+    return save_working_memory(session, memory)
+
+
 def checkpoint_turn_stopped(
     session,
     *,
@@ -337,6 +376,20 @@ def render_working_memory_block(session) -> str:
         lines.extend(["", "归档发现:"])
         for key, value in list(memory.archived_findings.items())[:12]:
             lines.append(f"- {key}: {_clip(json.dumps(value, ensure_ascii=False, default=str), 900)}")
+    if memory.step_checkpoints:
+        lines.extend(["", "最近 reasoning step 检查点:"])
+        for item in memory.step_checkpoints[-8:]:
+            tool_names = ", ".join(
+                str(tool.get("name") or "")
+                for tool in item.get("tool_calls", [])
+                if tool.get("name")
+            )
+            suffix = f" tools={tool_names}" if tool_names else ""
+            summary = item.get("assistant_summary") or item.get("note") or ""
+            lines.append(
+                f"- step {item.get('step')} phase={item.get('phase')}{suffix}"
+                f" {summary}".rstrip()
+            )
     lines.extend([
         "</working-memory>",
         "",
@@ -394,6 +447,55 @@ def _remove_pending(memory: WorkingMemory, unit_id: str) -> None:
         for unit in memory.pending_units
         if str(unit.get("unit_id") or "") != unit_id
     ]
+
+
+def _upsert_step_checkpoint(memory: WorkingMemory, checkpoint: dict[str, Any]) -> None:
+    step = _int(checkpoint.get("step"), 0)
+    phase = str(checkpoint.get("phase") or "")
+    for index, existing in enumerate(memory.step_checkpoints):
+        if _int(existing.get("step"), 0) == step and str(existing.get("phase") or "") == phase:
+            merged = dict(existing)
+            merged.update(checkpoint)
+            memory.step_checkpoints[index] = merged
+            break
+    else:
+        memory.step_checkpoints.append(checkpoint)
+    if len(memory.step_checkpoints) > STEP_CHECKPOINT_HISTORY_LIMIT:
+        memory.step_checkpoints = memory.step_checkpoints[-STEP_CHECKPOINT_HISTORY_LIMIT:]
+
+
+def _compact_tool_calls(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compacted = []
+    for call in calls[:12]:
+        if not isinstance(call, dict):
+            continue
+        compacted.append({
+            key: value
+            for key, value in {
+                "id": str(call.get("id") or ""),
+                "name": str(call.get("name") or ""),
+                "arguments_preview": _preview(call.get("arguments_preview", call.get("arguments"))),
+            }.items()
+            if value
+        })
+    return compacted
+
+
+def _compact_tool_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compacted = []
+    for result in results[:12]:
+        if not isinstance(result, dict):
+            continue
+        compacted.append({
+            key: value
+            for key, value in {
+                "name": str(result.get("name") or ""),
+                "status": str(result.get("status") or ""),
+                "output_preview": _preview(result.get("output")),
+            }.items()
+            if value
+        })
+    return compacted
 
 
 def _archive_payload(task: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
@@ -517,6 +619,14 @@ def _clip(value: Any, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def _preview(value: Any, limit: int = 500) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return _clip(value, limit)
+    return _clip(json.dumps(value, ensure_ascii=False, default=str), limit)
 
 
 def _xml_attr(value: Any) -> str:

@@ -1,0 +1,111 @@
+%%
+%% Copyright (c) 2018-2020 Weitian LI <wt@liwt.net>
+%% CC BY 4.0 License
+%%
+%% Created: 2026.06.17
+%%
+
+% Chinese version
+\documentclass[zh]{resume}
+
+% File information shown at the footer of the last page
+\fileinfo{}
+
+\name{荣奇}{贺}
+
+% \tagline{\texorpdfstring{\icon{\faBinoculars} }{}<position-to-look-for>}
+% \tagline{<current-position>}
+
+% \photo[
+%   shape=<circular|square>,    % default is circular
+%   position=<left|right>,      % default is left
+% ]{<width>}{<filename>}
+% Example:
+% \photo[shape=square]{5.5em}{photo}
+
+\profile{
+  \mobile{18764331061}
+  \email{a2439082470@163.com}
+  \university{哈尔滨工业大学}
+  \degree{电子信息-计算机技术 \textbullet 硕士}
+  \iconlink{\faGithub}{https://github.com/tale2003586/TaleClaw}{GitHub: TaleClaw}
+  % Custom information:
+  % \icontext{<icon>}{<text>}
+  % \iconlink{<icon>}{<link>}{<text>}
+}
+
+\begin{document}
+\makeheader
+
+%======================================================================
+% Summary & Objectives
+%======================================================================
+\begin{abstract}
+求职方向：AI Agent / 大模型应用开发 / RAG 工程化实习；一周内到岗，每周 5 天，至少 3 个月。哈尔滨工业大学计算机技术硕士在读，预计 2028 年 3 月毕业。主攻 AI Agent 与大模型应用工程，具备 Python 后端与 Java 基础；独立开发 AI Agent Runtime，覆盖多入口接入、模型路由、工具调用、上下文预算、记忆管理、RAG 接入与 trace/metrics/report 可观测链路，并在其上构建 Coding Agent 与代码安全 RAG 知识库。
+\end{abstract}
+
+%======================================================================
+\sectionTitle{专业技能}{\faWrench}
+%======================================================================
+\begin{itemize}
+\item \textbf{编程与后端}: Python、pytest、FastAPI；具备 Java / Spring Boot 基础，熟悉 Git、Linux、Docker。
+\item \textbf{Agent 工程}: Tool Use / Function Calling、工具注册与权限边界、上下文预算、长期记忆 / 工作记忆、trace/metrics/report 可观测链路。
+\item \textbf{RAG 与检索}: Qdrant、BGE-M3 embedding、hybrid search、RRF、reranker、结构化切片、查询路由与 Agent 自动上下文注入。
+\end{itemize}
+
+%======================================================================
+\sectionTitle{教育背景}{\faGraduationCap}
+%======================================================================
+
+\begin{itemize}
+
+  \item \textbf{哈尔滨工业大学}
+        \quad 计算学部
+        \quad 计算机技术
+        \quad 硕士
+        \hfill 2025.08 -- 2028.03（预计）
+
+  \item \textbf{哈尔滨工业大学}
+        \quad 计算学部
+        \quad 数据科学与大数据技术
+        \quad 学士
+        \hfill 2021.08 -- 2025.08
+
+
+\end{itemize}
+
+%======================================================================
+\sectionTitle{项目经历}{\faCode}
+%======================================================================
+\begin{itemize}
+\item \textbf{自研 LLM Agent Runtime（Agent Harness、可控工具、可观测执行与记忆管理）} 
+\begin{itemize}
+\item \textbf{项目概述}: 从零实现支持 CLI / Web / Telegram 等多入口的 AI Agent Runtime，统一管理会话、模型路由、工具执行、记忆生命周期、插件扩展与 trace/metrics/report 记录，支撑 Coding Agent 与 RAG 系统复用；核心代码约 36K 行，公开测试 316 个用例通过，GitHub: https://github.com/tale2003586/TaleClaw
+\item \textbf{生命周期拆分}: 将单轮执行拆分为 before\_turn、before\_reasoning、reasoning step、tool execution、after\_turn 等阶段，在上下文构建、工具目录注入、RAG 自动注入、工具前后置 hook、记忆写回等节点提供稳定扩展点，使插件和工具能按运行阶段插入，而不是堆叠在 prompt 中。
+\item \textbf{工具调用治理}: 设计工具注册、可见性控制、权限裁决与执行前后 hook 链路，统一管理工具 schema、handler、风险等级和可用模式；对工具可见性、工作区路径、写文件范围等进行执行前校验，降低误写工作区、越权调用和无关工具暴露风险。
+\item \textbf{可观测链路}: 记录上下文构建、模型调用、工具调用、失败原因、token 与耗时等事件，输出 trace.jsonl、metrics 与任务 report，用于复盘执行路径、定位工具失败和分析上下文压缩影响。
+\item \textbf{上下文与记忆管理}: 将系统提示、历史消息、当前请求、长期记忆、工作记忆和检索结果拆成独立 section 管理上下文预算，保护当前 turn 与最近工具结果；记忆系统通过候选抽取、相似记忆匹配、证据次数 / 置信度累计实现长期记忆晋升。
+\end{itemize}
+
+\item \textbf{多层编排 Coding Agent（面向真实仓库的理解、修改与验证）} 
+\begin{itemize}
+    \item \textbf{项目概述}: 基于自研 Runtime 构建面向真实代码仓库的 Coding Agent，支持需求理解、代码定位、Bug 修复、功能添加、验证命令执行和结果总结，形成“读仓库 $\rightarrow$ 改实现 $\rightarrow$ 跑验证 $\rightarrow$ 输出报告”的闭环。
+    \item \textbf{任务隔离}: 为每个 coding 请求创建独立 task session，绑定本地仓库并记录修改前后的 workspace diff；中间推理过程与主会话隔离，最终仅同步结果、证据和任务日志。
+    \item \textbf{多 Agent 协作}: 设计 Lead / Teammate / Subagent 多角色机制，Lead 负责规划与汇总，Teammate 处理需要持续上下文的复杂任务，Subagent 处理 scope 明确的短任务；通过 scope 校验、工具白名单和失败原因回传减少越界探索。
+    \item \textbf{可恢复与评测}: 引入 checkpoint 保存已完成线索、待处理线索、失败原因和证据，支持中断后继续任务；自研 benchmark harness，使用隔离 workspace 和 verifier 检查真实文件修改结果。
+    \item \textbf{真实仓库验证}: 在当前仓库完成 Web Trace/Runs 页面跳转入口改动，修改 index.html 与 styles.css，并通过 tests/test\_run\_trace.py、tests/test\_multi\_user\_isolation.py 共 24 个相关测试。
+
+\end{itemize}
+
+\item \textbf{代码安全 RAG 系统（面向代码审查与修复建议的知识服务）} 
+\begin{itemize}
+    \item \textbf{项目概述}: 构建面向代码审查与修复建议的安全 RAG 系统，为 Coding Agent 提供代码风险、漏洞依据和修复建议，降低模型仅凭常识生成安全结论的风险。
+    \item \textbf{知识库构建}: 面向约 6GB 原始安全资料构建索引，解析安全公告、漏洞模式与 Semgrep SAST 规则，生成约 70 万个可追溯 chunk，并保留 CVE、CWE、severity、package、rule id、language 等元数据。
+    \item \textbf{检索质量优化}: 基于 BGE-M3 embedding 做语义召回，结合 hybrid search、RRF 与 reranker 对候选证据精排；引入查询路由判断是否需要注入安全知识，并将检索决策、命中文档和注入内容写入 trace，便于评估召回质量和定位错误回答来源。
+\end{itemize}
+
+\end{itemize}
+
+
+
+\end{document}

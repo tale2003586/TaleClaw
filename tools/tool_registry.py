@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import inspect
 import json
 from typing import Callable, Any
 
@@ -189,9 +190,11 @@ class ToolRegistry:
             handler_args = dict(args)
             if tool.session_scoped or name in SESSION_SCOPED_TOOLS:
                 handler_args["_session"] = session
-            if name in {"task", "parallel_tasks"}:
+            if _handler_accepts_keyword(tool.handler, "_trace_store"):
                 handler_args["_trace_store"] = trace_store
+            if _handler_accepts_keyword(tool.handler, "_run_state"):
                 handler_args["_run_state"] = run_state
+            if _handler_accepts_keyword(tool.handler, "_parent_span_id"):
                 handler_args["_parent_span_id"] = parent_span_id
             return tool.handler(**handler_args)
         except Exception as e:
@@ -277,6 +280,17 @@ class ToolRegistry:
         if tool is None:
             return ""
         return tool.schema["function"].get("description", "")
+
+
+def _handler_accepts_keyword(handler: Callable[..., Any], name: str) -> bool:
+    try:
+        signature = inspect.signature(handler)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+    return name in signature.parameters
 
 
 from .schema import LEAD_TOOLS, SEARCH_TOOLS, TEAMMATE_TOOLS

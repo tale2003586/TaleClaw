@@ -15,6 +15,7 @@ from knowledge.chunking import ChunkingRouter
 from knowledge.chunking.base import KnowledgeChunk
 from memory.embeddings import (
     BgeM3EmbeddingProvider,
+    CachedEmbeddingProvider,
     EmbeddingProvider,
     FastEmbedProvider,
     HashEmbeddingProvider,
@@ -70,7 +71,7 @@ class SecurityKnowledgeIndex:
         hybrid_enabled: bool = False,
         sparse_embeddings: EmbeddingProvider | None = None,
         reranker: Any = None,
-        reranker_candidates: int = 30,
+        reranker_candidates: int = 12,
     ) -> None:
         try:
             from qdrant_client import QdrantClient
@@ -98,7 +99,7 @@ class SecurityKnowledgeIndex:
         self.sparse_embeddings = sparse_embeddings or embeddings
         self.hybrid_enabled = bool(hybrid_enabled)
         self.reranker = reranker
-        self.reranker_candidates = max(1, int(reranker_candidates or 30))
+        self.reranker_candidates = max(1, int(reranker_candidates or 12))
         self._client = QdrantClient(
             url=url,
             api_key=api_key or None,
@@ -178,6 +179,7 @@ class SecurityKnowledgeIndex:
         top_k: int = 6,
         min_score: float = 0.0,
         use_reranker: bool | None = None,
+        retrieval_mode: str | None = None,
         source_type: str | None = None,
         severity: str | list[str] | None = None,
         language: str | None = None,
@@ -193,32 +195,50 @@ class SecurityKnowledgeIndex:
         )
         timings: dict[str, float] = {}
         started = time.perf_counter()
+        mode = _retrieval_mode(retrieval_mode, hybrid_enabled=self.hybrid_enabled)
         try:
-            if self.hybrid_enabled:
-                points = self._query_points_hybrid(
-                    query=query,
+            if mode == "hybrid" and self.hybrid_enabled:
+                dense_embed_started = time.perf_counter()
+                dense = self.embeddings.embed_dense(query)
+                timings["embedding_dense"] = _elapsed_ms(dense_embed_started)
+                sparse_embed_started = time.perf_counter()
+                sparse = self._to_qdrant_sparse(self._sparse_embeddings().embed_sparse(query))
+                timings["embedding_sparse"] = _elapsed_ms(sparse_embed_started)
+                qdrant_started = time.perf_counter()
+                points = self._query_points_hybrid_vectors(
+                    dense=dense,
+                    sparse=sparse,
                     limit=candidate_limit,
                     query_filter=query_filter,
                 )
+                timings["qdrant_hybrid"] = _elapsed_ms(qdrant_started)
                 timings["hybrid_search"] = _elapsed_ms(started)
             else:
+                embed_started = time.perf_counter()
                 vector = self.embeddings.embed_dense(query)
+                timings["embedding_dense"] = _elapsed_ms(embed_started)
+                qdrant_started = time.perf_counter()
                 points = self._query_points_dense(
                     vector=vector,
                     limit=candidate_limit,
                     query_filter=query_filter,
                 )
+                timings["qdrant_dense"] = _elapsed_ms(qdrant_started)
                 timings["dense_search"] = _elapsed_ms(started)
         except Exception:
-            if not self.hybrid_enabled:
+            if mode != "hybrid" or not self.hybrid_enabled:
                 raise
             fallback_started = time.perf_counter()
+            embed_started = time.perf_counter()
             vector = self.embeddings.embed_dense(query)
+            timings["embedding_dense"] = _elapsed_ms(embed_started)
+            qdrant_started = time.perf_counter()
             points = self._query_points_dense(
                 vector=vector,
                 limit=candidate_limit,
                 query_filter=query_filter,
             )
+            timings["qdrant_dense"] = _elapsed_ms(qdrant_started)
             timings["hybrid_fallback_dense"] = _elapsed_ms(fallback_started)
 
         hits = [
@@ -240,6 +260,7 @@ class SecurityKnowledgeIndex:
         if trace_callback is not None:
             trace_callback({
                 "query": query,
+                "retrieval_mode": mode,
                 "hybrid_enabled": self.hybrid_enabled,
                 "reranker_enabled": should_rerank,
                 "candidate_count": len(hits),
@@ -250,14 +271,27 @@ class SecurityKnowledgeIndex:
 
     def _query_points_dense(self, *, vector: list[float], limit: int, query_filter=None):
         if hasattr(self._client, "query_points"):
-            response = self._client.query_points(
-                collection_name=self.collection,
-                query=vector,
-                using="dense" if self.hybrid_enabled else None,
-                with_payload=True,
-                limit=limit,
-                query_filter=query_filter,
-            )
+            using = "dense" if self.hybrid_enabled else None
+            try:
+                response = self._client.query_points(
+                    collection_name=self.collection,
+                    query=vector,
+                    using=using,
+                    with_payload=True,
+                    limit=limit,
+                    query_filter=query_filter,
+                )
+            except Exception as exc:
+                if not using or not _missing_named_vector_error(exc):
+                    raise
+                response = self._client.query_points(
+                    collection_name=self.collection,
+                    query=vector,
+                    using=None,
+                    with_payload=True,
+                    limit=limit,
+                    query_filter=query_filter,
+                )
             return list(getattr(response, "points", []) or [])
         return list(
             self._client.search(
@@ -272,6 +306,14 @@ class SecurityKnowledgeIndex:
     def _query_points_hybrid(self, *, query: str, limit: int, query_filter=None):
         dense = self.embeddings.embed_dense(query)
         sparse = self._to_qdrant_sparse(self._sparse_embeddings().embed_sparse(query))
+        return self._query_points_hybrid_vectors(
+            dense=dense,
+            sparse=sparse,
+            limit=limit,
+            query_filter=query_filter,
+        )
+
+    def _query_points_hybrid_vectors(self, *, dense: list[float], sparse, limit: int, query_filter=None):
         response = self._client.query_points(
             collection_name=self.collection,
             prefetch=[
@@ -418,7 +460,7 @@ def build_security_index_from_env(
         distance=os.getenv("SECURITY_RAG_DISTANCE", os.getenv("QDRANT_DISTANCE", "Cosine")).strip(),
         hybrid_enabled=_env_bool("SECURITY_RAG_HYBRID_ENABLED", False),
         reranker=_build_reranker_from_env(),
-        reranker_candidates=_env_int("SECURITY_RAG_RERANKER_CANDIDATES", 30),
+        reranker_candidates=_env_int("SECURITY_RAG_RERANKER_CANDIDATES", 12),
     )
     if _env_bool("SECURITY_RAG_CACHE_ENABLED", True):
         return CachedSecurityIndex(
@@ -431,28 +473,39 @@ def build_security_index_from_env(
 
 def build_security_embedding_provider_from_env() -> EmbeddingProvider:
     provider = os.getenv("SECURITY_RAG_EMBEDDING_PROVIDER", "fastembed").strip().lower()
+    cache_enabled = _env_bool("SECURITY_RAG_EMBEDDING_CACHE_ENABLED", True)
+    cache_size = _env_int("SECURITY_RAG_EMBEDDING_CACHE_MAX_SIZE", 2048)
+    cache_ttl = _env_int("SECURITY_RAG_EMBEDDING_CACHE_TTL_SECONDS", 3600)
+    def maybe_cache(inner: EmbeddingProvider) -> EmbeddingProvider:
+        if not cache_enabled:
+            return inner
+        return CachedEmbeddingProvider(inner, max_size=cache_size, ttl_seconds=cache_ttl)
     if provider == "fastembed":
         model = os.getenv("SECURITY_RAG_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5").strip()
-        return FastEmbedProvider(model)
+        return maybe_cache(FastEmbedProvider(model))
     dimensions = _env_int("SECURITY_RAG_VECTOR_SIZE", _env_int("QDRANT_VECTOR_SIZE", 512))
     if provider in {"bge_m3", "bge-m3", "flagembedding"}:
         model = os.getenv("SECURITY_RAG_EMBEDDING_MODEL", "BAAI/bge-m3").strip() or "BAAI/bge-m3"
-        return BgeM3EmbeddingProvider(
-            model,
-            dimensions=dimensions,
-            use_fp16=_env_bool("SECURITY_RAG_EMBEDDING_USE_FP16", True),
-            max_length=_env_int("SECURITY_RAG_EMBEDDING_MAX_LENGTH", 8192),
-            devices=(
-                _env_text(
-                    "SECURITY_RAG_EMBEDDING_DEVICE",
-                    _env_text("EMBEDDING_DEVICE", ""),
-                )
-                or None
-            ),
+        return maybe_cache(
+            BgeM3EmbeddingProvider(
+                model,
+                dimensions=dimensions,
+                use_fp16=_env_bool("SECURITY_RAG_EMBEDDING_USE_FP16", True),
+                max_length=_env_int("SECURITY_RAG_EMBEDDING_MAX_LENGTH", 8192),
+                devices=(
+                    _env_text(
+                        "SECURITY_RAG_EMBEDDING_DEVICE",
+                        _env_text("EMBEDDING_DEVICE", ""),
+                    )
+                    or None
+                ),
+            )
         )
-    return HashEmbeddingProvider(
-        dimensions=dimensions,
-        sparse_dimensions=_env_int("SECURITY_RAG_SPARSE_HASH_SIZE", 1_048_576),
+    return maybe_cache(
+        HashEmbeddingProvider(
+            dimensions=dimensions,
+            sparse_dimensions=_env_int("SECURITY_RAG_SPARSE_HASH_SIZE", 1_048_576),
+        )
     )
 
 
@@ -505,6 +558,25 @@ def _build_reranker_from_env():
             "BAAI/bge-reranker-v2-m3",
         ).strip() or "BAAI/bge-reranker-v2-m3",
         use_fp16=_env_bool("SECURITY_RAG_RERANKER_USE_FP16", True),
+        max_chars=_env_int("SECURITY_RAG_RERANKER_MAX_CHARS", 1200),
+    )
+
+
+def _retrieval_mode(value: str | None, *, hybrid_enabled: bool) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"dense", "vector"}:
+        return "dense"
+    if normalized in {"hybrid", "rrf"} and hybrid_enabled:
+        return "hybrid"
+    return "hybrid" if hybrid_enabled else "dense"
+
+
+def _missing_named_vector_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "not existing vector name" in message
+        or "wrong input: vector params for" in message
+        or "named vectors" in message and "not found" in message
     )
 
 

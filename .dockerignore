@@ -11,10 +11,13 @@ __pycache__
 .transcripts
 .scheduler
 .gateway
+.evals
+.runs
 .users
 storage
 qdrant_storage
 postgres_data
+models/bge-*
 .agents
 .codex
 .vscode

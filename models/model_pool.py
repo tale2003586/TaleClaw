@@ -31,6 +31,11 @@ DEFAULT_PROVIDER_SETTINGS = {
         "model": "gemini-3.5-flash",
         "max_tokens_param": "max_tokens",
     },
+    "glm47": {
+        "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+        "model": "glm-4.7-flash",
+        "max_tokens_param": "max_tokens",
+    },
 }
 
 PURPOSE_ALIASES = {
@@ -50,6 +55,7 @@ ROUTE_ENV_NAMES = {
     "teammate": "LLM_ROUTE_TEAMMATE",
     "reflection": "LLM_ROUTE_REFLECTION",
     "task_conclusion": "LLM_ROUTE_TASK_CONCLUSION",
+    "security_router": "LLM_ROUTE_SECURITY_ROUTER",
 }
 
 

@@ -1,3 +1,4 @@
+import inspect
 import math
 import time
 from dataclasses import asdict, dataclass, field
@@ -26,7 +27,9 @@ from runtime.trace.events import (
     TOOL_CALL_STARTED,
 )
 from runtime.trace.trace_store import event_preview
+from runtime.trace.context_metrics import context_build_metrics_from_report
 from runtime.working_memory import (
+    checkpoint_reasoning_step,
     checkpoint_turn_stopped,
     complete_working_memory,
     partial_summary,
@@ -85,6 +88,7 @@ class ReasoningLoop:
         reflection_agent=None,
         on_text: Callable[[str], None] | None = None,
         cancel_requested: Callable[[], bool] | None = None,
+        checkpoint_callback: Callable | None = None,
         run_state=None,
         trace_store=None,
         trace_parent_span_id: str | None = None,
@@ -109,6 +113,7 @@ class ReasoningLoop:
                     run_state=run_state,
                     trace_store=trace_store,
                     reasoning_step=reasoning_steps,
+                    checkpoint_callback=checkpoint_callback,
                 )
                 return
 
@@ -131,6 +136,7 @@ class ReasoningLoop:
                     run_state=run_state,
                     trace_store=trace_store,
                     reasoning_step=reasoning_steps,
+                    checkpoint_callback=checkpoint_callback,
                 )
                 return
             if run_state is not None:
@@ -142,6 +148,14 @@ class ReasoningLoop:
                 reasoning_steps,
                 trace_store=trace_store,
                 run_state=run_state,
+            )
+            self._checkpoint_reasoning_step(
+                session,
+                profile,
+                step=reasoning_steps,
+                phase="started",
+                message_count=len(session.messages),
+                checkpoint_callback=checkpoint_callback,
             )
             self._trace(trace_store, run_state, "reasoning_step_started", {
                 "step": reasoning_steps,
@@ -173,21 +187,35 @@ class ReasoningLoop:
                 span_id=context_span_id,
                 parent_span_id=step_span_id,
             )
-            turn_context = build_context(session, profile)
+            turn_context = _call_build_context(
+                build_context,
+                session,
+                profile,
+                trace_store=trace_store,
+                run_state=run_state,
+                trace_parent_span_id=context_span_id,
+                reasoning_step=reasoning_steps,
+            )
             context_messages = getattr(turn_context, "messages", [])
             context_report = _context_report_payload(
                 getattr(turn_context, "report", None)
+            )
+            context_duration_ms = _elapsed_ms(context_started)
+            context_metrics = context_build_metrics_from_report(
+                context_report,
+                duration_ms=context_duration_ms,
             )
             self._trace(
                 trace_store,
                 run_state,
                 CONTEXT_BUILD_COMPLETED,
                 {
-                    "duration_ms": _elapsed_ms(context_started),
+                    "duration_ms": context_duration_ms,
                     "message_count_before": len(session.messages),
                     "message_count_after": len(context_messages),
                     "context_summary": _context_summary(context_messages),
                     "context_report": context_report,
+                    "context_metrics": context_metrics,
                 },
                 step=reasoning_steps,
                 span_id=context_span_id,
@@ -203,10 +231,20 @@ class ReasoningLoop:
                 run_state=run_state,
                 trace_store=trace_store,
                 reasoning_step=reasoning_steps,
+                checkpoint_callback=checkpoint_callback,
             )
 
             if _is_empty_response(response):
                 empty_model_responses += 1
+                self._checkpoint_reasoning_step(
+                    session,
+                    profile,
+                    step=reasoning_steps,
+                    phase="empty_model_response",
+                    message_count=len(session.messages),
+                    note=f"empty_response_attempt={empty_model_responses}",
+                    checkpoint_callback=checkpoint_callback,
+                )
                 self._trace(
                     trace_store,
                     run_state,
@@ -234,6 +272,7 @@ class ReasoningLoop:
                         run_state=run_state,
                         trace_store=trace_store,
                         reasoning_step=reasoning_steps,
+                        checkpoint_callback=checkpoint_callback,
                     )
                     return
                 session.add_message(
@@ -254,8 +293,18 @@ class ReasoningLoop:
 
             empty_model_responses = 0
             self._after_reasoning_step(session, response)
+            tool_calls = _response_tool_calls_payload(response)
 
             if not response.tool_calls:
+                self._checkpoint_reasoning_step(
+                    session,
+                    profile,
+                    step=reasoning_steps,
+                    phase="assistant_final",
+                    message_count=len(session.messages),
+                    assistant_summary=response.content or "",
+                    checkpoint_callback=checkpoint_callback,
+                )
                 self._trace(
                     trace_store,
                     run_state,
@@ -276,6 +325,8 @@ class ReasoningLoop:
                     final_answer=response.content or "",
                     step=reasoning_steps,
                 )
+                if checkpoint_callback is not None:
+                    checkpoint_callback(session)
                 after_turn(session)
                 return
 
@@ -286,6 +337,17 @@ class ReasoningLoop:
                 run_state=run_state,
                 trace_store=trace_store,
                 reasoning_step=reasoning_steps,
+            )
+            self._checkpoint_reasoning_step(
+                session,
+                profile,
+                step=reasoning_steps,
+                phase="tools_executed",
+                message_count=len(session.messages),
+                assistant_summary=response.content or "",
+                tool_calls=tool_calls,
+                tool_results=execution.tool_results,
+                checkpoint_callback=checkpoint_callback,
             )
             self._trace(
                 trace_store,
@@ -321,6 +383,7 @@ class ReasoningLoop:
                     run_state=run_state,
                     trace_store=trace_store,
                     reasoning_step=reasoning_steps,
+                    checkpoint_callback=checkpoint_callback,
                 )
                 return
 
@@ -341,6 +404,7 @@ class ReasoningLoop:
                         run_state=run_state,
                         trace_store=trace_store,
                         reasoning_step=reasoning_steps,
+                        checkpoint_callback=checkpoint_callback,
                     )
                     return
 
@@ -355,6 +419,7 @@ class ReasoningLoop:
                 on_text=on_text,
                 run_state=run_state,
                 trace_store=trace_store,
+                checkpoint_callback=checkpoint_callback,
             ):
                 return
 
@@ -375,6 +440,7 @@ class ReasoningLoop:
         run_state=None,
         trace_store=None,
         reasoning_step: int = 0,
+        checkpoint_callback: Callable | None = None,
     ):
         provider, model = resolve_provider(session, profile)
         use_stream = on_text is not None and hasattr(provider, "stream_chat")
@@ -499,6 +565,15 @@ class ReasoningLoop:
                 span_id=span_id,
                 parent_span_id=parent_span_id,
             )
+            self._checkpoint_reasoning_step(
+                session,
+                profile,
+                step=reasoning_step,
+                phase="model_error",
+                message_count=len(session.messages),
+                note=f"{type(exc).__name__}: {exc}",
+                checkpoint_callback=checkpoint_callback,
+            )
             raise
         if on_text is not None and not use_stream and response.content:
             on_text(response.content)
@@ -541,6 +616,37 @@ class ReasoningLoop:
             "tool_call_count": len(response.tool_calls),
         })
         return response
+
+    def _checkpoint_reasoning_step(
+        self,
+        session,
+        profile,
+        *,
+        step: int,
+        phase: str,
+        message_count: int | None = None,
+        assistant_summary: str = "",
+        tool_calls: list[dict] | None = None,
+        tool_results: list[dict] | None = None,
+        note: str = "",
+        checkpoint_callback: Callable | None = None,
+    ) -> None:
+        if not WORKING_MEMORY_CHECKPOINT_ENABLED:
+            return
+        if str(getattr(profile, "tool_mode", "") or "") != "coding":
+            return
+        checkpoint_reasoning_step(
+            session,
+            step=step,
+            phase=phase,
+            message_count=message_count,
+            assistant_summary=assistant_summary,
+            tool_calls=tool_calls,
+            tool_results=tool_results,
+            note=note,
+        )
+        if checkpoint_callback is not None:
+            checkpoint_callback(session)
 
     def _after_reasoning_step(self, session, response) -> None:
         if response.raw_message:
@@ -904,6 +1010,7 @@ class ReasoningLoop:
         run_state=None,
         trace_store=None,
         reasoning_step: int | None = None,
+        checkpoint_callback: Callable | None = None,
     ) -> None:
         reason_value = str(reason)
         session.add_message(
@@ -929,6 +1036,8 @@ class ReasoningLoop:
                 message=message,
                 step=checkpoint_step,
             )
+            if checkpoint_callback is not None:
+                checkpoint_callback(session)
         if on_text is not None:
             on_text(message)
         if run_state is not None:
@@ -954,6 +1063,7 @@ class ReasoningLoop:
         on_text: Callable[[str], None] | None,
         run_state=None,
         trace_store=None,
+        checkpoint_callback: Callable | None = None,
     ) -> bool:
         if reflection_agent is None:
             return False
@@ -996,6 +1106,7 @@ class ReasoningLoop:
                 on_text=on_text,
                 run_state=run_state,
                 trace_store=trace_store,
+                checkpoint_callback=checkpoint_callback,
             )
             return True
 
@@ -1338,6 +1449,17 @@ def _is_empty_response(response) -> bool:
     return False
 
 
+def _response_tool_calls_payload(response) -> list[dict]:
+    payload = []
+    for call in getattr(response, "tool_calls", []) or []:
+        payload.append({
+            "id": getattr(call, "id", ""),
+            "name": getattr(call, "name", ""),
+            "arguments": getattr(call, "arguments", {}),
+        })
+    return payload
+
+
 def _tool_names(tools: list[dict]) -> list[str]:
     names = []
     for tool in tools or []:
@@ -1374,6 +1496,31 @@ def _span_prefix(run_state) -> str:
     metadata = getattr(run_state, "metadata", {}) or {}
     prefix = metadata.get("trace_span_prefix") if isinstance(metadata, dict) else None
     return str(prefix or getattr(run_state, "run_id", "run") or "run")
+
+
+def _call_build_context(
+    build_context,
+    session,
+    profile,
+    **kwargs,
+):
+    call_kwargs = {
+        name: value
+        for name, value in kwargs.items()
+        if _accepts_keyword(build_context, name)
+    }
+    return build_context(session, profile, **call_kwargs)
+
+
+def _accepts_keyword(fn, name: str) -> bool:
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+    return name in signature.parameters
 
 
 def _int_metadata(session, key: str, default: int) -> int:

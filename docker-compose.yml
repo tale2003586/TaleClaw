@@ -9,10 +9,17 @@ services:
         PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
         PIP_DEFAULT_TIMEOUT: ${PIP_DEFAULT_TIMEOUT:-180}
         PIP_RETRIES: ${PIP_RETRIES:-10}
+        REQUIREMENTS_FILE: ${REQUIREMENTS_FILE:-requirements-deploy.txt}
+        INSTALL_RAG_DEPS: ${INSTALL_RAG_DEPS:-0}
     container_name: agent-console
     restart: unless-stopped
     env_file:
       - ${AGENT_CONSOLE_ENV_FILE:-.env}
+    environment:
+      RAG_ENABLED: ${RAG_ENABLED:-0}
+      HISTORY_VECTOR_ENABLED: ${HISTORY_VECTOR_ENABLED:-0}
+      SECURITY_RAG_AUTO_CONTEXT_ENABLED: ${SECURITY_RAG_AUTO_CONTEXT_ENABLED:-0}
+      SECURITY_RAG_PLUGIN_ENABLED: ${SECURITY_RAG_PLUGIN_ENABLED:-0}
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
@@ -38,10 +45,17 @@ services:
         PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
         PIP_DEFAULT_TIMEOUT: ${PIP_DEFAULT_TIMEOUT:-180}
         PIP_RETRIES: ${PIP_RETRIES:-10}
+        REQUIREMENTS_FILE: ${REQUIREMENTS_FILE:-requirements-deploy.txt}
+        INSTALL_RAG_DEPS: ${INSTALL_RAG_DEPS:-0}
     container_name: taleclaw-telegram
     restart: unless-stopped
     env_file:
       - ${AGENT_CONSOLE_ENV_FILE:-.env}
+    environment:
+      RAG_ENABLED: ${RAG_ENABLED:-0}
+      HISTORY_VECTOR_ENABLED: ${HISTORY_VECTOR_ENABLED:-0}
+      SECURITY_RAG_AUTO_CONTEXT_ENABLED: ${SECURITY_RAG_AUTO_CONTEXT_ENABLED:-0}
+      SECURITY_RAG_PLUGIN_ENABLED: ${SECURITY_RAG_PLUGIN_ENABLED:-0}
     command: ["python", "telegram_worker.py"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -69,10 +83,17 @@ services:
         PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
         PIP_DEFAULT_TIMEOUT: ${PIP_DEFAULT_TIMEOUT:-180}
         PIP_RETRIES: ${PIP_RETRIES:-10}
+        REQUIREMENTS_FILE: ${REQUIREMENTS_FILE:-requirements-deploy.txt}
+        INSTALL_RAG_DEPS: ${INSTALL_RAG_DEPS:-0}
     container_name: taleclaw-feishu
     restart: unless-stopped
     env_file:
       - ${AGENT_CONSOLE_ENV_FILE:-.env}
+    environment:
+      RAG_ENABLED: ${RAG_ENABLED:-0}
+      HISTORY_VECTOR_ENABLED: ${HISTORY_VECTOR_ENABLED:-0}
+      SECURITY_RAG_AUTO_CONTEXT_ENABLED: ${SECURITY_RAG_AUTO_CONTEXT_ENABLED:-0}
+      SECURITY_RAG_PLUGIN_ENABLED: ${SECURITY_RAG_PLUGIN_ENABLED:-0}
     command: ["python", "feishu_worker.py"]
     ports:
       - "127.0.0.1:8010:8010"
@@ -90,6 +111,8 @@ services:
 
 
   qdrant:
+    profiles:
+      - rag
     image: qdrant/qdrant:latest
     restart: unless-stopped
     ports:

@@ -27,6 +27,54 @@ class ContextInstructionCacheTests(unittest.TestCase):
 
             self.assertIn("cached assistant rules", second.messages[0]["content"])
 
+    def test_explicit_prefix_reuses_stable_instruction_block(self) -> None:
+        ContextBuilder._instruction_cache.clear()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".agent").mkdir()
+            instruction = root / ".agent" / "assistant.md"
+            instruction.write_text("stable prefix rules", encoding="utf-8")
+            builder = ContextBuilder(instruction_root=root)
+            profile = SimpleNamespace(system_prompt="base", tool_mode="bot")
+
+            prefix = builder.build_prefix(profile)
+            self.assertFalse(prefix.cache_hit)
+
+            instruction.write_text("changed after prefix build", encoding="utf-8")
+            context = builder.build(
+                session=Session(id="web:test"),
+                profile=profile,
+                prefix=prefix,
+            )
+
+            self.assertIn("stable prefix rules", context.messages[0]["content"])
+            self.assertNotIn("changed after prefix build", context.messages[0]["content"])
+            self.assertEqual(
+                prefix.fingerprint,
+                context.report.to_dict()["metadata"]["prefix_fingerprint"],
+            )
+
+    def test_prefix_cache_invalidates_when_instruction_file_changes(self) -> None:
+        ContextBuilder._instruction_cache.clear()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".agent").mkdir()
+            instruction = root / ".agent" / "assistant.md"
+            instruction.write_text("first rules", encoding="utf-8")
+            builder = ContextBuilder(instruction_root=root)
+            profile = SimpleNamespace(system_prompt="base", tool_mode="bot")
+
+            first = builder.build_prefix(profile)
+            second = builder.build_prefix(profile)
+            self.assertTrue(second.cache_hit)
+            self.assertEqual(first.fingerprint, second.fingerprint)
+
+            instruction.write_text("second rules with changed size", encoding="utf-8")
+            third = builder.build_prefix(profile)
+            self.assertFalse(third.cache_hit)
+            self.assertNotEqual(first.fingerprint, third.fingerprint)
+            self.assertIn("second rules", third.system_prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

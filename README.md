@@ -72,8 +72,11 @@ python feishu_worker.py     # 需要在 .env 中配置飞书应用凭证
 ### Docker Compose
 
 ```bash
-# 仅启动 Web 控制台 + Qdrant + Postgres
-docker compose up agent-console qdrant postgres
+# 默认部署只启动 Web 控制台 + Postgres，不启动 RAG/Qdrant
+docker compose up agent-console postgres
+
+# 需要 RAG/Qdrant 时再显式启用 rag profile 和 RAG 依赖
+INSTALL_RAG_DEPS=1 RAG_ENABLED=1 docker compose --profile rag up agent-console qdrant postgres
 
 # 按需启用网关 worker（profile）
 docker compose --profile telegram up

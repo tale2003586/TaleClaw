@@ -10,6 +10,10 @@ from datetime import datetime
 from runtime.trace.events import RUN_STARTED, TraceEvent
 from config import WORKDIR
 from runtime.failure_reasons import INCOMPLETE_STEP_LIMIT_PREFIX
+from runtime.trace.context_metrics import (
+    aggregate_context_metrics,
+    context_metric_record_from_event,
+)
 from runtime.trace.index_store import TraceIndexStore, trace_index_enabled
 from runtime.trace.run_state import RunState, now_iso
 from runtime.trace.summary import write_trace_summary
@@ -83,6 +87,7 @@ class TraceStore:
         }
         self._write_json_atomic(self.run_dir(run_state) / "report.json", payload)
         self.write_metrics(run_state)
+        self.write_context_metrics(run_state)
         write_trace_summary(self.run_dir(run_state))
         self._index_run_from_artifacts(run_state, report or {})
 
@@ -90,6 +95,12 @@ class TraceStore:
         self._write_json_atomic(
             self.run_dir(run_state) / "metrics.json",
             self._metrics_for(run_state),
+        )
+
+    def write_context_metrics(self, run_state: RunState) -> None:
+        self._write_json_atomic(
+            self.run_dir(run_state) / "context_metrics.json",
+            self._context_metrics_for(run_state),
         )
 
     def run_dir(self, run_state_or_id: RunState | str) -> Path:
@@ -167,85 +178,86 @@ class TraceStore:
             "generated_at": now_iso(),
         }
         trace_path = self.run_dir(run_state) / "trace.jsonl"
-        if not trace_path.exists():
-            return metrics
 
         models: set[str] = set()
         tools: set[str] = set()
         seen_tool_calls: set[str] = set()
         duplicate_tool_calls = 0
-        for line in trace_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            name = event.get("event")
-            payload = event.get("payload") or {}
-            if name == "model.call.completed":
-                metrics["model_calls"] += 1
-                metrics["total_model_duration_ms"] += _float(payload.get("duration_ms"))
-                usage = payload.get("usage") or {}
-                metrics["input_tokens"] += _int(usage.get("input_tokens"))
-                metrics["output_tokens"] += _int(usage.get("output_tokens"))
-                metrics["total_tokens"] += _int(usage.get("total_tokens"))
-                retry_count = _int(
-                    (payload.get("provider_metadata") or {}).get("retry_count")
-                )
-                metrics["model_retry_count"] += retry_count
-                model = str(payload.get("model") or "").strip()
-                provider = str(payload.get("provider") or "").strip()
-                if model or provider:
-                    models.add(f"{provider}:{model}".strip(":"))
-            elif name == "model.call.failed":
-                metrics["model_failures"] += 1
-                metrics["total_model_duration_ms"] += _float(payload.get("duration_ms"))
-                metrics["model_route_attempts"] += len(payload.get("route_attempts") or [])
-            elif name == "model.route.attempts":
-                if not metrics["model_route_attempts"]:
-                    metrics["model_route_attempts"] = len(payload.get("attempts") or [])
-            elif name == "context.sanitized":
-                metrics["sanitized_messages"] += _int(payload.get("dropped_count"))
-            elif name == "tool.call.completed":
-                metrics["tool_calls"] += 1
-                metrics["total_tool_duration_ms"] += _float(payload.get("duration_ms"))
-                status = str(payload.get("status") or "")
-                if status == "error":
-                    metrics["tool_failures"] += 1
-                elif status == "denied":
-                    metrics["tool_denials"] += 1
-                tool_name = str(payload.get("tool_name") or "").strip()
-                if tool_name:
-                    tools.add(tool_name)
-                if payload.get("truncated_output"):
-                    metrics["truncated_tool_output_count"] += 1
-                if tool_name == "parallel_tasks":
-                    metrics["subagent_fanout_count"] += 1
-                    metrics["subagent_incomplete_count"] += (
-                        _int(payload.get("subagent_incomplete_count"))
-                        or _subagent_incomplete_count(payload.get("output_preview"))
+        if trace_path.exists():
+            for line in trace_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                name = event.get("event")
+                payload = event.get("payload") or {}
+                if name == "model.call.completed":
+                    metrics["model_calls"] += 1
+                    metrics["total_model_duration_ms"] += _float(payload.get("duration_ms"))
+                    usage = payload.get("usage") or {}
+                    metrics["input_tokens"] += _int(usage.get("input_tokens"))
+                    metrics["output_tokens"] += _int(usage.get("output_tokens"))
+                    metrics["total_tokens"] += _int(usage.get("total_tokens"))
+                    retry_count = _int(
+                        (payload.get("provider_metadata") or {}).get("retry_count")
                     )
-                fingerprint = _tool_call_fingerprint(payload)
-                if fingerprint:
-                    if fingerprint in seen_tool_calls:
-                        duplicate_tool_calls += 1
-                    else:
-                        seen_tool_calls.add(fingerprint)
-            elif name == "tool.call.failed":
-                metrics["tool_calls"] += 1
-                metrics["tool_failures"] += 1
-                metrics["total_tool_duration_ms"] += _float(payload.get("duration_ms"))
-                tool_name = str(payload.get("tool_name") or "").strip()
-                if tool_name:
-                    tools.add(tool_name)
-                fingerprint = _tool_call_fingerprint(payload)
-                if fingerprint:
-                    if fingerprint in seen_tool_calls:
-                        duplicate_tool_calls += 1
-                    else:
-                        seen_tool_calls.add(fingerprint)
+                    metrics["model_retry_count"] += retry_count
+                    model = str(payload.get("model") or "").strip()
+                    provider = str(payload.get("provider") or "").strip()
+                    if model or provider:
+                        models.add(f"{provider}:{model}".strip(":"))
+                elif name == "model.call.failed":
+                    metrics["model_failures"] += 1
+                    metrics["total_model_duration_ms"] += _float(payload.get("duration_ms"))
+                    metrics["model_route_attempts"] += len(payload.get("route_attempts") or [])
+                elif name == "model.route.attempts":
+                    if not metrics["model_route_attempts"]:
+                        metrics["model_route_attempts"] = len(payload.get("attempts") or [])
+                elif name == "context.sanitized":
+                    metrics["sanitized_messages"] += _int(payload.get("dropped_count"))
+                elif name == "tool.call.completed":
+                    metrics["tool_calls"] += 1
+                    metrics["total_tool_duration_ms"] += _float(payload.get("duration_ms"))
+                    status = str(payload.get("status") or "")
+                    if status == "error":
+                        metrics["tool_failures"] += 1
+                    elif status == "denied":
+                        metrics["tool_denials"] += 1
+                    tool_name = str(payload.get("tool_name") or "").strip()
+                    if tool_name:
+                        tools.add(tool_name)
+                    if payload.get("truncated_output"):
+                        metrics["truncated_tool_output_count"] += 1
+                    if tool_name == "parallel_tasks":
+                        metrics["subagent_fanout_count"] += 1
+                        metrics["subagent_incomplete_count"] += (
+                            _int(payload.get("subagent_incomplete_count"))
+                            or _subagent_incomplete_count(payload.get("output_preview"))
+                        )
+                    fingerprint = _tool_call_fingerprint(payload)
+                    if fingerprint:
+                        if fingerprint in seen_tool_calls:
+                            duplicate_tool_calls += 1
+                        else:
+                            seen_tool_calls.add(fingerprint)
+                elif name == "tool.call.failed":
+                    metrics["tool_calls"] += 1
+                    metrics["tool_failures"] += 1
+                    metrics["total_tool_duration_ms"] += _float(payload.get("duration_ms"))
+                    tool_name = str(payload.get("tool_name") or "").strip()
+                    if tool_name:
+                        tools.add(tool_name)
+                    fingerprint = _tool_call_fingerprint(payload)
+                    if fingerprint:
+                        if fingerprint in seen_tool_calls:
+                            duplicate_tool_calls += 1
+                        else:
+                            seen_tool_calls.add(fingerprint)
 
+        context_metrics = self._context_metrics_for(run_state)
+        context_aggregate = context_metrics.get("aggregate") or {}
         metrics["total_model_duration_ms"] = round(metrics["total_model_duration_ms"], 3)
         metrics["total_tool_duration_ms"] = round(metrics["total_tool_duration_ms"], 3)
         metrics["duplicate_tool_call_count"] = duplicate_tool_calls
@@ -256,7 +268,58 @@ class TraceStore:
         )
         metrics["models"] = sorted(models)
         metrics["tools"] = sorted(tools)
+        metrics["context_builds"] = _int(context_aggregate.get("build_count"))
+        metrics["context_build_compressed_count"] = _int(
+            context_aggregate.get("compressed_build_count")
+        )
+        metrics["total_context_build_duration_ms"] = _float(
+            context_aggregate.get("total_build_duration_ms")
+        )
+        metrics["avg_context_build_duration_ms"] = _float(
+            context_aggregate.get("avg_build_duration_ms")
+        )
+        metrics["max_context_build_duration_ms"] = _float(
+            context_aggregate.get("max_build_duration_ms")
+        )
+        metrics["context_compression_before_chars"] = _int(
+            context_aggregate.get("compression_before_chars")
+        )
+        metrics["context_compression_after_chars"] = _int(
+            context_aggregate.get("compression_after_chars")
+        )
+        metrics["context_compression_saved_chars"] = _int(
+            context_aggregate.get("compression_saved_chars")
+        )
+        metrics["context_compression_ratio"] = _float(
+            context_aggregate.get("compression_ratio")
+        )
+        metrics["context_compression_savings_ratio"] = _float(
+            context_aggregate.get("compression_savings_ratio")
+        )
         return metrics
+
+    def _context_metrics_for(self, run_state: RunState) -> dict[str, Any]:
+        trace_path = self.run_dir(run_state) / "trace.jsonl"
+        records: list[dict[str, Any]] = []
+        if trace_path.exists():
+            for line in trace_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("event") != "context.build.completed":
+                    continue
+                records.append(context_metric_record_from_event(event))
+        return {
+            "run_id": run_state.run_id,
+            "session_id": run_state.session_id,
+            "status": run_state.status,
+            "generated_at": now_iso(),
+            "aggregate": aggregate_context_metrics(records),
+            "builds": records,
+        }
 
 
 def event_preview(value: Any, *, limit: int = 500) -> str:

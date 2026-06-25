@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from models.provider import LLMResponse
+from models.provider import LLMResponse, ToolCall
 from runtime.failure_reasons import (
     REASONING_LOOP_STOP_REASON_KEY,
     StopReason,
@@ -20,6 +20,7 @@ from runtime.working_memory import (
 )
 from sessions.session import Session
 from tools.executor import ToolExecutor
+from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry
 
 
@@ -41,6 +42,17 @@ class CountingProvider:
         return self.response
 
 
+class ScriptedProvider:
+    def __init__(self, responses) -> None:
+        self.responses = list(responses)
+        self.calls = 0
+
+    def chat(self, **kwargs):
+        response = self.responses[self.calls]
+        self.calls += 1
+        return response
+
+
 def _pipeline(provider: CountingProvider) -> Pipeline:
     return Pipeline(
         tools=ToolRegistry(),
@@ -49,6 +61,44 @@ def _pipeline(provider: CountingProvider) -> Pipeline:
         tool_executor=ToolExecutor([]),
         context_builder=ContextBuilder(),
         max_reasoning_steps=4,
+    )
+
+
+def _tool_response(index: int, name: str, arguments: dict | None = None) -> LLMResponse:
+    arguments = arguments or {}
+    return LLMResponse(
+        content=None,
+        tool_calls=[
+            ToolCall(
+                id=f"call-{index}",
+                name=name,
+                arguments=arguments,
+            )
+        ],
+        raw_message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": f"call-{index}",
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": "{}",
+                    },
+                }
+            ],
+        },
+    )
+
+
+def _final_response(content: str) -> LLMResponse:
+    return LLMResponse(
+        content=content,
+        raw_message={
+            "role": "assistant",
+            "content": content,
+        },
     )
 
 
@@ -135,6 +185,65 @@ class WorkingMemoryResumeTests(unittest.TestCase):
         self.assertEqual("done", reply)
         memory = load_working_memory(session)
         self.assertEqual(STATUS_COMPLETED, memory.status)
+
+    def test_coding_reasoning_steps_create_checkpoints(self) -> None:
+        registry = ToolRegistry()
+        registry.register(
+            function_tool("read_file", "Read test file", {}, []),
+            lambda **kwargs: "file contents",
+            enabled_modes={"coding"},
+            always_on=True,
+        )
+        provider = ScriptedProvider([
+            _tool_response(1, "read_file", {"path": "README.md"}),
+            _final_response("done"),
+        ])
+        pipeline = Pipeline(
+            tools=registry,
+            provider=provider,
+            model="test-model",
+            tool_executor=ToolExecutor([]),
+            context_builder=ContextBuilder(),
+            max_reasoning_steps=4,
+        )
+        session = Session(id="task:checkpoint", current_mode="coding")
+        session.add_message("user", "inspect then answer")
+        prepare_working_memory_for_turn(
+            session,
+            objective="inspect then answer",
+            task_id="task:checkpoint",
+        )
+
+        checkpoint_steps = []
+        reply = pipeline.run(
+            session,
+            SimpleNamespace(tool_mode="coding"),
+            checkpoint_callback=lambda session: checkpoint_steps.append(
+                load_working_memory(session).last_checkpoint_step
+            ),
+        )
+
+        self.assertEqual("done", reply)
+        self.assertGreaterEqual(len(checkpoint_steps), 3)
+        self.assertIn(1, checkpoint_steps)
+        self.assertIn(2, checkpoint_steps)
+        memory = load_working_memory(session)
+        self.assertEqual(STATUS_COMPLETED, memory.status)
+        self.assertEqual(2, memory.last_checkpoint_step)
+        phases = [
+            (item.get("step"), item.get("phase"))
+            for item in memory.step_checkpoints
+        ]
+        self.assertIn((1, "started"), phases)
+        self.assertIn((1, "tools_executed"), phases)
+        self.assertIn((2, "assistant_final"), phases)
+        tool_checkpoint = next(
+            item
+            for item in memory.step_checkpoints
+            if item.get("step") == 1 and item.get("phase") == "tools_executed"
+        )
+        self.assertEqual("read_file", tool_checkpoint["tool_calls"][0]["name"])
+        self.assertEqual("success", tool_checkpoint["tool_results"][0]["status"])
 
 
 if __name__ == "__main__":

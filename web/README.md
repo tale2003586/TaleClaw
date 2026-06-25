@@ -583,7 +583,7 @@ ls -la docker-compose.yml Dockerfile
 这个错误表示当前目录没有 `docker-compose.yml`。解决方式：
 
 - 如果服务器代码来自 Git，先把本地新增的 `Dockerfile`、`docker-compose.yml`、`.dockerignore` 提交并推送，然后服务器执行 `git pull`。
-- 如果手动上传代码，把 `Dockerfile`、`docker-compose.yml`、`.dockerignore`、`requirements.txt`、`.env.example` 和 `web/` 目录一起上传到服务器项目根目录。
+- 如果手动上传代码，把 `Dockerfile`、`docker-compose.yml`、`.dockerignore`、`requirements.txt`、`requirements-deploy.txt`、`requirements-rag.txt`、`.env.example` 和 `web/` 目录一起上传到服务器项目根目录。
 - 临时指定配置文件路径：`docker compose -f /opt/agent-console/docker-compose.yml up -d --build`。
 
 拉取 `python:3.12-slim` 超时：

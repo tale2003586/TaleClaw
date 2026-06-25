@@ -1,0 +1,1235 @@
+{
+  "version": 1,
+  "name": "coding-agent-runtime-smoke-set",
+  "description": "Thirty small local tasks for checking whether a coding-agent runtime can read, edit, run commands, preserve dirty work, and produce verifiable patches.",
+  "tasks": [
+    {
+      "id": "S01",
+      "title": "Read README metadata",
+      "category": "read-file",
+      "prompt": "Read README.md and write answer.txt with exactly two lines: Project: <project name> and Version: <version>.",
+      "files": {
+        "README.md": [
+          "# Ember Runtime",
+          "",
+          "Version: 0.3.7",
+          "",
+          "A tiny fixture for a local coding-agent smoke test."
+        ]
+      },
+      "checks": [
+        {
+          "type": "file_equals",
+          "path": "answer.txt",
+          "text": [
+            "Project: Ember Runtime",
+            "Version: 0.3.7"
+          ]
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "answer.txt"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S02",
+      "title": "List Python files under src",
+      "category": "list-files",
+      "prompt": "List every .py file under src/, sorted alphabetically, one path per line, and write the result to py-files.txt. Do not include files outside src/.",
+      "files": {
+        "src/app.py": [
+          "def main():",
+          "    return 'ok'"
+        ],
+        "src/utils/helpers.py": [
+          "VALUE = 1"
+        ],
+        "src/utils/parser.py": [
+          "def parse(value):",
+          "    return value.strip()"
+        ],
+        "tests/test_app.py": [
+          "import unittest",
+          "",
+          "",
+          "class AppTests(unittest.TestCase):",
+          "    def test_placeholder(self):",
+          "        self.assertTrue(True)"
+        ],
+        "docs/example.py": [
+          "# This file must not be listed."
+        ]
+      },
+      "checks": [
+        {
+          "type": "file_equals",
+          "path": "py-files.txt",
+          "text": [
+            "src/app.py",
+            "src/utils/helpers.py",
+            "src/utils/parser.py"
+          ]
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "py-files.txt"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S03",
+      "title": "Search TODO locations",
+      "category": "search",
+      "prompt": "Find every TODO(smoke) marker and write todo-locations.txt with path:line entries sorted alphabetically by path. Ignore TODO markers that are not TODO(smoke).",
+      "files": {
+        "src/a.py": [
+          "def start():",
+          "    pass",
+          "# TODO(smoke): wire start"
+        ],
+        "docs/plan.md": [
+          "# Plan",
+          "",
+          "- TODO(smoke): document setup"
+        ],
+        "src/nested/b.py": [
+          "# TODO(other): no",
+          "def run():",
+          "    # TODO(smoke): validate input",
+          "    return True"
+        ]
+      },
+      "checks": [
+        {
+          "type": "file_equals",
+          "path": "todo-locations.txt",
+          "text": [
+            "docs/plan.md:3",
+            "src/a.py:3",
+            "src/nested/b.py:3"
+          ]
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "todo-locations.txt"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S04",
+      "title": "Fix spelling in one file",
+      "category": "edit-file",
+      "prompt": "Fix the spelling mistake in docs/email.md by changing every instance of recieve to receive. Keep the rest of the wording intact.",
+      "files": {
+        "docs/email.md": [
+          "# Email Flow",
+          "",
+          "Users recieve a message after signup.",
+          "Admins recieve a copy of the same message."
+        ]
+      },
+      "checks": [
+        {
+          "type": "file_not_contains",
+          "path": "docs/email.md",
+          "text": "recieve"
+        },
+        {
+          "type": "file_contains",
+          "path": "docs/email.md",
+          "text": "Users receive a message after signup."
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "docs/email.md"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S05",
+      "title": "Edit JSON boolean",
+      "category": "json",
+      "prompt": "In config.json, set debug to false. Keep the JSON valid.",
+      "files": {
+        "config.json": [
+          "{",
+          "  \"name\": \"smoke-json\",",
+          "  \"debug\": true,",
+          "  \"retries\": 2",
+          "}"
+        ]
+      },
+      "validation_commands": [
+        "python -m json.tool config.json >/dev/null"
+      ],
+      "checks": [
+        {
+          "type": "json_value",
+          "path": "config.json",
+          "key": "debug",
+          "equals": false
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "config.json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S06",
+      "title": "Add package script",
+      "category": "json",
+      "prompt": "Add a package.json script named check with the exact value node test.js. Keep existing scripts unchanged and keep the JSON valid.",
+      "files": {
+        "package.json": [
+          "{",
+          "  \"name\": \"smoke-package\",",
+          "  \"version\": \"1.0.0\",",
+          "  \"scripts\": {",
+          "    \"test\": \"node test.js\"",
+          "  }",
+          "}"
+        ],
+        "test.js": [
+          "console.log('ok')"
+        ]
+      },
+      "validation_commands": [
+        "python -m json.tool package.json >/dev/null"
+      ],
+      "checks": [
+        {
+          "type": "json_value",
+          "path": "package.json",
+          "key": "scripts.check",
+          "equals": "node test.js"
+        },
+        {
+          "type": "json_value",
+          "path": "package.json",
+          "key": "scripts.test",
+          "equals": "node test.js"
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "package.json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S07",
+      "title": "Create a nested note file",
+      "category": "create-file",
+      "prompt": "Create notes/smoke.md with exactly these three lines: Smoke note, Runtime: local, Status: ready.",
+      "files": {
+        "README.md": [
+          "# Empty fixture"
+        ]
+      },
+      "checks": [
+        {
+          "type": "file_equals",
+          "path": "notes/smoke.md",
+          "text": [
+            "Smoke note",
+            "Runtime: local",
+            "Status: ready"
+          ]
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "notes/smoke.md"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S08",
+      "title": "Delete one unused file",
+      "category": "delete-file",
+      "prompt": "Delete tmp/unused.txt. Do not delete or edit tmp/keep.txt.",
+      "files": {
+        "tmp/unused.txt": [
+          "remove me"
+        ],
+        "tmp/keep.txt": [
+          "keep me"
+        ]
+      },
+      "checks": [
+        {
+          "type": "file_not_exists",
+          "path": "tmp/unused.txt"
+        },
+        {
+          "type": "file_equals",
+          "path": "tmp/keep.txt",
+          "text": [
+            "keep me"
+          ]
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "tmp/unused.txt"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S09",
+      "title": "Rename module and update import",
+      "category": "rename",
+      "prompt": "Rename src/helo.py to src/hello.py and update imports so the unittest suite still passes.",
+      "files": {
+        "src/helo.py": [
+          "def greet(name):",
+          "    return f'Hello, {name}!'"
+        ],
+        "src/main.py": [
+          "from helo import greet",
+          "",
+          "",
+          "def render(name):",
+          "    return greet(name)"
+        ],
+        "tests/test_main.py": [
+          "import pathlib",
+          "import sys",
+          "import unittest",
+          "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'src'))",
+          "",
+          "from main import render",
+          "",
+          "",
+          "class MainTests(unittest.TestCase):",
+          "    def test_render(self):",
+          "        self.assertEqual(render('Ada'), 'Hello, Ada!')"
+        ]
+      },
+      "validation_commands": [
+        "python -m unittest discover -s tests -q"
+      ],
+      "checks": [
+        {
+          "type": "file_exists",
+          "path": "src/hello.py"
+        },
+        {
+          "type": "file_not_exists",
+          "path": "src/helo.py"
+        },
+        {
+          "type": "file_contains",
+          "path": "src/main.py",
+          "text": "from hello import greet"
+        }
+      ]
+    },
+    {
+      "id": "S10",
+      "title": "Fix Python add bug",
+      "category": "bugfix",
+      "prompt": "Fix src/math_utils.py so add(a, b) returns the correct sum. Run the unittest suite.",
+      "files": {
+        "src/math_utils.py": [
+          "def add(a, b):",
+          "    return a - b"
+        ],
+        "tests/test_math_utils.py": [
+          "import pathlib",
+          "import sys",
+          "import unittest",
+          "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'src'))",
+          "",
+          "from math_utils import add",
+          "",
+          "",
+          "class MathUtilsTests(unittest.TestCase):",
+          "    def test_add_positive_numbers(self):",
+          "        self.assertEqual(add(2, 3), 5)",
+          "",
+          "",
+          "    def test_add_negative_number(self):",
+          "        self.assertEqual(add(2, -3), -1)"
+        ]
+      },
+      "validation_commands": [
+        "python -m unittest discover -s tests -q"
+      ],
+      "checks": [
+        {
+          "type": "file_contains",
+          "path": "src/math_utils.py",
+          "text": "return a + b"
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "src/math_utils.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S11",
+      "title": "Fix is_even edge cases",
+      "category": "bugfix",
+      "prompt": "Fix src/numbers.py so is_even handles zero and negative even numbers correctly. Run the tests.",
+      "files": {
+        "src/numbers.py": [
+          "def is_even(n):",
+          "    return n > 0 and n % 2 == 0"
+        ],
+        "tests/test_numbers.py": [
+          "import pathlib",
+          "import sys",
+          "import unittest",
+          "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'src'))",
+          "",
+          "from numbers import is_even",
+          "",
+          "",
+          "class NumberTests(unittest.TestCase):",
+          "    def test_zero_is_even(self):",
+          "        self.assertIs(is_even(0), True)",
+          "",
+          "",
+          "    def test_negative_even_is_even(self):",
+          "        self.assertIs(is_even(-4), True)",
+          "",
+          "",
+          "    def test_odd_is_not_even(self):",
+          "        self.assertIs(is_even(5), False)"
+        ]
+      },
+      "validation_commands": [
+        "python -m unittest discover -s tests -q"
+      ],
+      "checks": [
+        {
+          "type": "file_contains",
+          "path": "src/numbers.py",
+          "text": "n % 2 == 0"
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "src/numbers.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S12",
+      "title": "Add required Python type hints",
+      "category": "typecheck",
+      "prompt": "Add type hints to src/user.py so scripts/typecheck.py passes. Do not change runtime behavior.",
+      "files": {
+        "src/user.py": [
+          "def format_user(user):",
+          "    return f\"{user['name']} <{user['email']}>\""
+        ],
+        "scripts/typecheck.py": [
+          "import ast",
+          "from pathlib import Path",
+          "",
+          "tree = ast.parse(Path('src/user.py').read_text())",
+          "func = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'format_user')",
+          "assert func.returns is not None, 'format_user needs a return annotation'",
+          "assert func.args.args[0].annotation is not None, 'format_user argument needs an annotation'",
+          "print('typecheck ok')"
+        ],
+        "tests/test_user.py": [
+          "import pathlib",
+          "import sys",
+          "import unittest",
+          "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'src'))",
+          "",
+          "from user import format_user",
+          "",
+          "",
+          "class UserTests(unittest.TestCase):",
+          "    def test_format_user(self):",
+          "        self.assertEqual(format_user({'name': 'Ada', 'email': 'ada@example.com'}), 'Ada <ada@example.com>')"
+        ]
+      },
+      "validation_commands": [
+        "python scripts/typecheck.py",
+        "python -m unittest discover -s tests -q"
+      ],
+      "checks": [
+        {
+          "type": "only_changed",
+          "paths": [
+            "src/user.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S13",
+      "title": "Fix Markdown table",
+      "category": "docs",
+      "prompt": "Fix the Markdown table in docs/status.md so it is a valid two-column table. Keep the same data.",
+      "files": {
+        "docs/status.md": [
+          "# Status",
+          "",
+          "| Name | Status",
+          "| --- |",
+          "| Runtime | Ready |",
+          "| Tools Ready |"
+        ]
+      },
+      "checks": [
+        {
+          "type": "file_equals",
+          "path": "docs/status.md",
+          "text": [
+            "# Status",
+            "",
+            "| Name | Status |",
+            "| --- | --- |",
+            "| Runtime | Ready |",
+            "| Tools | Ready |"
+          ]
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "docs/status.md"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S14",
+      "title": "Update env example only",
+      "category": "secrets",
+      "prompt": "Add SMOKE_MODE=local to .env.example. Do not edit .env.",
+      "files": {
+        ".env": [
+          "API_KEY=real-secret-do-not-touch",
+          "SMOKE_MODE=prod"
+        ],
+        ".env.example": [
+          "API_KEY=",
+          "LOG_LEVEL=info"
+        ]
+      },
+      "checks": [
+        {
+          "type": "file_equals",
+          "path": ".env",
+          "text": [
+            "API_KEY=real-secret-do-not-touch",
+            "SMOKE_MODE=prod"
+          ]
+        },
+        {
+          "type": "file_contains",
+          "path": ".env.example",
+          "text": "SMOKE_MODE=local"
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            ".env.example"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S15",
+      "title": "Fix discount logic after reading failing test",
+      "category": "bugfix",
+      "prompt": "Run the tests, inspect the failure, and fix the discount logic in src/discount.py.",
+      "files": {
+        "src/discount.py": [
+          "def apply_discount(price, percent):",
+          "    return price * percent / 100"
+        ],
+        "tests/test_discount.py": [
+          "import pathlib",
+          "import sys",
+          "import unittest",
+          "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'src'))",
+          "",
+          "from discount import apply_discount",
+          "",
+          "",
+          "class DiscountTests(unittest.TestCase):",
+          "    def test_apply_discount(self):",
+          "        self.assertEqual(apply_discount(100, 20), 80)",
+          "",
+          "",
+          "    def test_zero_discount(self):",
+          "        self.assertEqual(apply_discount(50, 0), 50)"
+        ]
+      },
+      "validation_commands": [
+        "python -m unittest discover -s tests -q"
+      ],
+      "checks": [
+        {
+          "type": "only_changed",
+          "paths": [
+            "src/discount.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S16",
+      "title": "Make a change and summarize diff",
+      "category": "diff",
+      "prompt": "Change MESSAGE in src/message.py to hello smoke. Then create diff-summary.md listing the files you changed.",
+      "files": {
+        "src/message.py": [
+          "MESSAGE = 'hello'"
+        ]
+      },
+      "checks": [
+        {
+          "type": "file_contains",
+          "path": "src/message.py",
+          "text": "hello smoke"
+        },
+        {
+          "type": "file_contains",
+          "path": "diff-summary.md",
+          "text": "src/message.py"
+        },
+        {
+          "type": "file_contains",
+          "path": "diff-summary.md",
+          "text": "diff-summary.md"
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "diff-summary.md",
+            "src/message.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S17",
+      "title": "Preserve dirty worktree file",
+      "category": "dirty-worktree",
+      "prompt": "The worktree already contains a user edit in notes/user-notes.md. Preserve it exactly. Only update src/target.py so VALUE becomes 2.",
+      "files": {
+        "src/target.py": [
+          "VALUE = 1"
+        ],
+        "notes/user-notes.md": [
+          "initial notes"
+        ]
+      },
+      "dirty_files": {
+        "notes/user-notes.md": [
+          "USER DRAFT",
+          "Do not overwrite."
+        ]
+      },
+      "checks": [
+        {
+          "type": "file_contains",
+          "path": "src/target.py",
+          "text": "VALUE = 2"
+        },
+        {
+          "type": "file_equals",
+          "path": "notes/user-notes.md",
+          "text": [
+            "USER DRAFT",
+            "Do not overwrite."
+          ]
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "notes/user-notes.md",
+            "src/target.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S18",
+      "title": "Fix CSV parsing with quoted comma",
+      "category": "data",
+      "prompt": "Fix src/csv_reader.py so the tests pass for CSV fields that contain quoted commas.",
+      "files": {
+        "src/csv_reader.py": [
+          "def read_rows(text):",
+          "    lines = [line for line in text.strip().splitlines() if line.strip()]",
+          "    return [line.split(',') for line in lines]"
+        ],
+        "tests/test_csv_reader.py": [
+          "import pathlib",
+          "import sys",
+          "import unittest",
+          "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'src'))",
+          "",
+          "from csv_reader import read_rows",
+          "",
+          "",
+          "class CsvReaderTests(unittest.TestCase):",
+          "    def test_quoted_comma(self):",
+          "        rows = read_rows('name,note\\nAda,\"hello, world\"\\n')",
+          "        self.assertEqual(rows, [['name', 'note'], ['Ada', 'hello, world']])"
+        ]
+      },
+      "validation_commands": [
+        "python -m unittest discover -s tests -q"
+      ],
+      "checks": [
+        {
+          "type": "file_contains",
+          "path": "src/csv_reader.py",
+          "text": "csv"
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "src/csv_reader.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S19",
+      "title": "Edit YAML port",
+      "category": "yaml",
+      "prompt": "In config/app.yml, change the server port from 3000 to 3001. Leave the rest of the file unchanged.",
+      "files": {
+        "config/app.yml": [
+          "server:",
+          "  host: 127.0.0.1",
+          "  port: 3000",
+          "features:",
+          "  smoke: true"
+        ]
+      },
+      "checks": [
+        {
+          "type": "file_equals",
+          "path": "config/app.yml",
+          "text": [
+            "server:",
+            "  host: 127.0.0.1",
+            "  port: 3001",
+            "features:",
+            "  smoke: true"
+          ]
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "config/app.yml"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S20",
+      "title": "Add one focused unit test",
+      "category": "tests",
+      "prompt": "Add a unittest method named test_strips_and_title_cases_extra_spaces to tests/test_names.py. It must assert that normalize_name('  ADA   lovelace  ') returns 'Ada Lovelace'.",
+      "files": {
+        "src/names.py": [
+          "def normalize_name(value):",
+          "    return ' '.join(value.split()).title()"
+        ],
+        "tests/test_names.py": [
+          "import pathlib",
+          "import sys",
+          "import unittest",
+          "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'src'))",
+          "",
+          "from names import normalize_name",
+          "",
+          "",
+          "class NameTests(unittest.TestCase):",
+          "    def test_simple_name(self):",
+          "        self.assertEqual(normalize_name('ada'), 'Ada')",
+          "",
+          "",
+          "if __name__ == '__main__':",
+          "    unittest.main()"
+        ]
+      },
+      "validation_commands": [
+        "python -m unittest discover -s tests -q"
+      ],
+      "checks": [
+        {
+          "type": "file_contains",
+          "path": "tests/test_names.py",
+          "text": "test_strips_and_title_cases_extra_spaces"
+        },
+        {
+          "type": "file_contains",
+          "path": "tests/test_names.py",
+          "text": "  ADA   lovelace  "
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "tests/test_names.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S21",
+      "title": "Set executable bit",
+      "category": "permissions",
+      "prompt": "Make scripts/run.sh executable. Do not change its content.",
+      "files": {
+        "scripts/run.sh": [
+          "#!/usr/bin/env bash",
+          "echo smoke-ok"
+        ]
+      },
+      "modes": {
+        "scripts/run.sh": "0644"
+      },
+      "checks": [
+        {
+          "type": "mode_executable",
+          "path": "scripts/run.sh"
+        },
+        {
+          "type": "command",
+          "cmd": "./scripts/run.sh",
+          "stdout_equals": "smoke-ok"
+        },
+        {
+          "type": "file_equals",
+          "path": "scripts/run.sh",
+          "text": [
+            "#!/usr/bin/env bash",
+            "echo smoke-ok"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S22",
+      "title": "Add CLI version flag",
+      "category": "cli",
+      "prompt": "Add support for python smoke_cli.py --version. It must print exactly smoke-cli 1.4.2.",
+      "files": {
+        "smoke_cli.py": [
+          "import argparse",
+          "",
+          "",
+          "def main():",
+          "    parser = argparse.ArgumentParser()",
+          "    parser.add_argument('--name', default='smoke')",
+          "    args = parser.parse_args()",
+          "    print(f'hello {args.name}')",
+          "",
+          "",
+          "if __name__ == '__main__':",
+          "    main()"
+        ]
+      },
+      "checks": [
+        {
+          "type": "command",
+          "cmd": "python smoke_cli.py --version",
+          "stdout_equals": "smoke-cli 1.4.2"
+        },
+        {
+          "type": "command",
+          "cmd": "python smoke_cli.py --name Ada",
+          "stdout_equals": "hello Ada"
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "smoke_cli.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S23",
+      "title": "Edit path containing spaces",
+      "category": "paths",
+      "prompt": "Update docs/My Note.md so Status becomes reviewed. Be careful with the space in the file name.",
+      "files": {
+        "docs/My Note.md": [
+          "# My Note",
+          "",
+          "Status: draft"
+        ]
+      },
+      "checks": [
+        {
+          "type": "file_equals",
+          "path": "docs/My Note.md",
+          "text": [
+            "# My Note",
+            "",
+            "Status: reviewed"
+          ]
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "docs/My Note.md"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S24",
+      "title": "Modify nearest nested config",
+      "category": "path-scope",
+      "prompt": "Pretend the request came from services/api/. Update the nearest config.json there so timeout becomes 25. Do not modify the root config.json.",
+      "files": {
+        "config.json": [
+          "{",
+          "  \"timeout\": 10,",
+          "  \"scope\": \"root\"",
+          "}"
+        ],
+        "services/api/config.json": [
+          "{",
+          "  \"timeout\": 10,",
+          "  \"scope\": \"api\"",
+          "}"
+        ]
+      },
+      "validation_commands": [
+        "python -m json.tool config.json >/dev/null",
+        "python -m json.tool services/api/config.json >/dev/null"
+      ],
+      "checks": [
+        {
+          "type": "json_value",
+          "path": "config.json",
+          "key": "timeout",
+          "equals": 10
+        },
+        {
+          "type": "json_value",
+          "path": "services/api/config.json",
+          "key": "timeout",
+          "equals": 25
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "services/api/config.json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S25",
+      "title": "Update snapshot only",
+      "category": "snapshot",
+      "prompt": "The snapshot test is failing. Update tests/snapshots/greeting.txt to match current output. Do not change src/render.py.",
+      "files": {
+        "src/render.py": [
+          "def render():",
+          "    return 'Hello, Smoke!'"
+        ],
+        "tests/test_snapshot.py": [
+          "import pathlib",
+          "import sys",
+          "import unittest",
+          "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'src'))",
+          "",
+          "from render import render",
+          "",
+          "",
+          "class SnapshotTests(unittest.TestCase):",
+          "    def test_snapshot(self):",
+          "        expected = pathlib.Path('tests/snapshots/greeting.txt').read_text().strip()",
+          "        self.assertEqual(render(), expected)"
+        ],
+        "tests/snapshots/greeting.txt": [
+          "Hello Smoke"
+        ]
+      },
+      "validation_commands": [
+        "python -m unittest discover -s tests -q"
+      ],
+      "checks": [
+        {
+          "type": "file_equals",
+          "path": "src/render.py",
+          "text": [
+            "def render():",
+            "    return 'Hello, Smoke!'"
+          ]
+        },
+        {
+          "type": "file_equals",
+          "path": "tests/snapshots/greeting.txt",
+          "text": [
+            "Hello, Smoke!"
+          ]
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "tests/snapshots/greeting.txt"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S26",
+      "title": "Avoid slow failing command",
+      "category": "timeout",
+      "prompt": "Fix src/fast.py so python -m unittest discover -s tests -q passes. Do not run scripts/slow_check.sh; it is intentionally slow and writes a marker if used.",
+      "files": {
+        "src/fast.py": [
+          "def ready():",
+          "    return False"
+        ],
+        "tests/test_fast.py": [
+          "import pathlib",
+          "import sys",
+          "import unittest",
+          "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'src'))",
+          "",
+          "from fast import ready",
+          "",
+          "",
+          "class FastTests(unittest.TestCase):",
+          "    def test_ready(self):",
+          "        self.assertIs(ready(), True)"
+        ],
+        "scripts/slow_check.sh": [
+          "#!/usr/bin/env bash",
+          "touch .slow-check-ran",
+          "sleep 20",
+          "exit 1"
+        ]
+      },
+      "modes": {
+        "scripts/slow_check.sh": "0755"
+      },
+      "validation_commands": [
+        "python -m unittest discover -s tests -q"
+      ],
+      "checks": [
+        {
+          "type": "file_not_exists",
+          "path": ".slow-check-ran"
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "src/fast.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S27",
+      "title": "Fix import case sensitivity",
+      "category": "linux-case",
+      "prompt": "The tests fail on a case-sensitive filesystem. Fix the import path case in src/main.py.",
+      "files": {
+        "src/Helper.py": [
+          "def shout(value):",
+          "    return value.upper()"
+        ],
+        "src/main.py": [
+          "from helper import shout",
+          "",
+          "",
+          "def render(value):",
+          "    return shout(value)"
+        ],
+        "tests/test_main.py": [
+          "import pathlib",
+          "import sys",
+          "import unittest",
+          "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'src'))",
+          "",
+          "from main import render",
+          "",
+          "",
+          "class MainTests(unittest.TestCase):",
+          "    def test_render(self):",
+          "        self.assertEqual(render('smoke'), 'SMOKE')"
+        ]
+      },
+      "validation_commands": [
+        "python -m unittest discover -s tests -q"
+      ],
+      "checks": [
+        {
+          "type": "file_contains",
+          "path": "src/main.py",
+          "text": "from Helper import shout"
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "src/main.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S28",
+      "title": "Protect binary asset",
+      "category": "binary",
+      "prompt": "Update assets/logo.metadata.json so alt becomes Smoke logo. Do not edit assets/logo.png.",
+      "files": {
+        "assets/logo.metadata.json": [
+          "{",
+          "  \"name\": \"logo\",",
+          "  \"alt\": \"old\"",
+          "}"
+        ]
+      },
+      "binary_files": {
+        "assets/logo.png": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+      },
+      "validation_commands": [
+        "python -m json.tool assets/logo.metadata.json >/dev/null"
+      ],
+      "checks": [
+        {
+          "type": "json_value",
+          "path": "assets/logo.metadata.json",
+          "key": "alt",
+          "equals": "Smoke logo"
+        },
+        {
+          "type": "binary_unchanged",
+          "path": "assets/logo.png"
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "assets/logo.metadata.json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S29",
+      "title": "Fix simple lint failure",
+      "category": "lint",
+      "prompt": "Run python scripts/lint.py and fix the lint issue it reports.",
+      "files": {
+        "src/formatted.py": [
+          "def answer():    ",
+          "    return 42"
+        ],
+        "scripts/lint.py": [
+          "from pathlib import Path",
+          "",
+          "bad = []",
+          "for path in Path('src').glob('*.py'):",
+          "    for number, line in enumerate(path.read_text().splitlines(), 1):",
+          "        if line.rstrip() != line:",
+          "            bad.append(f'{path}:{number}: trailing whitespace')",
+          "if bad:",
+          "    raise SystemExit('\\n'.join(bad))",
+          "print('lint ok')"
+        ]
+      },
+      "validation_commands": [
+        "python scripts/lint.py"
+      ],
+      "checks": [
+        {
+          "type": "only_changed",
+          "paths": [
+            "src/formatted.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "S30",
+      "title": "End-to-end config, code, tests, summary",
+      "category": "e2e",
+      "prompt": "Read config/settings.json, fix src/calc.py so scale(value) multiplies by the configured factor, run python -m unittest discover -s tests -q, and create SUMMARY.md mentioning the validation command you ran.",
+      "files": {
+        "config/settings.json": [
+          "{",
+          "  \"factor\": 3",
+          "}"
+        ],
+        "src/calc.py": [
+          "import json",
+          "from pathlib import Path",
+          "",
+          "",
+          "def load_factor():",
+          "    return json.loads(Path('config/settings.json').read_text())['factor']",
+          "",
+          "",
+          "def scale(value):",
+          "    return value + load_factor()"
+        ],
+        "tests/test_calc.py": [
+          "import pathlib",
+          "import sys",
+          "import unittest",
+          "sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'src'))",
+          "",
+          "from calc import scale",
+          "",
+          "",
+          "class CalcTests(unittest.TestCase):",
+          "    def test_scale_uses_config_factor(self):",
+          "        self.assertEqual(scale(4), 12)"
+        ]
+      },
+      "validation_commands": [
+        "python -m unittest discover -s tests -q"
+      ],
+      "checks": [
+        {
+          "type": "file_contains",
+          "path": "src/calc.py",
+          "text": "value * load_factor()"
+        },
+        {
+          "type": "file_contains",
+          "path": "SUMMARY.md",
+          "text": "python -m unittest discover -s tests -q"
+        },
+        {
+          "type": "only_changed",
+          "paths": [
+            "SUMMARY.md",
+            "src/calc.py"
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -44,3 +44,6 @@ class BuildState:
     budgeted_task_runtime_events: BudgetedText
     context_frame: str
     reductions: list[dict[str, Any]]
+    prefix_fingerprint: str = ""
+    prefix_cache_hit: bool = False
+    prefix_metadata: dict[str, Any] | None = None

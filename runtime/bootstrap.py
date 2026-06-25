@@ -33,21 +33,12 @@ from memory.vector_runtime import (
     build_history_vector_index_from_env,
     history_vector_scope_for_session,
 )
-from knowledge.security_rag import (
-    build_security_embedding_provider_from_env,
-    build_security_index_from_env,
-)
-from retrieval import (
-    build_security_route_classifier_from_env,
-    build_security_retrieval_router_from_env,
-)
 from plugins import PluginManager
 from plugins.shell_safety import ShellSafetyPlugin
 from plugins.status_commands import StatusCommandsPlugin
 from plugins.web_search import WebSearchPlugin
 from plugins.markdown_pdf import MarkdownPdfPlugin
 from plugins.run_report import RunReportPlugin
-from plugins.security_rag import SecurityRagPlugin
 
 
 _MODEL_POOL = None
@@ -113,15 +104,30 @@ def build_runtime() -> AppRuntime:
 
     memory_store = ScopedMemoryStore(WORKDIR, legacy_store=MemoryStore())
     memory_archive_store = MemoryArchiveStore()
-    history_vector_index = build_history_vector_index_from_env()
+    history_vector_index = (
+        build_history_vector_index_from_env()
+        if _history_vector_enabled()
+        else None
+    )
     security_retrieval_router = None
     security_route_classifier = None
     security_knowledge_index = None
-    if _env_bool("SECURITY_RAG_AUTO_CONTEXT_ENABLED", True):
+    security_auto_context_enabled = _security_rag_auto_context_enabled()
+    if security_auto_context_enabled:
         try:
+            from knowledge.security_rag import (
+                build_security_embedding_provider_from_env,
+                build_security_index_from_env,
+            )
+            from retrieval import (
+                build_security_route_classifier_from_env,
+                build_security_retrieval_router_from_env,
+            )
+
             security_embeddings = build_security_embedding_provider_from_env()
             security_retrieval_router = build_security_retrieval_router_from_env(
                 embeddings=security_embeddings,
+                model_pool=model_pool,
             )
             security_route_classifier = build_security_route_classifier_from_env(
                 config=security_retrieval_router.config,
@@ -143,7 +149,7 @@ def build_runtime() -> AppRuntime:
         security_retrieval_router=security_retrieval_router,
         security_route_classifier=security_route_classifier,
         security_knowledge_index=security_knowledge_index,
-        security_auto_context_enabled=_env_bool("SECURITY_RAG_AUTO_CONTEXT_ENABLED", True),
+        security_auto_context_enabled=security_auto_context_enabled,
     )
     model_task_runner = ModelTaskRunner(
         model_pool=model_pool,
@@ -190,15 +196,20 @@ def build_runtime() -> AppRuntime:
             max_workers=_env_int("MEMORY_LIFECYCLE_BACKGROUND_WORKERS", 1),
         )
 
+    plugins = [
+        ShellSafetyPlugin(),
+        StatusCommandsPlugin(),
+        WebSearchPlugin(),
+        MarkdownPdfPlugin(),
+        RunReportPlugin(),
+    ]
+    if _security_rag_plugin_enabled():
+        from plugins.security_rag import SecurityRagPlugin
+
+        plugins.insert(3, SecurityRagPlugin())
+
     plugin_manager = PluginManager(
-        [
-            ShellSafetyPlugin(),
-            StatusCommandsPlugin(),
-            WebSearchPlugin(),
-            SecurityRagPlugin(),
-            MarkdownPdfPlugin(),
-            RunReportPlugin(),
-        ],
+        plugins,
         workspace=WORKDIR,
         tool_registry=tools,
         sessions=sessions,
@@ -226,7 +237,7 @@ def build_runtime() -> AppRuntime:
         provider=provider,
         model=model,
         model_pool=model_pool,
-        max_tokens=8000,
+        max_tokens=130000,
         context_builder=context_builder,
         memory_lifecycle=memory_lifecycle,
         tool_executor=executor,
@@ -305,3 +316,30 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if value is None or value == "":
         return bool(default)
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_bool_any(names: list[str], *, default: bool) -> bool:
+    for name in names:
+        value = os.getenv(name)
+        if value not in (None, ""):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(default)
+
+
+def _rag_enabled() -> bool:
+    return _env_bool("RAG_ENABLED", True)
+
+
+def _history_vector_enabled() -> bool:
+    return _rag_enabled() and _env_bool_any(
+        ["HISTORY_VECTOR_ENABLED", "MEMORY_VECTOR_ENABLED"],
+        default=True,
+    )
+
+
+def _security_rag_auto_context_enabled() -> bool:
+    return _rag_enabled() and _env_bool("SECURITY_RAG_AUTO_CONTEXT_ENABLED", True)
+
+
+def _security_rag_plugin_enabled() -> bool:
+    return _rag_enabled() and _env_bool("SECURITY_RAG_PLUGIN_ENABLED", True)

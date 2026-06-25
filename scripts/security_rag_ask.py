@@ -26,17 +26,20 @@ def main() -> int:
 
     router = build_security_retrieval_router_from_env()
     classifier = build_security_route_classifier_from_env(config=router.config)
-    decision = router.route(args.query, llm_classifier=classifier)
-    print(json.dumps({"route": decision.to_dict()}, ensure_ascii=False, indent=2))
+    index = build_security_index_from_env(collection=args.collection)
+    plan = router.route_with_retrieval(
+        args.query,
+        index=index,
+        llm_classifier=classifier,
+        top_k=args.top_k,
+        min_score=args.min_score,
+    )
+    decision = plan.decision
+    print(json.dumps({"route_plan": plan.to_dict()}, ensure_ascii=False, indent=2))
     if not decision.use_rag:
         return 0
 
-    index = build_security_index_from_env(collection=args.collection)
-    hits = index.search(
-        decision.query,
-        top_k=args.top_k or decision.top_k,
-        min_score=args.min_score if args.min_score is not None else decision.min_score,
-    )
+    hits = plan.hits
     for rank, hit in enumerate(hits, start=1):
         preview = hit.text[: max(80, args.chars)].replace("\n", "\n  ")
         print(f"[{rank}] score={hit.score:.4f} source={hit.source_relpath} title={hit.title}")

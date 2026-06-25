@@ -141,6 +141,7 @@ class TaskSessionRunner:
             record.session,
             profile,
             cancel_requested=cancel_requested,
+            checkpoint_callback=lambda session: self.sessions.save(session),
             run_state=run_state,
             trace_store=trace_store,
         )
