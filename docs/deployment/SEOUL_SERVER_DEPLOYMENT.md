@@ -178,7 +178,136 @@ TAVILY_API_KEY=replace-me
 
 如果你不用 `openai_relay`，把模型配置改成自己的 provider，并同步调整 `LLM_PROVIDER` 和 `LLM_ROUTE_*`。
 
-## 4. 启动默认服务
+## 4. 部署 PostgreSQL
+
+当前 Compose 已经内置 PostgreSQL 16 服务，不需要在宿主机手动安装 PostgreSQL。服务名是：
+
+```text
+postgres
+```
+
+数据会持久化到项目目录下：
+
+```text
+/opt/taleclaw/postgres_data/
+```
+
+### 4.1 确认数据库配置
+
+先确认 `.env` 里的数据库配置。新部署时，至少要有：
+
+```dotenv
+POSTGRES_DB=agent_console
+POSTGRES_USER=agent
+POSTGRES_PASSWORD=replace_with_a_strong_db_password
+POSTGRES_HOST_PORT=55432
+DATABASE_URL=postgresql://agent:replace_with_a_strong_db_password@postgres:5432/agent_console
+```
+
+注意两个地址的区别：
+
+```text
+postgres:5432       容器内部访问 PostgreSQL，agent-console 必须用这个
+127.0.0.1:55432     宿主机本机访问 PostgreSQL，给 psql / 调试工具用
+```
+
+不要把 `DATABASE_URL` 写成 `127.0.0.1:55432`。在 `agent-console` 容器里，`127.0.0.1` 指的是它自己，不是 PostgreSQL 容器。
+
+### 4.2 启动 PostgreSQL
+
+```bash
+cd /opt/taleclaw
+sudo docker compose up -d postgres
+```
+
+检查容器状态：
+
+```bash
+sudo docker compose ps postgres
+sudo docker compose logs --tail=100 postgres
+```
+
+检查 PostgreSQL 是否 ready：
+
+```bash
+sudo docker compose exec postgres pg_isready -U agent -d agent_console
+```
+
+进入数据库执行 SQL：
+
+```bash
+sudo docker compose exec postgres psql -U agent -d agent_console
+```
+
+快速测试：
+
+```bash
+sudo docker compose exec postgres psql -U agent -d agent_console -c "select version();"
+```
+
+### 4.3 Web 启动后检查表
+
+Taleclaw 的 Web 用户、会话、trace index、memory archive 等表会在对应模块首次启动时自动创建。后面的第 5 节启动 `agent-console` 后，可以检查表是否已经出现：
+
+```bash
+sudo docker compose exec postgres psql -U agent -d agent_console -c "\dt"
+```
+
+如果没有表，优先看 Web 容器日志：
+
+```bash
+sudo docker compose logs --tail=200 agent-console
+```
+
+### 4.4 从宿主机连接数据库
+
+如果服务器上安装了 `psql` 客户端，可以从宿主机连：
+
+```bash
+psql "postgresql://agent:replace_with_a_strong_db_password@127.0.0.1:55432/agent_console"
+```
+
+这个端口只绑定在 `127.0.0.1`，不会对公网开放。不要把 `55432` 加到云安全组入站规则里。
+
+### 4.5 修改数据库密码
+
+如果 PostgreSQL 还没启动过，直接改 `.env` 里的 `POSTGRES_PASSWORD` 和 `DATABASE_URL`，然后启动即可。
+
+如果 `postgres_data/` 已经存在，`POSTGRES_PASSWORD` 只改 `.env` 不会自动修改已有数据库用户密码。需要进入数据库执行：
+
+```bash
+sudo docker compose exec postgres psql -U agent -d agent_console \
+  -c "ALTER USER agent WITH PASSWORD 'replace_with_new_password';"
+```
+
+然后同步修改 `.env`：
+
+```dotenv
+POSTGRES_PASSWORD=replace_with_new_password
+DATABASE_URL=postgresql://agent:replace_with_new_password@postgres:5432/agent_console
+```
+
+重启 Web 控制台：
+
+```bash
+sudo docker compose up -d --build agent-console
+```
+
+### 4.6 空库重建
+
+只有确认不需要旧数据，或者已经完成备份后，才可以清空数据库目录重建：
+
+```bash
+cd /opt/taleclaw
+sudo docker compose stop agent-console postgres
+sudo rm -rf postgres_data
+sudo docker compose up -d postgres
+sudo docker compose up -d --build agent-console
+```
+
+生产环境优先使用备份和恢复，不要随手删除 `postgres_data/`。
+
+## 5. 启动默认服务
 
 先启动数据库：
 
@@ -208,7 +337,7 @@ curl -u admin:replace-with-a-strong-admin-password http://127.0.0.1:8000/api/hea
 
 如果这里返回 JSON，默认部署已经跑起来了。
 
-## 5. 配置 Nginx
+## 6. 配置 Nginx
 
 先用 HTTP 反代到本机 `8000`。把 `your.domain.example` 换成你的域名；如果还没有域名，可以先写服务器公网 IP 或 `_`。
 
@@ -251,7 +380,7 @@ sudo systemctl reload nginx
 http://your.domain.example/
 ```
 
-## 6. 配置 HTTPS
+## 7. 配置 HTTPS
 
 域名 DNS 已经指向服务器后，安装 Certbot：
 
@@ -278,7 +407,7 @@ sudo docker compose up -d --build agent-console
 https://your.domain.example/
 ```
 
-## 7. 更新部署
+## 8. 更新部署
 
 ```bash
 cd /opt/taleclaw
@@ -294,7 +423,7 @@ sudo docker compose logs --tail=100 agent-console
 sudo docker compose up -d postgres
 ```
 
-## 8. 可选：启用 Telegram
+## 9. 可选：启用 Telegram
 
 编辑 `.env`：
 
@@ -314,7 +443,7 @@ sudo docker compose logs -f telegram-worker
 
 Web 控制台和 PostgreSQL 仍然按默认服务运行。
 
-## 9. 可选：启用飞书
+## 10. 可选：启用飞书
 
 编辑 `.env`：
 
@@ -358,7 +487,7 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-## 10. 可选：启用 RAG / Qdrant
+## 11. 可选：启用 RAG / Qdrant
 
 当前默认部署不启用 RAG。只有确认要恢复历史向量或安全知识库检索时，再打开这一段。
 
@@ -387,7 +516,7 @@ http://127.0.0.1:6333/dashboard
 
 不要把 Qdrant 端口开放到公网。
 
-## 11. 备份
+## 12. 备份
 
 创建备份目录：
 
@@ -401,6 +530,20 @@ mkdir -p /opt/taleclaw-backups
 cd /opt/taleclaw
 sudo docker compose exec -T postgres pg_dump -U agent -d agent_console \
   > /opt/taleclaw-backups/agent_console_$(date +%F).sql
+```
+
+恢复 PostgreSQL 到一个已经启动的空库：
+
+```bash
+cd /opt/taleclaw
+sudo docker compose exec -T postgres psql -U agent -d agent_console \
+  < /opt/taleclaw-backups/agent_console_YYYY-MM-DD.sql
+```
+
+恢复前建议先停掉 Web 控制台，避免恢复过程中继续写入：
+
+```bash
+sudo docker compose stop agent-console
 ```
 
 备份本地状态文件：
@@ -418,7 +561,7 @@ cd /opt/taleclaw
 sudo tar -czf /opt/taleclaw-backups/taleclaw_rag_$(date +%F).tgz qdrant_storage
 ```
 
-## 12. 常用排障
+## 13. 常用排障
 
 查看默认会启动哪些服务：
 
@@ -477,7 +620,7 @@ sudo docker compose exec agent-console env | grep -E 'RAG_ENABLED|HISTORY_VECTOR
 sudo ss -lntp | grep -E ':80|:443|:8000|:8010|:55432'
 ```
 
-## 13. 上线检查清单
+## 14. 上线检查清单
 
 - `sudo docker compose ps` 里 `agent-console` 和 `postgres` 都是 running。
 - `curl -u admin:你的密码 http://127.0.0.1:8000/api/health` 返回 JSON。
