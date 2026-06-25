@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,12 +9,17 @@ from pathlib import Path
 from evaluation.swebench_adapter import (
     SweBenchInstance,
     build_swebench_prompt,
+    clone_swebench_repo,
+    dataset_name_candidates,
+    load_swebench_instances,
     official_evaluation_command,
     prediction_record,
     repo_clone_url,
     safe_instance_dir,
     write_prediction,
+    _run_command,
 )
+from unittest.mock import patch
 
 
 class SweBenchAdapterTests(unittest.TestCase):
@@ -87,6 +93,81 @@ class SweBenchAdapterTests(unittest.TestCase):
         self.assertIn("/tmp/predictions.jsonl", command)
         self.assertIn("--instance_ids", command)
         self.assertIn("sympy__sympy-20590", command)
+
+    def test_verified_dataset_aliases_include_current_and_legacy_names(self) -> None:
+        self.assertEqual(
+            dataset_name_candidates("verified"),
+            ["SWE-bench/SWE-bench_Verified", "princeton-nlp/SWE-bench_Verified"],
+        )
+        self.assertEqual(
+            dataset_name_candidates("swe-verified"),
+            ["SWE-bench/SWE-bench_Verified", "princeton-nlp/SWE-bench_Verified"],
+        )
+
+    def test_load_swebench_instances_can_select_limit_offset_or_explicit_ids(self) -> None:
+        records = [
+            {
+                "instance_id": f"repo__repo-{index}",
+                "repo": "owner/repo",
+                "base_commit": f"abc{index}",
+                "problem_statement": f"fix {index}",
+            }
+            for index in range(5)
+        ]
+        with patch("evaluation.swebench_adapter.load_swebench_records", return_value=records):
+            sliced = load_swebench_instances(dataset_name="verified", split="test", limit=2, offset=1)
+            explicit = load_swebench_instances(
+                dataset_name="verified",
+                split="test",
+                instance_ids=["repo__repo-3", "repo__repo-1"],
+            )
+
+        self.assertEqual(["repo__repo-1", "repo__repo-2"], [item.instance_id for item in sliced])
+        self.assertEqual(["repo__repo-3", "repo__repo-1"], [item.instance_id for item in explicit])
+
+    def test_official_eval_command_accepts_multiple_instance_ids(self) -> None:
+        command = official_evaluation_command(
+            swebench_repo="/tmp/SWE-bench",
+            dataset_name="SWE-bench/SWE-bench_Verified",
+            predictions_path="/tmp/predictions.jsonl",
+            run_id="run-verified",
+            instance_ids=["a__a-1", "b__b-2"],
+        )
+
+        index = command.index("--instance_ids")
+        self.assertEqual(["a__a-1", "b__b-2"], command[index + 1 : index + 3])
+
+    def test_clone_uses_bare_repo_cache_when_configured(self) -> None:
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch("evaluation.swebench_adapter.subprocess.run", side_effect=fake_run):
+                clone_swebench_repo(
+                    "owner/repo",
+                    root / "workspace",
+                    repo_cache_root=root / "cache",
+                    retries=1,
+                )
+
+        self.assertEqual(["git", "clone", "--mirror", "https://github.com/owner/repo.git"], calls[0][:4])
+        self.assertEqual(["git", "clone"], calls[1][:2])
+        self.assertIn("owner_repo.git", calls[1][2])
+
+    def test_run_command_error_includes_stderr(self) -> None:
+        def fake_run(command, **kwargs):
+            return subprocess.CompletedProcess(command, 128, "", "network dropped")
+
+        with patch("evaluation.swebench_adapter.subprocess.run", side_effect=fake_run):
+            with self.assertRaises(RuntimeError) as ctx:
+                _run_command(["git", "clone", "bad"], cwd=Path("/tmp"))
+
+        self.assertIn("network dropped", str(ctx.exception))
+        self.assertIn("git clone bad", str(ctx.exception))
 
 
 if __name__ == "__main__":

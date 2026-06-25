@@ -31,9 +31,13 @@ from tools.tool_registry import build_lead_tool_registry
 
 
 DEFAULT_SWEBENCH_DATASET = "princeton-nlp/SWE-bench_Lite"
+DEFAULT_SWEBENCH_VERIFIED_DATASET = "SWE-bench/SWE-bench_Verified"
+FALLBACK_SWEBENCH_VERIFIED_DATASET = "princeton-nlp/SWE-bench_Verified"
 DEFAULT_SWEBENCH_SPLIT = "test"
 DEFAULT_SWEBENCH_EVAL_ROOT = Path(".evals/swebench")
 DEFAULT_SWEBENCH_WORKSPACE_ROOT = Path(".evals/swebench_workspaces")
+DEFAULT_SWEBENCH_REPO_CACHE_ROOT = Path(".evals/swebench_repo_cache")
+DEFAULT_GIT_TIMEOUT_SECONDS = 600
 
 
 @dataclass(frozen=True)
@@ -81,6 +85,43 @@ def load_swebench_instance(
     split: str = DEFAULT_SWEBENCH_SPLIT,
     instance_id: str,
 ) -> SweBenchInstance:
+    for record in load_swebench_records(dataset_name=dataset_name, split=split):
+        if str(record.get("instance_id")) == instance_id:
+            return SweBenchInstance.from_record(dict(record))
+    raise ValueError(
+        f"Instance {instance_id!r} was not found in {dataset_name!r} split {split!r}."
+    )
+
+
+def load_swebench_instances(
+    *,
+    dataset_name: str = DEFAULT_SWEBENCH_DATASET,
+    split: str = DEFAULT_SWEBENCH_SPLIT,
+    instance_ids: list[str] | None = None,
+    limit: int = 10,
+    offset: int = 0,
+) -> list[SweBenchInstance]:
+    records = load_swebench_records(dataset_name=dataset_name, split=split)
+    wanted = [item.strip() for item in (instance_ids or []) if item.strip()]
+    if wanted:
+        by_id = {str(record.get("instance_id")): record for record in records}
+        missing = [item for item in wanted if item not in by_id]
+        if missing:
+            raise ValueError(
+                f"Unknown SWE-bench instance id(s): {', '.join(missing)}"
+            )
+        return [SweBenchInstance.from_record(dict(by_id[item])) for item in wanted]
+
+    start = max(0, int(offset or 0))
+    stop = start + max(1, int(limit or 10))
+    return [SweBenchInstance.from_record(dict(record)) for record in records[start:stop]]
+
+
+def load_swebench_records(
+    *,
+    dataset_name: str = DEFAULT_SWEBENCH_DATASET,
+    split: str = DEFAULT_SWEBENCH_SPLIT,
+) -> list[dict[str, Any]]:
     try:
         from datasets import load_dataset
     except ModuleNotFoundError as exc:
@@ -89,13 +130,29 @@ def load_swebench_instance(
             "SWE-bench task, for example: pip install datasets"
         ) from exc
 
-    dataset = load_dataset(dataset_name, split=split)
-    for record in dataset:
-        if str(record.get("instance_id")) == instance_id:
-            return SweBenchInstance.from_record(dict(record))
-    raise ValueError(
-        f"Instance {instance_id!r} was not found in {dataset_name!r} split {split!r}."
+    errors = []
+    for candidate in dataset_name_candidates(dataset_name):
+        try:
+            dataset = load_dataset(candidate, split=split)
+            return [dict(record) for record in dataset]
+        except Exception as exc:
+            errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+    raise RuntimeError(
+        f"Failed to load SWE-bench dataset {dataset_name!r} split {split!r}.\n"
+        + "\n".join(errors)
     )
+
+
+def dataset_name_candidates(dataset_name: str) -> list[str]:
+    normalized = str(dataset_name or "").strip()
+    lowered = normalized.lower().replace("_", "-")
+    if lowered in {"verified", "swe-verified", "swebench-verified", "swe-bench-verified"}:
+        return [DEFAULT_SWEBENCH_VERIFIED_DATASET, FALLBACK_SWEBENCH_VERIFIED_DATASET]
+    if normalized == DEFAULT_SWEBENCH_VERIFIED_DATASET:
+        return [DEFAULT_SWEBENCH_VERIFIED_DATASET, FALLBACK_SWEBENCH_VERIFIED_DATASET]
+    if normalized == FALLBACK_SWEBENCH_VERIFIED_DATASET:
+        return [FALLBACK_SWEBENCH_VERIFIED_DATASET, DEFAULT_SWEBENCH_VERIFIED_DATASET]
+    return [normalized or DEFAULT_SWEBENCH_DATASET]
 
 
 def build_swebench_prompt(instance: SweBenchInstance) -> str:
@@ -144,6 +201,9 @@ def run_swebench_instance(
     swebench_repo: str | Path | None = None,
     evaluate: bool = False,
     dataset_name: str = DEFAULT_SWEBENCH_DATASET,
+    repo_cache_root: str | Path | None = DEFAULT_SWEBENCH_REPO_CACHE_ROOT,
+    clone_retries: int = 2,
+    git_timeout_seconds: int = DEFAULT_GIT_TIMEOUT_SECONDS,
 ) -> SweBenchRunResult:
     eval_id = "swebench_" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:6]
     eval_dir = Path(eval_root) / eval_id
@@ -156,6 +216,9 @@ def run_swebench_instance(
         instance,
         workspace_parent=workspace_parent,
         reuse_workspace=reuse_workspace,
+        repo_cache_root=repo_cache_root,
+        clone_retries=clone_retries,
+        git_timeout_seconds=git_timeout_seconds,
     )
     _emit(progress, "workspace_prepared", {"workspace": str(workspace)})
 
@@ -299,28 +362,69 @@ def prepare_swebench_workspace(
     *,
     workspace_parent: str | Path,
     reuse_workspace: bool = False,
+    repo_cache_root: str | Path | None = DEFAULT_SWEBENCH_REPO_CACHE_ROOT,
+    clone_retries: int = 2,
+    git_timeout_seconds: int = DEFAULT_GIT_TIMEOUT_SECONDS,
 ) -> Path:
     workspace_parent = Path(workspace_parent)
     workspace = workspace_parent / safe_instance_dir(instance.instance_id)
     if workspace.exists() and not reuse_workspace:
         shutil.rmtree(workspace)
     if workspace.exists():
-        _run_git(["fetch", "--all", "--tags"], cwd=workspace)
-        _run_git(["checkout", instance.base_commit], cwd=workspace)
-        _run_git(["reset", "--hard", instance.base_commit], cwd=workspace)
-        _run_git(["clean", "-fdx"], cwd=workspace)
+        _run_git(["fetch", "--all", "--tags"], cwd=workspace, timeout=git_timeout_seconds)
+        _run_git(["checkout", instance.base_commit], cwd=workspace, timeout=git_timeout_seconds)
+        _run_git(["reset", "--hard", instance.base_commit], cwd=workspace, timeout=git_timeout_seconds)
+        _run_git(["clean", "-fdx"], cwd=workspace, timeout=git_timeout_seconds)
     else:
         workspace.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(
-            ["git", "clone", repo_clone_url(instance.repo), str(workspace)],
-            check=True,
-            capture_output=True,
-            text=True,
+        clone_swebench_repo(
+            instance.repo,
+            workspace,
+            repo_cache_root=repo_cache_root,
+            retries=clone_retries,
+            timeout=git_timeout_seconds,
         )
-        _run_git(["checkout", instance.base_commit], cwd=workspace)
-    _run_git(["config", "user.name", "SWE-bench"], cwd=workspace)
-    _run_git(["config", "user.email", "swebench@example.invalid"], cwd=workspace)
+        _run_git(["checkout", instance.base_commit], cwd=workspace, timeout=git_timeout_seconds)
+    _run_git(["config", "user.name", "SWE-bench"], cwd=workspace, timeout=git_timeout_seconds)
+    _run_git(["config", "user.email", "swebench@example.invalid"], cwd=workspace, timeout=git_timeout_seconds)
     return workspace
+
+
+def clone_swebench_repo(
+    repo: str,
+    workspace: str | Path,
+    *,
+    repo_cache_root: str | Path | None = DEFAULT_SWEBENCH_REPO_CACHE_ROOT,
+    retries: int = 2,
+    timeout: int = DEFAULT_GIT_TIMEOUT_SECONDS,
+) -> None:
+    url = repo_clone_url(repo)
+    workspace = Path(workspace)
+    cache_root = Path(repo_cache_root) if repo_cache_root is not None else None
+    if cache_root is None:
+        _run_with_retries(["git", "clone", url, str(workspace)], retries=retries, timeout=timeout)
+        return
+
+    mirror = cache_root / (safe_instance_dir(repo) + ".git")
+    mirror.parent.mkdir(parents=True, exist_ok=True)
+    if mirror.exists():
+        _run_with_retries(
+            ["git", "remote", "update", "--prune"],
+            cwd=mirror,
+            retries=retries,
+            timeout=timeout,
+        )
+    else:
+        _run_with_retries(
+            ["git", "clone", "--mirror", url, str(mirror)],
+            retries=retries,
+            timeout=timeout,
+        )
+    _run_with_retries(
+        ["git", "clone", str(mirror), str(workspace)],
+        retries=retries,
+        timeout=timeout,
+    )
 
 
 def repo_clone_url(repo: str) -> str:
@@ -377,6 +481,7 @@ def official_evaluation_command(
     predictions_path: str | Path,
     run_id: str,
     instance_id: str | None = None,
+    instance_ids: list[str] | None = None,
     max_workers: int = 1,
 ) -> list[str]:
     command = [
@@ -392,13 +497,82 @@ def official_evaluation_command(
         "--run_id",
         run_id,
     ]
+    ids = [item for item in (instance_ids or []) if item]
     if instance_id:
-        command.extend(["--instance_ids", instance_id])
+        ids.append(instance_id)
+    if ids:
+        command.extend(["--instance_ids", *ids])
     return command
 
 
-def _run_git(args: list[str], *, cwd: Path) -> None:
-    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+def _run_git(
+    args: list[str],
+    *,
+    cwd: Path,
+    timeout: int = DEFAULT_GIT_TIMEOUT_SECONDS,
+) -> None:
+    _run_command(["git", *args], cwd=cwd, timeout=timeout)
+
+
+def _run_with_retries(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    retries: int = 2,
+    timeout: int = DEFAULT_GIT_TIMEOUT_SECONDS,
+) -> None:
+    attempts = max(1, int(retries or 1))
+    errors = []
+    for attempt in range(1, attempts + 1):
+        try:
+            _run_command(command, cwd=cwd, timeout=timeout)
+            return
+        except RuntimeError as exc:
+            errors.append(str(exc))
+            if attempt == attempts:
+                break
+    raise RuntimeError(
+        f"Command failed after {attempts} attempt(s): {' '.join(command)}\n"
+        + "\n\n".join(errors)
+    )
+
+
+def _run_command(
+    command: list[str],
+    *,
+    cwd: Path | None = None,
+    timeout: int = DEFAULT_GIT_TIMEOUT_SECONDS,
+) -> None:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=max(1, int(timeout or DEFAULT_GIT_TIMEOUT_SECONDS)),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"command timed out after {timeout}s: {' '.join(command)}\n"
+            f"stdout:\n{_preview(exc.stdout)}\n"
+            f"stderr:\n{_preview(exc.stderr)}"
+        ) from exc
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"command failed: {' '.join(command)}\n"
+            f"cwd: {cwd or Path.cwd()}\n"
+            f"exit: {result.returncode}\n"
+            f"stdout:\n{_preview(result.stdout)}\n"
+            f"stderr:\n{_preview(result.stderr)}"
+        )
+
+
+def _preview(value: Any, *, limit: int = 4000) -> str:
+    text = "" if value is None else str(value)
+    if len(text) <= limit:
+        return text
+    return text[-limit:]
 
 
 def _emit(progress: Callable[[dict[str, Any]], None] | None, event: str, payload: dict[str, Any]) -> None:

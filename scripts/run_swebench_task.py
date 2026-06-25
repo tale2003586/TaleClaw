@@ -11,6 +11,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from evaluation.swebench_adapter import (  # noqa: E402
+    DEFAULT_GIT_TIMEOUT_SECONDS,
+    DEFAULT_SWEBENCH_REPO_CACHE_ROOT,
     DEFAULT_SWEBENCH_DATASET,
     DEFAULT_SWEBENCH_EVAL_ROOT,
     DEFAULT_SWEBENCH_SPLIT,
@@ -32,6 +34,9 @@ def main() -> int:
     parser.add_argument("--model-name", default=None)
     parser.add_argument("--max-reasoning-steps", type=int, default=80)
     parser.add_argument("--reuse-workspace", action="store_true")
+    parser.add_argument("--repo-cache-root", default=str(DEFAULT_SWEBENCH_REPO_CACHE_ROOT))
+    parser.add_argument("--clone-retries", type=int, default=2)
+    parser.add_argument("--git-timeout-seconds", type=int, default=DEFAULT_GIT_TIMEOUT_SECONDS)
     parser.add_argument(
         "--swebench-repo",
         default="/home/tale/kaggle/bench/SWE-bench",
@@ -63,6 +68,9 @@ def main() -> int:
         swebench_repo=args.swebench_repo,
         evaluate=args.evaluate,
         dataset_name=args.dataset_name,
+        repo_cache_root=args.repo_cache_root or None,
+        clone_retries=args.clone_retries,
+        git_timeout_seconds=args.git_timeout_seconds,
     )
     summary = {
         "instance_id": result.instance.instance_id,
