@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "name": "swebench-verified-matrix-example",
+  "notes": [
+    "This matrix runs SWE-bench Verified through scripts/run_swebench_verified.py.",
+    "Start with limit=1 or explicit instance_ids before spending tokens on 10 tasks x multiple cells.",
+    "agents and feature_sets are crossed into matrix cells.",
+    "PASS means the agent completed and wrote a patch; official SWE-bench resolved status requires the official harness."
+  ],
+  "swebench": {
+    "dataset_name": "SWE-bench/SWE-bench_Verified",
+    "split": "test",
+    "limit": 1,
+    "offset": 0,
+    "instance_ids": [],
+    "model_name": "",
+    "max_reasoning_steps": 80,
+    "reuse_workspace": false,
+    "repo_cache_root": ".evals/swebench_repo_cache",
+    "clone_retries": 4,
+    "git_timeout_seconds": 1200,
+    "swebench_repo": "",
+    "evaluate": false,
+    "official_max_workers": 1
+  },
+  "repetitions": 1,
+  "env": {
+    "LLM_HEALTHCHECK_ON_STARTUP": "0"
+  },
+  "agents": [
+    {
+      "name": "real-default",
+      "enabled": true,
+      "env": {
+        "LLM_ROUTE_CODING": "openai_relay,deepseek,mimo"
+      },
+      "dimensions": {
+        "agent": "real",
+        "model_route": "default"
+      }
+    },
+    {
+      "name": "real-alt-route",
+      "enabled": false,
+      "env": {
+        "LLM_ROUTE_CODING": "deepseek,mimo,openai_relay"
+      },
+      "dimensions": {
+        "agent": "real",
+        "model_route": "alt"
+      }
+    }
+  ],
+  "feature_sets": [
+    {
+      "name": "budget-on",
+      "enabled": true,
+      "env": {
+        "CONTEXT_ENABLE_SECTION_BUDGET": "1",
+        "WORKING_MEMORY_RESUME_ENABLED": "1"
+      },
+      "harness": {
+        "max_reasoning_steps": 80
+      },
+      "dimensions": {
+        "context_budget": "on",
+        "working_memory_resume": "on"
+      }
+    },
+    {
+      "name": "context-budget-off",
+      "enabled": true,
+      "env": {
+        "CONTEXT_ENABLE_SECTION_BUDGET": "0",
+        "WORKING_MEMORY_RESUME_ENABLED": "1"
+      },
+      "harness": {
+        "max_reasoning_steps": 80
+      },
+      "dimensions": {
+        "context_budget": "off",
+        "working_memory_resume": "on"
+      }
+    },
+    {
+      "name": "working-memory-resume-off",
+      "enabled": false,
+      "env": {
+        "CONTEXT_ENABLE_SECTION_BUDGET": "1",
+        "WORKING_MEMORY_RESUME_ENABLED": "0"
+      },
+      "harness": {
+        "max_reasoning_steps": 80
+      },
+      "dimensions": {
+        "context_budget": "on",
+        "working_memory_resume": "off"
+      }
+    }
+  ],
+  "metrics": [
+    "pass_rate",
+    "agent_pass_rate",
+    "patches_written",
+    "total_tokens",
+    "input_tokens",
+    "output_tokens",
+    "wall_duration_ms",
+    "avg_total_tokens_per_instance",
+    "avg_tool_calls_per_instance",
+    "tool_calls",
+    "model_calls",
+    "tool_failures",
+    "tool_denials",
+    "context_build_compressed_count"
+  ]
+}

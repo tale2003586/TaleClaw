@@ -84,6 +84,109 @@ tasks/
 
 这里的 `PASS` 表示 agent 成功完成运行并产出 patch，不等同于官方判题 resolved。
 
+## 跑对比矩阵
+
+如果要像 coding agent matrix 一样，对比不同 agent / 功能开关组合，使用：
+
+```bash
+python scripts/run_swebench_verified_matrix.py \
+  --config evaluation/swebench_verified_matrix.example.json \
+  --output-root .evals/swebench_verified_matrix
+```
+
+示例配置默认取 1 个 Verified 任务，并对比：
+
+```text
+real-default / budget-on
+real-default / context-budget-off
+```
+
+输出目录：
+
+```text
+.evals/swebench_verified_matrix/swe_verified_matrix_<timestamp>/
+```
+
+主要文件和普通矩阵保持一致：
+
+```text
+report.md
+report.json
+rows.csv
+task_rows.csv
+expanded_plan.json
+cells/<cell_id>/
+```
+
+- `rows.csv`：每个 cell 一行，包含 pass rate、token、耗时、tool/model calls。
+- `task_rows.csv`：每个 Verified instance 一行，包含 patch bytes、token、tool calls、run_dir、错误信息。
+- `cells/<cell_id>/`：该 cell 的 stdout、stderr、Verified batch summary、workspace。
+
+先看矩阵会展开成哪些 cell，不真正跑：
+
+```bash
+python scripts/run_swebench_verified_matrix.py \
+  --config evaluation/swebench_verified_matrix.example.json \
+  --dry-run
+```
+
+只跑第一个 cell：
+
+```bash
+python scripts/run_swebench_verified_matrix.py \
+  --config evaluation/swebench_verified_matrix.example.json \
+  --limit-cells 1
+```
+
+临时指定只跑某一个 Verified instance：
+
+```bash
+python scripts/run_swebench_verified_matrix.py \
+  --config evaluation/swebench_verified_matrix.example.json \
+  --instance-id astropy__astropy-12907
+```
+
+临时改成跑 10 个任务：
+
+```bash
+python scripts/run_swebench_verified_matrix.py \
+  --config evaluation/swebench_verified_matrix.example.json \
+  --limit 10
+```
+
+控制功能开关在 `feature_sets` 里改：
+
+```json
+{
+  "name": "context-budget-off",
+  "enabled": true,
+  "env": {
+    "CONTEXT_ENABLE_SECTION_BUDGET": "0",
+    "WORKING_MEMORY_RESUME_ENABLED": "1"
+  },
+  "harness": {
+    "max_reasoning_steps": 80
+  }
+}
+```
+
+临时关闭某个组合：
+
+```json
+{
+  "name": "working-memory-resume-off",
+  "enabled": false
+}
+```
+
+控制台会输出每个 cell 和每个 instance 的结果：
+
+```text
+[01/02] real-default__budget-on agent=real-default feature=budget-on
+    PASS pass_rate=100.00% tokens=56789 tools=42 wall=120000ms
+      PASS astropy__astropy-12907 repo=astropy/astropy patch=1234B tools=42 tokens=56789 time=120000ms
+```
+
 ## 指定 10 个任务
 
 ```bash
