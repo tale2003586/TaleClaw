@@ -1,0 +1,157 @@
+{
+  "name": "taleclaw-coding-agent",
+  "displayName": "TaleClaw Coding Agent",
+  "description": "Run the TaleClaw coding agent directly inside VS Code.",
+  "version": "0.1.0",
+  "publisher": "taleclaw",
+  "scripts": {
+    "install:local": "bash ../scripts/install_vscode_extension.sh",
+    "package": "npx @vscode/vsce package"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:taleclaw.agentView",
+    "onCommand:taleclaw.runTask",
+    "onCommand:taleclaw.cancelTask",
+    "onCommand:taleclaw.openLastTrace",
+    "onCommand:taleclaw.refreshView",
+    "onCommand:taleclaw.openSettings",
+    "onCommand:taleclaw.composeTask"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "taleclaw",
+          "title": "TaleClaw",
+          "icon": "media/taleclaw.svg"
+        }
+      ]
+    },
+    "views": {
+      "taleclaw": [
+        {
+          "type": "webview",
+          "id": "taleclaw.agentView",
+          "name": "Tasks"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "taleclaw.runTask",
+        "title": "TaleClaw: Run Coding Agent Task"
+      },
+      {
+        "command": "taleclaw.cancelTask",
+        "title": "TaleClaw: Cancel Running Task"
+      },
+      {
+        "command": "taleclaw.openLastTrace",
+        "title": "TaleClaw: Open Last Trace Summary"
+      },
+      {
+        "command": "taleclaw.refreshView",
+        "title": "TaleClaw: Refresh View",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "taleclaw.openSettings",
+        "title": "TaleClaw: Open Settings",
+        "icon": "$(gear)"
+      },
+      {
+        "command": "taleclaw.composeTask",
+        "title": "TaleClaw: New Task",
+        "icon": "$(edit)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "taleclaw.refreshView",
+          "when": "view == taleclaw.agentView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "taleclaw.openSettings",
+          "when": "view == taleclaw.agentView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "taleclaw.composeTask",
+          "when": "view == taleclaw.agentView",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "TaleClaw",
+      "properties": {
+        "taleclaw.runtimeRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the TaleClaw runtime repository. Defaults to the current VS Code workspace."
+        },
+        "taleclaw.workspaceRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Target coding workspace. Defaults to the active VS Code workspace folder."
+        },
+        "taleclaw.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Python executable used to run TaleClaw."
+        },
+        "taleclaw.mode": {
+          "type": "string",
+          "enum": [
+            "coding",
+            "hybrid",
+            "bot"
+          ],
+          "default": "coding",
+          "description": "Mode pinned before running a task."
+        },
+        "taleclaw.maxReasoningSteps": {
+          "type": "number",
+          "default": 24,
+          "minimum": 1,
+          "description": "Lead agent reasoning-step budget."
+        },
+        "taleclaw.subagentMaxReasoningSteps": {
+          "type": "number",
+          "default": 16,
+          "minimum": 1,
+          "description": "Subagent reasoning-step budget."
+        },
+        "taleclaw.ragEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable RAG features for the task."
+        },
+        "taleclaw.contextBudgetEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable context section budgeting."
+        },
+        "taleclaw.workingMemoryEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable coding working memory checkpoints."
+        },
+        "taleclaw.toolLoopGuardEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable duplicate tool-call loop guard."
+        }
+      }
+    }
+  }
+}

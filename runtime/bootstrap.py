@@ -14,7 +14,12 @@ from runtime.app_runtime import AppRuntime
 from runtime.env_loader import load_dotenv_file
 from runtime.background_memory import BackgroundMemoryLifecycle
 from runtime.trace.trace_store import TraceStore
-from tools.hooks import FileWriteScopeHook, ToolLoopGuardHook, ToolTraceHook
+from tools.hooks import (
+    FileWriteScopeHook,
+    ToolLoopGuardHook,
+    ToolResultStoreHook,
+    ToolTraceHook,
+)
 from tools.executor import ToolExecutor
 from tools.handlers import cleanup_expired_sandboxes, configure_subagent_runner
 from tools.tool_registry import build_lead_tool_registry
@@ -216,12 +221,15 @@ def build_runtime() -> AppRuntime:
         memory_store=memory_store,
     )
 
-    executor = ToolExecutor([
-        FileWriteScopeHook(),
-        #ToolLoopGuardHook(),
+    executor_hooks = [FileWriteScopeHook()]
+    if _tool_loop_guard_enabled():
+        executor_hooks.append(ToolLoopGuardHook())
+    executor_hooks.extend([
+        ToolResultStoreHook(),
         ToolTraceHook(),
         *plugin_manager.tool_hooks,
     ])
+    executor = ToolExecutor(executor_hooks)
     reflection_agent = None
     if _env_bool("REFLECTION_ENABLED", False):
         reflection_agent = ReflectionAgent(
@@ -343,3 +351,7 @@ def _security_rag_auto_context_enabled() -> bool:
 
 def _security_rag_plugin_enabled() -> bool:
     return _rag_enabled() and _env_bool("SECURITY_RAG_PLUGIN_ENABLED", True)
+
+
+def _tool_loop_guard_enabled() -> bool:
+    return _env_bool("TOOL_LOOP_GUARD_ENABLED", True)

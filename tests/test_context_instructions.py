@@ -411,6 +411,94 @@ class ContextInstructionTests(unittest.TestCase):
         self.assertEqual(3, sections["active_turn"]["metadata"]["message_count"])
         self.assertEqual(len("fix the current bug"), sections["current_request"]["raw_chars"])
 
+    def test_coding_transfers_conversation_history_budget_to_active_turn(self) -> None:
+        session = Session(id="web:test")
+        session.add_message("user", "old coding discussion should not render")
+        session.add_message("assistant", "old coding answer should not render")
+        active_turn_start = len(session.messages)
+        session.add_message("user", "fix the current coding task")
+
+        with patch.dict(
+            "os.environ",
+            {
+                "CONTEXT_ENABLE_SECTION_BUDGET": "1",
+                "CONTEXT_CONVERSATION_HISTORY_BUDGET": "500",
+                "CONTEXT_CONVERSATION_HISTORY_FLOOR": "200",
+                "CONTEXT_ACTIVE_TURN_BUDGET": "300",
+                "CONTEXT_ACTIVE_TURN_FLOOR": "100",
+            },
+            clear=False,
+        ):
+            context = ContextBuilder().build(
+                session=session,
+                profile=SimpleNamespace(
+                    system_prompt="base",
+                    tool_mode="coding",
+                ),
+                active_turn_start_index=active_turn_start,
+            )
+
+        rendered_text = "\n".join(str(message.get("content", "")) for message in context.messages)
+        self.assertNotIn("old coding discussion should not render", rendered_text)
+        self.assertNotIn("old coding answer should not render", rendered_text)
+        self.assertIn("fix the current coding task", rendered_text)
+
+        report = context.report.to_dict()
+        history = report["sections"]["conversation_history"]
+        active = report["sections"]["active_turn"]
+
+        self.assertEqual(0, history["rendered_chars"])
+        self.assertEqual(0, history["budget_chars"])
+        self.assertTrue(history["truncated"])
+        self.assertTrue(history["metadata"]["coding_active_turn_only"])
+        self.assertEqual("active_turn", history["metadata"]["transferred_to"])
+        self.assertEqual(800, active["budget_chars"])
+        self.assertEqual(500, active["metadata"]["transferred_budget_chars"])
+        self.assertTrue(active["metadata"]["coding_conversation_history_budget_transferred"])
+        self.assertIn(
+            "coding_history_budget_transferred_to_active_turn",
+            {item.get("reason") for item in report["reductions"]},
+        )
+
+    def test_session_coding_mode_transfers_history_budget_to_active_turn(self) -> None:
+        session = Session(id="task:test", current_mode="coding")
+        session.add_message("user", "old coding discussion should not render")
+        active_turn_start = len(session.messages)
+        session.add_message("user", "fix the current coding task")
+
+        with patch.dict(
+            "os.environ",
+            {
+                "CONTEXT_ENABLE_SECTION_BUDGET": "1",
+                "CONTEXT_CONVERSATION_HISTORY_BUDGET": "500",
+                "CONTEXT_CONVERSATION_HISTORY_FLOOR": "200",
+                "CONTEXT_ACTIVE_TURN_BUDGET": "300",
+                "CONTEXT_ACTIVE_TURN_FLOOR": "100",
+            },
+            clear=False,
+        ):
+            context = ContextBuilder().build(
+                session=session,
+                profile=SimpleNamespace(
+                    system_prompt="base",
+                    tool_mode="hybrid",
+                ),
+                active_turn_start_index=active_turn_start,
+            )
+
+        rendered_text = "\n".join(str(message.get("content", "")) for message in context.messages)
+        self.assertNotIn("old coding discussion should not render", rendered_text)
+        self.assertIn("fix the current coding task", rendered_text)
+
+        report = context.report.to_dict()
+        history = report["sections"]["conversation_history"]
+        active = report["sections"]["active_turn"]
+
+        self.assertEqual(0, history["budget_chars"])
+        self.assertTrue(history["metadata"]["coding_active_turn_only"])
+        self.assertEqual(800, active["budget_chars"])
+        self.assertTrue(active["metadata"]["coding_conversation_history_budget_transferred"])
+
     def test_active_turn_budget_summarizes_older_tool_results(self) -> None:
         session = Session(id="web:test")
         active_turn_start = len(session.messages)

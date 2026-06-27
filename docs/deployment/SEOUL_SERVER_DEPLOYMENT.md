@@ -93,6 +93,36 @@ sudo apt-get install -y \
 sudo systemctl enable --now docker
 ```
 
+配置 Docker Hub 镜像加速。腾讯云服务器访问 `registry-1.docker.io` 经常超时，建议直接写入腾讯云 mirror：
+
+```bash
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json >/dev/null <<'JSON'
+{
+  "registry-mirrors": [
+    "https://mirror.ccs.tencentyun.com"
+  ]
+}
+JSON
+
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+sudo docker info | grep -A 5 "Registry Mirrors"
+```
+
+先测试能否拉到 PostgreSQL：
+
+```bash
+sudo docker pull postgres:16
+```
+
+如果这里仍然访问 `registry-1.docker.io` 超时，可以在 `.env` 里直接指定腾讯云镜像名：
+
+```dotenv
+POSTGRES_IMAGE=mirror.ccs.tencentyun.com/library/postgres:16
+PYTHON_IMAGE=mirror.ccs.tencentyun.com/library/python:3.12-slim
+```
+
 可选：让当前用户免 `sudo` 使用 Docker。
 
 ```bash
@@ -201,6 +231,7 @@ POSTGRES_DB=agent_console
 POSTGRES_USER=agent
 POSTGRES_PASSWORD=replace_with_a_strong_db_password
 POSTGRES_HOST_PORT=55432
+POSTGRES_IMAGE=postgres:16
 DATABASE_URL=postgresql://agent:replace_with_a_strong_db_password@postgres:5432/agent_console
 ```
 
@@ -217,6 +248,16 @@ postgres:5432       容器内部访问 PostgreSQL，agent-console 必须用这�
 
 ```bash
 cd /opt/taleclaw
+sudo docker compose up -d postgres
+```
+
+如果服务器拉 Docker Hub 镜像超时，把 `.env` 里的镜像改成腾讯云地址后重试：
+
+```dotenv
+POSTGRES_IMAGE=mirror.ccs.tencentyun.com/library/postgres:16
+```
+
+```bash
 sudo docker compose up -d postgres
 ```
 

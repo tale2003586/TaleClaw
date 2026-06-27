@@ -148,6 +148,42 @@ def build_trace_summary_payload(
                 "context_compression_savings_ratio",
                 0.0,
             ),
+            "context_token_compression_saved_tokens": metrics.get(
+                "context_token_compression_saved_tokens",
+                0,
+            ),
+            "context_token_compression_ratio": metrics.get(
+                "context_token_compression_ratio",
+                1.0,
+            ),
+            "context_token_compression_savings_ratio": metrics.get(
+                "context_token_compression_savings_ratio",
+                0.0,
+            ),
+            "coding_context_state_builds": metrics.get(
+                "coding_context_state_builds",
+                0,
+            ),
+            "coding_context_compacted_count": metrics.get(
+                "coding_context_compacted_count",
+                0,
+            ),
+            "coding_context_latest_generation": metrics.get(
+                "coding_context_latest_generation",
+                0,
+            ),
+            "coding_context_max_generation": metrics.get(
+                "coding_context_max_generation",
+                0,
+            ),
+            "coding_context_latest_prompt_tail_start_index": metrics.get(
+                "coding_context_latest_prompt_tail_start_index",
+                0,
+            ),
+            "coding_context_latest_compacted_until_index": metrics.get(
+                "coding_context_latest_compacted_until_index",
+                0,
+            ),
         },
         "workspace": workspace,
         "tools": tool_summary,
@@ -213,6 +249,12 @@ def render_trace_summary_markdown(summary: dict[str, Any]) -> str:
         f"- Context Build Duration: {_value(metrics.get('total_context_build_duration_ms'))} ms total / {_value(metrics.get('avg_context_build_duration_ms'))} ms avg",
         f"- Context Compression Ratio: {_value(metrics.get('context_compression_ratio'))}",
         f"- Context Compression Savings: {_value(metrics.get('context_compression_savings_ratio'))}",
+        f"- Context Token Compression Saved: {_value(metrics.get('context_token_compression_saved_tokens'))}",
+        f"- Context Token Compression Ratio: {_value(metrics.get('context_token_compression_ratio'))}",
+        f"- Coding Context State Builds: {_value(metrics.get('coding_context_state_builds'))}",
+        f"- Coding Context Compactions: {_value(metrics.get('coding_context_compacted_count'))}",
+        f"- Coding Context Generation: {_value(metrics.get('coding_context_latest_generation'))} / max {_value(metrics.get('coding_context_max_generation'))}",
+        f"- Coding Context Tail: prompt_tail={_value(metrics.get('coding_context_latest_prompt_tail_start_index'))}, compacted_until={_value(metrics.get('coding_context_latest_compacted_until_index'))}",
         "",
         "## Security RAG",
         "",

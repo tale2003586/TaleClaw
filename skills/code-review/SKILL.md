@@ -1,6 +1,12 @@
 ---
 name: code-review
 description: Perform thorough code reviews with security, performance, and maintainability analysis. Use when user asks to review code, check for bugs, or audit a codebase.
+tags: [coding, review, security, maintainability]
+triggers: [review, audit, bug check, security review, code review]
+applies_to: [coding, teammate]
+requires_tools: [rg, read_file, git_diff]
+priority: 20
+safety: low
 ---
 
 # Code Review Skill

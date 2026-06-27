@@ -28,13 +28,11 @@ from agents.subagent.orchestration_state import (
     OrchestrationDecision,
     guard_subagent_dispatch,
     record_subagent_dispatch,
-    record_subagent_rejection,
     record_subagent_results,
     rejected_parallel_response,
     rejection_response,
     rejection_trace_payload,
 )
-from agents.subagent.scope_guard import validate_subagent_task_scopes
 from memory.store import MemoryStore
 from runtime.workspace import safe_workspace_path, workspace_root_for_session
 from runtime.working_memory import (
@@ -54,6 +52,9 @@ from user_scope import (
 SUBAGENT_RUNNER = None
 MAX_WORKSPACE_LIST_ENTRIES = 500
 MAX_WORKSPACE_READ_CHARS = 50_000
+MAX_BATCH_READ_FILES = 8
+DEFAULT_BATCH_READ_LIMIT = 200
+MAX_BATCH_READ_CHARS = 80_000
 MAX_RG_MATCHES = 500
 DEFAULT_RG_MATCHES = 100
 RG_TIMEOUT_SECONDS = 30
@@ -404,6 +405,100 @@ def run_read(path: str, limit: int = None, offset: int = 0, *, _session=None) ->
         return _format_tool_error(e)
 
 
+def run_read_files(files, output_format: str = "text", *, _session=None) -> str:
+    try:
+        items = _normalize_read_file_batch(files)
+        output_format = str(output_format or "text").strip().lower()
+        if output_format not in {"text", "json"}:
+            output_format = "text"
+        cache_key = _tool_cache_key("read_files", {
+            "files": items,
+            "output_format": output_format,
+        })
+        cached = _tool_cache_get(_session, cache_key)
+        if cached is not None:
+            return cached
+
+        results = []
+        for item in items:
+            path = item["path"]
+            offset = _nonnegative_int(item.get("offset"), default=0)
+            limit = _optional_positive_int(item.get("limit"))
+            if limit is None:
+                limit = DEFAULT_BATCH_READ_LIMIT
+            content = run_read(path, limit=limit, offset=offset, _session=_session)
+            results.append({
+                "path": path,
+                "offset": offset,
+                "limit": limit,
+                "output": content,
+            })
+
+        if output_format == "json":
+            output = json.dumps({"results": results}, ensure_ascii=False, indent=2)
+            _tool_cache_set(_session, cache_key, output)
+            return output
+
+        parts = [
+            (
+                f"[read_files] reading {len(items)} file(s). "
+                f"Omitted per-file limit defaults to {DEFAULT_BATCH_READ_LIMIT} lines."
+            )
+        ]
+        truncated = False
+        for index, result in enumerate(results, 1):
+            path = result["path"]
+            offset = result["offset"]
+            limit = result["limit"]
+            content = result["output"]
+            section = (
+                f"\n===== read_files {index}/{len(items)}: {path} "
+                f"offset={offset} limit={limit} =====\n"
+                f"{content}"
+            )
+            current = "\n".join(parts)
+            if len(current) + len(section) > MAX_BATCH_READ_CHARS:
+                remaining = max(0, MAX_BATCH_READ_CHARS - len(current) - 300)
+                if remaining > 0:
+                    parts.append(section[:remaining].rstrip())
+                parts.append(
+                    "\n[read_files] batch output truncated. Re-read remaining files "
+                    "or narrower windows with read_file/read_files offset+limit."
+                )
+                truncated = True
+                break
+            parts.append(section)
+
+        output = "\n".join(parts)
+        if truncated:
+            output = output[:MAX_BATCH_READ_CHARS]
+        _tool_cache_set(_session, cache_key, output)
+        return output
+    except Exception as e:
+        return _format_tool_error(e)
+
+
+def run_retrieve_tool_result(
+    result_id: str,
+    offset: int = 0,
+    limit: int | None = None,
+    query: str | None = None,
+    *,
+    _session=None,
+) -> str:
+    try:
+        from runtime.tool_result_store import retrieve_tool_result
+
+        return retrieve_tool_result(
+            result_id,
+            offset=offset,
+            limit=limit,
+            query=query,
+        )
+    except Exception as e:
+        return _format_tool_error(e)
+
+
 def run_repo_map(
     path: str = "",
     max_depth: int | None = None,
@@ -583,6 +678,31 @@ def _format_line_window(
         )
         output = f"{output}\n{notice}" if output else notice
     return output
+
+
+def _normalize_read_file_batch(files) -> list[dict]:
+    if not isinstance(files, list):
+        raise ValueError("read_files requires files=[{path, offset?, limit?}, ...].")
+    if not files:
+        raise ValueError("read_files requires at least one file.")
+    if len(files) > MAX_BATCH_READ_FILES:
+        raise ValueError(f"read_files supports at most {MAX_BATCH_READ_FILES} files per call.")
+
+    normalized: list[dict] = []
+    for index, item in enumerate(files):
+        if isinstance(item, str):
+            item = {"path": item}
+        if not isinstance(item, dict):
+            raise ValueError(f"read_files item {index} must be an object with a path.")
+        path = str(item.get("path") or "").strip()
+        if not path:
+            raise ValueError(f"read_files item {index} is missing path.")
+        normalized.append({
+            "path": path,
+            "offset": _nonnegative_int(item.get("offset"), default=0),
+            "limit": _optional_positive_int(item.get("limit")),
+        })
+    return normalized
 
 
 def _should_guard_subagent_large_read(
@@ -1743,6 +1863,18 @@ BASE_HANDLERS = {
         kw.get("offset", 0),
         _session=kw.get("_session"),
     ),
+    "read_files": lambda **kw: run_read_files(
+        kw["files"],
+        kw.get("format", kw.get("output_format", "text")),
+        _session=kw.get("_session"),
+    ),
+    "retrieve_tool_result": lambda **kw: run_retrieve_tool_result(
+        kw["result_id"],
+        kw.get("offset", 0),
+        kw.get("limit"),
+        kw.get("query"),
+        _session=kw.get("_session"),
+    ),
     "write_file": lambda **kw: run_write(
         kw["path"],
         kw["content"],
@@ -1930,20 +2062,6 @@ def _run_subagent_task(
         "deliverable": deliverable,
         "budget": budget,
     }
-    decision = _subagent_scope_validation_decision(
-        _session,
-        [task],
-        tool_name="task",
-    )
-    if decision is not None:
-        _trace_subagent_rejection(
-            _trace_store,
-            _run_state,
-            decision,
-            tool_name="task",
-            parent_span_id=_parent_span_id,
-        )
-        return rejection_response(decision)
     decision = guard_subagent_dispatch(_session, [task], tool_name="task")
     if not decision.allowed:
         _trace_subagent_rejection(
@@ -2013,20 +2131,6 @@ def _run_parallel_subagent_tasks(
     bounded_tasks = list(tasks or [])
     if not bounded_tasks:
         return json.dumps({"results": []}, ensure_ascii=False, indent=2)
-    decision = _subagent_scope_validation_decision(
-        _session,
-        bounded_tasks,
-        tool_name="parallel_tasks",
-    )
-    if decision is not None:
-        _trace_subagent_rejection(
-            _trace_store,
-            _run_state,
-            decision,
-            tool_name="parallel_tasks",
-            parent_span_id=_parent_span_id,
-        )
-        return rejected_parallel_response(decision)
     decision = guard_subagent_dispatch(_session, bounded_tasks, tool_name="parallel_tasks")
     if not decision.allowed:
         _trace_subagent_rejection(
@@ -2067,26 +2171,6 @@ def _checkpoint_subtask_results(
     if not WORKING_MEMORY_CHECKPOINT_ENABLED or session is None:
         return
     checkpoint_subtask_results(session, tasks, results)
-
-
-def _subagent_scope_validation_decision(
-    session,
-    tasks: list[dict],
-    *,
-    tool_name: str,
-) -> OrchestrationDecision | None:
-    failure = validate_subagent_task_scopes(session, tasks, tool_name=tool_name)
-    if failure is None:
-        return None
-    decision = OrchestrationDecision(
-        allowed=False,
-        reason=failure.reason,
-        message=failure.message,
-        retry_hint=failure.retry_hint,
-        state=failure.state,
-    )
-    record_subagent_rejection(session, decision)
-    return decision
 
 
 def _trace_subagent_rejection(

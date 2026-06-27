@@ -48,6 +48,7 @@ class SubagentFailureReason(StrEnum):
     SCOPE_TOO_BROAD = "subagent_scope_too_broad"
     MISSING_REQUIRED_FILES = "subagent_missing_required_files"
     MODEL_ERROR = "subagent_model_error"
+    INVALID_OUTPUT_FORMAT = "subagent_invalid_output_format"
     UNKNOWN_AGENT_TYPE = "subagent_unknown_agent_type"
     INTERNAL_ERROR = "subagent_internal_error"
     INFEASIBLE = "subagent_infeasible"
@@ -62,6 +63,7 @@ SUBAGENT_SEMANTIC_RETRY_REASONS = {
     SubagentFailureReason.STEP_LIMIT.value,
     SubagentFailureReason.TOOL_ERROR.value,
     SubagentFailureReason.SCOPE_TOO_BROAD.value,
+    SubagentFailureReason.INVALID_OUTPUT_FORMAT.value,
 }
 
 SUBAGENT_TERMINAL_REASONS = {

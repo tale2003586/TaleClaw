@@ -9,6 +9,7 @@ __pycache__/
 .team/
 .transcripts/
 .gateway/
+.tool_results/
 .users/
 .runs/
 .evals/

@@ -25,6 +25,7 @@ from tools.hooks import (
     ShellSafetyHook,
     ShellWorkspaceScopeHook,
     ToolLoopGuardHook,
+    ToolResultStoreHook,
     ToolTraceHook,
 )
 from tools.tool_registry import build_lead_tool_registry
@@ -84,13 +85,18 @@ def load_swebench_instance(
     dataset_name: str = DEFAULT_SWEBENCH_DATASET,
     split: str = DEFAULT_SWEBENCH_SPLIT,
     instance_id: str,
+    records_path: str | Path | None = None,
 ) -> SweBenchInstance:
-    for record in load_swebench_records(dataset_name=dataset_name, split=split):
+    records = (
+        load_swebench_records_from_file(records_path)
+        if records_path
+        else load_swebench_records(dataset_name=dataset_name, split=split)
+    )
+    for record in records:
         if str(record.get("instance_id")) == instance_id:
             return SweBenchInstance.from_record(dict(record))
-    raise ValueError(
-        f"Instance {instance_id!r} was not found in {dataset_name!r} split {split!r}."
-    )
+    source = str(records_path) if records_path else f"{dataset_name!r} split {split!r}"
+    raise ValueError(f"Instance {instance_id!r} was not found in {source}.")
 
 
 def load_swebench_instances(
@@ -100,8 +106,13 @@ def load_swebench_instances(
     instance_ids: list[str] | None = None,
     limit: int = 10,
     offset: int = 0,
+    records_path: str | Path | None = None,
 ) -> list[SweBenchInstance]:
-    records = load_swebench_records(dataset_name=dataset_name, split=split)
+    records = (
+        load_swebench_records_from_file(records_path)
+        if records_path
+        else load_swebench_records(dataset_name=dataset_name, split=split)
+    )
     wanted = [item.strip() for item in (instance_ids or []) if item.strip()]
     if wanted:
         by_id = {str(record.get("instance_id")): record for record in records}
@@ -115,6 +126,49 @@ def load_swebench_instances(
     start = max(0, int(offset or 0))
     stop = start + max(1, int(limit or 10))
     return [SweBenchInstance.from_record(dict(record)) for record in records[start:stop]]
+
+
+def load_swebench_records_from_file(path: str | Path) -> list[dict[str, Any]]:
+    source = Path(path).expanduser()
+    if not source.exists():
+        raise FileNotFoundError(f"SWE-bench records file not found: {source}")
+    text = source.read_text(encoding="utf-8").strip()
+    if not text:
+        raise ValueError(f"SWE-bench records file is empty: {source}")
+
+    if source.suffix.lower() == ".jsonl":
+        records = [
+            json.loads(line)
+            for line in text.splitlines()
+            if line.strip()
+        ]
+    else:
+        payload = json.loads(text)
+        if isinstance(payload, list):
+            records = payload
+        elif isinstance(payload, dict):
+            records = _records_from_mapping(payload)
+        else:
+            raise ValueError(
+                f"SWE-bench records file must contain a JSON array/object or JSONL records: {source}"
+            )
+
+    if not all(isinstance(record, dict) for record in records):
+        raise ValueError(f"SWE-bench records file contains non-object rows: {source}")
+    return [dict(record) for record in records]
+
+
+def _records_from_mapping(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    for key in ("instances", "selected_instances", "rows", "records", "data"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    if all(key in payload for key in ("instance_id", "repo", "base_commit", "problem_statement")):
+        return [payload]
+    raise ValueError(
+        "SWE-bench records JSON object must contain one of: "
+        "instances, selected_instances, rows, records, data."
+    )
 
 
 def load_swebench_records(
@@ -238,6 +292,7 @@ def run_swebench_instance(
             ShellWorkspaceScopeHook(workspace),
             FileWriteScopeHook(workspace),
             ToolLoopGuardHook(),
+            ToolResultStoreHook(),
             ToolTraceHook(),
         ]),
         context_builder=ContextBuilder(

@@ -22,6 +22,7 @@ class ToolExecutionRequest:
 class HookOutcome:
     deny_reason: str | None = None
     updated_arguments: dict[str, Any] | None = None
+    updated_output: str | None = None
 
 
 @dataclass
@@ -40,6 +41,7 @@ class ToolExecutionResult:
     duration_ms: float | None = None
     error_type: str | None = None
     error_message: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
     pre_hook_trace: list[HookTraceItem] = field(default_factory=list)
     post_hook_trace: list[HookTraceItem] = field(default_factory=list)
 
@@ -105,6 +107,22 @@ class ToolExecutor:
                 self._run_after_hooks(request, result)
                 return result
 
+            if outcome.updated_output is not None:
+                pre_traces.append(HookTraceItem(
+                    hook_name=hook.name,
+                    matched=True,
+                    decision="cache",
+                ))
+                result = ToolExecutionResult(
+                    status="success",
+                    output=outcome.updated_output,
+                    final_arguments=arguments,
+                    duration_ms=_elapsed_ms(started),
+                    pre_hook_trace=pre_traces,
+                )
+                self._run_after_hooks(request, result)
+                return result
+
             pre_traces.append(HookTraceItem(
                 hook_name=hook.name,
                 matched=True,
@@ -151,6 +169,8 @@ class ToolExecutor:
                 if isinstance(outcome, HookOutcome):
                     if outcome.updated_arguments is not None:
                         result.final_arguments = dict(outcome.updated_arguments)
+                    if outcome.updated_output is not None:
+                        result.output = outcome.updated_output
                     if outcome.deny_reason:
                         result.status = "denied"
                         result.output = outcome.deny_reason

@@ -231,6 +231,17 @@ class AgentService:
             return False
         return bool(request_cancel(storage_session_id))
 
+    def subscribe_session(
+        self,
+        session_key: str,
+        cb: Callable[[dict[str, Any]], None],
+    ) -> Callable[[], None]:
+        self.ensure_started()
+        trace_store = getattr(getattr(self._runtime, "loop", None), "trace_store", None)
+        if trace_store is None or not hasattr(trace_store, "subscribe"):
+            return lambda: None
+        return trace_store.subscribe(session_key, cb)
+
     def stop(self) -> None:
         if self._loop is None:
             return
@@ -394,6 +405,105 @@ def _web_storage_id(session_id: str, user_id: str = DEFAULT_USER_ID) -> str:
     if ":" in value:
         raise ValueError("Only Web sessions owned by the current user can be accessed.")
     return web_session_id(user_id, value)
+
+
+def _stream_event_projection(event: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(event, dict):
+        return None
+    name = str(event.get("event") or "")
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    base: dict[str, Any] = {"event": name}
+    for key in ("run_id", "span_id", "parent_span_id", "step"):
+        value = event.get(key)
+        if value is not None and value != "":
+            base[key] = value
+
+    if name in {"reasoning.step.started", "reasoning.step.completed"}:
+        return base
+
+    if name == "tool.call.started":
+        return {
+            **base,
+            "tool": _stream_text(payload.get("tool_name") or payload.get("name")),
+            "args": _stream_text(payload.get("arguments_preview"), limit=200),
+        }
+
+    if name in {"tool.call.completed", "tool.call.failed"}:
+        return {
+            **base,
+            "tool": _stream_text(payload.get("tool_name") or payload.get("name")),
+            "status": _stream_text(
+                payload.get("status") or ("error" if name.endswith(".failed") else "")
+            ),
+            "duration_ms": _stream_number(payload.get("duration_ms")),
+            "preview": _stream_text(
+                payload.get("output_preview") or payload.get("error_message"),
+                limit=200,
+            ),
+        }
+
+    if name == "model.call.completed":
+        usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+        return {
+            **base,
+            "model": _stream_text(payload.get("model")),
+            "tokens": _stream_int(usage.get("total_tokens")),
+            "input_tokens": _stream_int(usage.get("input_tokens")),
+            "output_tokens": _stream_int(usage.get("output_tokens")),
+        }
+
+    if name in {"subagent.started", "subagent.completed"}:
+        return {
+            **base,
+            "agent_type": _stream_text(payload.get("agent_type")),
+            "description": _stream_text(payload.get("description"), limit=200),
+            "success": payload.get("success") if "success" in payload else None,
+            "tool_count": _stream_int(
+                payload.get("tool_count") or payload.get("tool_calls")
+            ),
+            "reasoning_steps": _stream_int(payload.get("reasoning_steps")),
+        }
+
+    if name == "workspace.diff.written":
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        return {
+            **base,
+            "summary": {
+                "created": _stream_int(summary.get("created")),
+                "modified": _stream_int(summary.get("modified")),
+                "deleted": _stream_int(summary.get("deleted")),
+            },
+        }
+
+    return None
+
+
+def _stream_text(value: Any, *, limit: int = 120) -> str:
+    if value is None:
+        return ""
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...[truncated]"
+
+
+def _stream_int(value: Any) -> int:
+    try:
+        if value in (None, ""):
+            return 0
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _stream_number(value: Any) -> int | float | None:
+    if value in (None, ""):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return int(number) if number.is_integer() else round(number, 3)
 
 
 def _is_internal_task_session(row: dict[str, Any]) -> bool:
@@ -1500,9 +1610,19 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         events: queue.Queue[dict[str, Any]] = queue.Queue()
+        session_key = web_session_id(user.user_id, session_id)
+
+        def enqueue_trace_event(raw_event: dict[str, Any]) -> None:
+            projected = _stream_event_projection(raw_event)
+            if projected is not None:
+                events.put({"type": "event", **projected})
 
         def run_agent() -> None:
+            unsubscribe: Callable[[], None] = lambda: None
             try:
+                subscribe_session = getattr(self.agent_service, "subscribe_session", None)
+                if callable(subscribe_session):
+                    unsubscribe = subscribe_session(session_key, enqueue_trace_event)
                 reply = self.agent_service.ask_stream(
                     session_id=session_id,
                     content=message,
@@ -1524,6 +1644,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "error": _friendly_runtime_error(exc),
                     "error_type": type(exc).__name__,
                 })
+            finally:
+                unsubscribe()
 
         worker = threading.Thread(
             target=run_agent,

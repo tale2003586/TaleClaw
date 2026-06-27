@@ -1,8 +1,12 @@
 import unittest
+import tempfile
 from unittest.mock import patch
 
 from runtime.context_budget import ContextBudgeter, SectionBudgetRule
 from runtime.context_history import budget_active_turn
+from runtime.tool_result_store import retrieve_tool_result
+from tools.executor import ToolExecutionRequest, ToolExecutionResult
+from tools.hooks import ToolResultStoreHook
 
 
 def _assistant_tool_call(call_id: str, name: str) -> dict:
@@ -130,6 +134,121 @@ class ContextBudgetTests(unittest.TestCase):
         self.assertIn("repo map result", text)
         self.assertIn("latest read result", text)
         self.assertIn("outline result", text)
+
+    def test_active_turn_uses_traceback_aware_tool_compression(self) -> None:
+        rule = SectionBudgetRule(
+            name="active_turn",
+            budget_chars=2000,
+            floor_chars=1000,
+            strategy="latest_tool_call",
+            summary_chars=1400,
+            keep_recent_results=0,
+            preserve_tools=(),
+        )
+        traceback_lines = [
+            "Traceback (most recent call last):",
+            '  File "entry.py", line 1, in <module>',
+            "    main()",
+            *[
+                f'  File "internal_{index}.py", line {index}, in helper'
+                for index in range(80)
+            ],
+            "ValueError: final failure message",
+        ]
+        messages = [
+            {"role": "user", "content": "debug this"},
+            _assistant_tool_call("call-bash", "bash"),
+            {
+                "role": "tool",
+                "tool_call_id": "call-bash",
+                "content": "\n".join(traceback_lines),
+                "final_arguments": {"command": "python broken.py"},
+            },
+        ]
+
+        budgeted = budget_active_turn(messages, enabled=True, rule=rule)
+
+        text = "\n".join(str(message.get("content", "")) for message in budgeted.rendered_messages)
+        self.assertIn("bash result compressed", text)
+        self.assertIn('File "entry.py"', text)
+        self.assertIn("internal traceback omitted", text)
+        self.assertIn("ValueError: final failure message", text)
+
+    def test_active_turn_uses_read_file_structure_compression(self) -> None:
+        rule = SectionBudgetRule(
+            name="active_turn",
+            budget_chars=2000,
+            floor_chars=1000,
+            strategy="latest_tool_call",
+            summary_chars=1600,
+            keep_recent_results=0,
+            preserve_tools=(),
+        )
+        file_lines = [
+            "import os",
+            "from pathlib import Path",
+            "",
+            "class Important:",
+            *[f"    def method_{index}(self): return {index}" for index in range(120)],
+            "def tail_function():",
+            "    return True",
+        ]
+        messages = [
+            {"role": "user", "content": "inspect file"},
+            _assistant_tool_call("call-read-old", "read_file"),
+            {
+                "role": "tool",
+                "tool_call_id": "call-read-old",
+                "content": "\n".join(file_lines),
+                "final_arguments": {"path": "large.py", "offset": 0},
+            },
+            _assistant_tool_call("call-read-latest", "read_file"),
+            {
+                "role": "tool",
+                "tool_call_id": "call-read-latest",
+                "content": "latest read stays available",
+                "final_arguments": {"path": "small.py", "offset": 0},
+            },
+        ]
+
+        budgeted = budget_active_turn(messages, enabled=True, rule=rule)
+
+        text = "\n".join(str(message.get("content", "")) for message in budgeted.rendered_messages)
+        self.assertIn("read_file result compressed", text)
+        self.assertIn("code structure/imports retained", text)
+        self.assertIn("class Important", text)
+        self.assertIn("middle lines omitted from read_file-like result", text)
+        self.assertIn("latest read stays available", text)
+
+    def test_tool_result_store_hook_supports_retrieval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(
+                "os.environ",
+                {
+                    "TOOL_RESULT_STORE_BACKEND": "file",
+                    "TOOL_RESULT_STORE_ROOT": tmp,
+                },
+                clear=False,
+            ):
+                hook = ToolResultStoreHook(min_chars=1)
+                request = ToolExecutionRequest(
+                    call_id="call-1",
+                    tool_name="bash",
+                    arguments={"command": "printf"},
+                    session_id="test-session",
+                )
+                result = ToolExecutionResult(
+                    status="success",
+                    output="abcdef" * 20,
+                    final_arguments={"command": "printf"},
+                )
+
+                hook.after(request, result)
+
+                ref = result.metadata["tool_result_ref"]
+                retrieved = retrieve_tool_result(ref["result_id"], offset=6, limit=12)
+                self.assertIn("tool=bash", retrieved)
+                self.assertIn("abcdefabcdef", retrieved)
 
 
 if __name__ == "__main__":

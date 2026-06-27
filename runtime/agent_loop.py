@@ -9,6 +9,10 @@ from runtime.trace.events import RUN_COMPLETED, RUN_FAILED
 from runtime.trace.run_state import RunState
 from runtime.trace.trace_store import event_preview
 from runtime.routing.router import ModeRouter
+from runtime.coding_handoff import (
+    CODING_TASK_SUMMARY_METADATA_KEY,
+    PENDING_CODING_TASK_SUMMARY_METADATA_KEY,
+)
 from runtime.working_memory import (
     is_resume_request,
     prepare_working_memory_for_turn,
@@ -209,10 +213,18 @@ class AgentLoop:
                     "trace_store": self.trace_store,
                 })
             reply = self.task_session_runner.run_coding_task(**task_kwargs)
+            assistant_metadata = {"run_id": run_state.run_id}
+            task_summary = session.metadata.pop(
+                PENDING_CODING_TASK_SUMMARY_METADATA_KEY,
+                None,
+            )
+            if task_summary:
+                assistant_metadata["kind"] = "coding_task_result"
+                assistant_metadata[CODING_TASK_SUMMARY_METADATA_KEY] = task_summary
             session.add_message(
                 "assistant",
                 reply,
-                metadata={"run_id": run_state.run_id},
+                metadata=assistant_metadata,
             )
             self._emit_text(on_text, reply)
             return reply

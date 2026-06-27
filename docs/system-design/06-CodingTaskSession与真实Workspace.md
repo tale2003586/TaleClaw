@@ -11,11 +11,12 @@
 - 用户给一个项目地址，agent 能不能在那个目录里工作。
 - 工具路径能不能逃出 workspace。
 - 一次 coding task 的中间过程是否污染主聊天 session。
+- coding task 如何理解父会话里的上下文指代。
 - 用户停止后，任务进度能不能带回父 session 等下一轮续做。
 - 任务完成后怎么知道 workspace 改了哪些文件。
 - 任务结论怎么进入长期记忆候选，而不是直接乱写全局 memory。
 
-当前这些问题由 `agents/coding/runner.py` 和 `runtime/workspace.py` 解决。
+当前这些问题由 `agents/coding/runner.py`、`runtime/coding_handoff.py`、`runtime/working_memory.py`、`runtime/coding_context_state.py` 和 `runtime/workspace.py` 解决。
 
 ## 什么时候进入 coding task
 
@@ -108,6 +109,7 @@ record = self.factory.create(
 - task session 保存 coding 中间消息、工具结果和 task-local memory。
 - 父 run 的 `run_state.metadata["task_session"]` 会记录 task id、task session id 和任务状态。
 - 父 session 的 working memory 会继承到 task session，task 完成后再同步回父 session。
+- 父 session 的最近完成 turn 会被压缩成 coding handoff，注入 task prompt，帮助 task 理解当前请求里的上下文指代。
 
 这样 coding 的探索过程不会把主聊天上下文弄得很长，也不会直接污染主 session。
 
@@ -119,6 +121,18 @@ task session 的第一条 user message 会包一层：
 <task-session parent_session="...">
 You are running in an isolated coding task session...
 </task-session>
+
+<coding-workspace root="..." display="...">
+...
+</coding-workspace>
+
+<conversation-history-handoff>
+...
+</conversation-history-handoff>
+
+<execution-guidance>
+...
+</execution-guidance>
 
 <global-memory-snapshot>
 ...
@@ -133,7 +147,17 @@ User coding task:
 - 自己是隔离 task。
 - 中间发现写 task-local memory。
 - 可复用结论应该进入 pending，再由后处理晋升。
+- 文件工具路径都相对当前 coding workspace。
+- 可以参考父会话 handoff，但不要把父会话中间消息直接写回 task session 历史。
 - 可以参考 global memory snapshot。
+
+`runtime/coding_handoff.py` 构造 `<conversation-history-handoff>`：
+
+- 当前用户请求保留原文。
+- 最近若干个父会话完成 turn 中，user message 保留原文，assistant reply 压缩成摘要。
+- 更早 turn 汇总成 prior summary。
+
+生成的 handoff 同时写入 task session metadata 的 `coding_session_handoff`，父 session metadata 里也会保存 `coding_conversation_summary`。任务完成后，`build_coding_task_summary()` 会生成父 session 可读的 coding task summary，先放在 `pending_coding_task_summary`，再由外层会话保存摘要回复。
 
 ## task pipeline
 
@@ -169,7 +193,7 @@ inherit_working_memory(
 )
 ```
 
-这样 task session 能在上下文中看到上一轮留下的 completed/pending units。
+这样 task session 能在上下文中看到上一轮留下的 completed/pending units、observed calls 和停止原因。
 
 task pipeline 结束后会调用：
 
@@ -182,7 +206,9 @@ sync_working_memory(
 
 所以父 session 是跨 turn 保存断点状态的地方，task session 是单次 coding run 内消费和更新断点状态的地方。
 
-这个机制不是从某个工具调用继续执行；它是把“已完成/待继续/停止原因”注入下一轮 coding 上下文，让模型基于这些状态续做。
+这个机制不是从某个工具调用继续执行；它是把“已完成/待继续/已观察/停止原因”注入下一轮 coding 上下文，让模型基于这些状态续做。
+
+如果 `CODING_CONTEXT_STATE_ENABLED=1`，task session 内的 long active turn 还会被 `coding_context_state` 压缩成状态消息。working memory 提供跨 turn 的任务状态，coding context state 负责单个 task turn 内的上下文压缩与证据索引，两者都存在 session metadata 中，但职责不同。
 
 ## workspace snapshot 和 diff
 
@@ -284,8 +310,10 @@ promotion = TaskMemoryPromoter(global_memory).promote(...)
 - patch preview 审批。
 - 多 workspace 并行锁。
 - task 中断后从某个 exact reasoning step 或 tool call 重放。
+- coding handoff 是摘要和最近 turn 原文的组合，不是完整父会话复制。
+- coding context state 是可选上下文压缩层，不是任务队列或回放系统。
 
-现在的重点是：workspace 解析、路径防逃逸、task session 隔离、working memory 续做提示、workspace diff 证据。
+现在的重点是：workspace 解析、路径防逃逸、task session 隔离、父会话 handoff、working memory 状态续做、coding context state 压缩和 workspace diff 证据。
 
 ## 总结
 

@@ -19,6 +19,7 @@ SESSION_SCOPED_TOOLS = {
     "repo_map",
     "code_outline",
     "read_file",
+    "read_files",
     "write_file",
     "edit_file",
     "git_status",
@@ -360,6 +361,8 @@ def _risk_for_tool(name: str) -> str:
         "repo_map",
         "code_outline",
         "read_file",
+        "read_files",
+        "retrieve_tool_result",
         "git_status",
         "git_diff",
         "git_log",
@@ -388,6 +391,8 @@ def _modes_for_tool(name: str) -> set[str]:
         "repo_map",
         "code_outline",
         "read_file",
+        "read_files",
+        "retrieve_tool_result",
         "write_file",
         "edit_file",
         "git_status",
@@ -426,6 +431,8 @@ def _modes_for_tool(name: str) -> set[str]:
         "repo_map",
         "code_outline",
         "read_file",
+        "read_files",
+        "retrieve_tool_result",
         "write_file",
         "edit_file",
         "git_status",
@@ -477,6 +484,6 @@ def _modes_for_tool(name: str) -> set[str]:
         "publish_artifact",
     }:
         enabled.add("coding")
-    if name in {"memorize", "recall_memory", "tool_search"}:
+    if name in {"memorize", "recall_memory", "tool_search", "retrieve_tool_result"}:
         enabled.update({"bot", "coding", "teammate"})
     return enabled

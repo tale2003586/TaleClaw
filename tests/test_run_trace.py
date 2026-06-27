@@ -239,6 +239,79 @@ def _events(path: Path) -> list[dict]:
 
 
 class RunTraceTests(unittest.TestCase):
+    def test_trace_store_subscribers_receive_top_session_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            trace_store = TraceStore(Path(tmp) / ".runs")
+            run_state = RunState.create(session_id="web:local:default")
+            received = []
+            failing_calls = []
+
+            unsub = trace_store.subscribe("web:local:default", received.append)
+
+            def failing_callback(event) -> None:
+                failing_calls.append(event["event"])
+                raise RuntimeError("subscriber failed")
+
+            trace_store.subscribe("web:local:default", failing_callback)
+            trace_store.start_run(run_state)
+            trace_store.append_event(
+                run_state,
+                "tool.call.started",
+                {
+                    "tool_name": "read_file",
+                    "arguments_preview": '{"path":"README.md"}',
+                    "api_key": "secret",
+                    "large": "x" * 600,
+                },
+                span_id="run:tool:1",
+                step=1,
+            )
+            subagent_run = RunState.create(
+                session_id="subtask:explore:abc123",
+                run_id=run_state.run_id,
+                metadata={"trace_only": True},
+            )
+            trace_store.append_event(
+                subagent_run,
+                "tool.call.completed",
+                {
+                    "tool_name": "bash",
+                    "status": "success",
+                    "duration_ms": 12,
+                    "output_preview": "ok",
+                },
+                span_id="run:tool:1:subagent:0:tool:1:call",
+                parent_span_id="run:tool:1:subagent:0:step:1",
+                step=1,
+            )
+            unsub()
+            trace_store.append_event(run_state, "tool.call.completed", {"tool_name": "after"})
+
+            names = [event["event"] for event in received]
+            self.assertIn("run.started", names)
+            self.assertIn("tool.call.started", names)
+            self.assertIn("tool.call.completed", names)
+            self.assertEqual(1, names.count("tool.call.completed"))
+            self.assertIn("tool.call.started", failing_calls)
+
+            started = next(event for event in received if event["event"] == "tool.call.started")
+            self.assertNotIn("api_key", started["payload"])
+            self.assertTrue(started["payload"]["large"].endswith("...[truncated]"))
+
+            persisted = _events(trace_store.run_dir(run_state) / "trace.jsonl")
+            self.assertEqual(4, len(persisted))
+
+            after_finish = []
+            trace_store.subscribe("web:local:default", after_finish.append)
+            run_state.finish_success("done")
+            trace_store.write_report(run_state, {"reply": "done"})
+            trace_store.append_event(
+                subagent_run,
+                "tool.call.completed",
+                {"tool_name": "after-report"},
+            )
+            self.assertEqual([], after_finish)
+
     def test_trace_metrics_include_loop_guard_regression_counters(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             trace_store = TraceStore(Path(tmp) / ".runs")
@@ -348,6 +421,99 @@ class RunTraceTests(unittest.TestCase):
             self.assertEqual(
                 "conversation_history",
                 context_metrics["builds"][0]["reduced_sections"][0]["section"],
+            )
+
+    def test_trace_metrics_include_coding_context_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            trace_store = TraceStore(Path(tmp) / ".runs")
+            run_state = RunState.create(session_id="task:coding")
+            trace_store.start_run(run_state)
+            trace_store.append_event(
+                run_state,
+                "context.build.completed",
+                {
+                    "duration_ms": 9.25,
+                    "context_summary": {
+                        "message_count": 5,
+                        "coding_context_state": {
+                            "enabled": True,
+                            "compacted": True,
+                            "generation": 2,
+                        },
+                    },
+                    "context_report": {
+                        "total_chars": 1200,
+                        "sections": {
+                            "coding_context_state": {
+                                "raw_chars": 3000,
+                                "rendered_chars": 1200,
+                                "budget_chars": 8000,
+                                "truncated": True,
+                                "metadata": {
+                                    "compacted": True,
+                                    "generation": 2,
+                                    "before_tokens": 13000,
+                                    "after_tokens": 7600,
+                                    "prompt_tail_start_index": 17,
+                                    "compacted_until_index": 17,
+                                    "recent_message_count": 4,
+                                    "active_message_count": 19,
+                                },
+                            }
+                        },
+                        "reductions": [
+                            {
+                                "section": "coding_context_state",
+                                "reason": "coding_prompt_state_compaction",
+                                "before_tokens": 13000,
+                                "after_tokens": 7600,
+                                "generation": 2,
+                            }
+                        ],
+                        "metadata": {
+                            "coding_context_state_enabled": True,
+                            "coding_context_generation": 2,
+                            "coding_context_prompt_tail_start_index": 17,
+                            "coding_context_compacted_until_index": 17,
+                            "coding_context_before_tokens": 13000,
+                            "coding_context_after_tokens": 7600,
+                        },
+                    },
+                },
+                step=4,
+            )
+            run_state.finish_success("done")
+            trace_store.write_run_state(run_state)
+            trace_store.write_report(run_state, {"reply": "done"})
+
+            run_dir = trace_store.run_dir(run_state)
+            metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+            context_metrics = json.loads(
+                (run_dir / "context_metrics.json").read_text(encoding="utf-8")
+            )
+            trace_summary = json.loads(
+                (run_dir / "trace_summary.json").read_text(encoding="utf-8")
+            )
+
+            self.assertEqual(1, metrics["context_build_compressed_count"])
+            self.assertEqual(5400, metrics["context_token_compression_saved_tokens"])
+            self.assertEqual(2, metrics["coding_context_latest_generation"])
+            self.assertEqual(1, metrics["coding_context_compacted_count"])
+            self.assertEqual(17, metrics["coding_context_latest_prompt_tail_start_index"])
+            self.assertEqual([4], context_metrics["aggregate"]["token_compressed_steps"])
+            self.assertEqual([4], context_metrics["aggregate"]["coding_context_compacted_steps"])
+            self.assertTrue(context_metrics["builds"][0]["coding_context_state_enabled"])
+            self.assertEqual(
+                5400,
+                context_metrics["builds"][0]["coding_context_state"]["saved_tokens"],
+            )
+            self.assertEqual(
+                5400,
+                trace_summary["metrics"]["context_token_compression_saved_tokens"],
+            )
+            self.assertEqual(
+                2,
+                trace_summary["metrics"]["coding_context_latest_generation"],
             )
 
     def test_trace_summary_counts_subagent_retry_degrade_and_recovery(self) -> None:

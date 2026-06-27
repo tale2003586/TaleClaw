@@ -4,7 +4,8 @@
 
 - session 是运行时状态容器。
 - profile 是本轮 agent 身份和工具模式的静态/临时配置。
-- working memory 是 coding 任务的断点式任务状态，存放在 session metadata 中。
+- working memory 是 coding 任务的跨 turn 状态，存放在 session metadata 中。
+- coding context state 是 coding task turn 内的上下文压缩状态，也存放在 session metadata 中，但不承担跨 turn 任务队列职责。
 
 ## 关键代码入口
 
@@ -18,6 +19,9 @@
 - `modes/coding.py`
 - `runtime/context.py`
 - `runtime/working_memory.py`
+- `runtime/coding_context_state.py`
+- `runtime/tool_signature.py`
+- `runtime/coding_handoff.py`
 - `agents/coding/session.py`
 - `agents/coding/runner.py`
 - `agents/subagent/runner.py`
@@ -79,6 +83,7 @@ session = self.sessions.get_or_create(inbound.session_key)
 - Web/CLI 传入的 `workspace_root`。
 - 当前 run id，例如 `active_run_id` / `last_run_id`。
 - coding 断点状态 `metadata["working_memory"]`。
+- coding 父会话摘要，例如 `metadata["coding_conversation_summary"]` 和待写入历史的 `metadata["pending_coding_task_summary"]`。
 
 普通 bot 路径会直接用这个 session 调 `Pipeline.run()`。
 
@@ -102,6 +107,7 @@ task session 的职责是：
 - 绑定真实 workspace metadata。
 - 使用 task-local memory。
 - 结束后写 task artifacts、结论抽取、可晋升记忆和 workspace diff。
+- 持有 task turn 内的 `coding_context_state`，用于压缩长 active turn。
 
 task session 的向量历史 scope 是：
 
@@ -132,6 +138,8 @@ subagent 会复制父 session 的部分 metadata：
 - `workspace_allowed_root`
 - `workspace_source`
 - `workspace_requested`
+
+如果父 task session 有 working memory，subagent 会拿到一个快照视图：继承 completed evidence 和 observed calls，但不继承父 pending queue。这样子任务可以复用证据、避免重复读取，同时不会接管父 agent 的整体任务计划。
 
 它使用临时 profile：
 
@@ -253,9 +261,35 @@ session.metadata["working_memory_resume_requested"]
 - `completed_units`
 - `pending_units`
 - `archived_findings`
+- `step_checkpoints`
+- `observed_calls`
 - `last_checkpoint_step`
 - `status`
 - `updated_at`
+
+`pending_units` 当前会规范化为带优先级和状态的动作项：
+
+- `unit_id`
+- `description`
+- `scope_files`
+- `priority`：`P0` / `P1` / `P2`
+- `state`：`todo` / `in_progress` / `blocked`
+- `blocked_by`
+- `last_failure_reason`
+
+`observed_calls` 是 observation ledger：
+
+- `signature`：由 `tool_call_signature(tool, arguments)` 生成。
+- `tool`
+- `arguments`
+- `label`
+- `gist`
+- `step`
+- `info_gain`
+- `count`
+- `result_hash`
+
+它只保存短 gist 和 hash，不保存工具结果原文；原文留在 active turn 或 tool result store。
 
 状态目前包括：
 
@@ -290,6 +324,14 @@ sync_working_memory(source_session=record.session, target_session=parent_session
 
 也就是说，父 session 保存跨 turn 的 working memory，task session 在一次 coding run 内继承并更新它。
 
+reasoning loop 运行中还会在自然边界调用：
+
+```python
+checkpoint_reasoning_step(...)
+```
+
+这会追加紧凑 step checkpoint，并把本步 tool_calls/tool_results 转写成 `observed_calls`。`parallel_tasks` 分派和结果也会分别调用 `checkpoint_subtasks_dispatched()` / `checkpoint_subtask_results()`，把子任务状态写入 pending/completed。
+
 ## Working memory 什么时候进入上下文
 
 `ContextBuilder._build_working_memory_block()` 只在这些条件满足时注入：
@@ -305,12 +347,53 @@ sync_working_memory(source_session=record.session, target_session=parent_session
 ...
 </working-memory>
 
-<working-memory-instruction critical="true">
-基于已完成部分继续完成任务；不要重做已完成线索...
-</working-memory-instruction>
+<working-memory-protocol critical="true">
+每个推理步开始前，按顺序执行：
+...
+</working-memory-protocol>
 ```
 
 在 context frame 中，它位于 `security_knowledge` 之后、`task_runtime_events` 之前。
+
+渲染内容包括：
+
+- 下一步动作队列：标出 `NEXT`、可并行的 `PARALLEL`、priority、state、scope 和 blocked 信息。
+- 已观察：列出不要重复的工具调用 gist，重复结果会标注 `seen` 或 `info_gain=false`。
+- 已完成：列出结论、证据、未解问题和是否需要父级复核。
+- 归档发现：包含最近停止原因、最终回答或最近 reasoning step。
+
+如果 `CODING_CONTEXT_STATE_ENABLED=1`，working memory 不再以完整 block 直接进入 context frame，而是先被 `runtime/coding_context_state.py` 消费，合并进 `<coding-context-state>`。
+
+## Coding context state 存在哪里
+
+coding context state 也存在 session metadata：
+
+```text
+session.metadata["coding_context_state"]
+```
+
+它由 `runtime/coding_context_state.py` 的 `CodingContextState` 定义，核心字段包括：
+
+- `task_id`
+- `objective`
+- `workspace_root`
+- `active_turn_start_index`
+- `prompt_tail_start_index`
+- `compacted_until_index`
+- `generation`
+- `phase`
+- `finish_condition`
+- `coverage`
+- `findings`
+- `pending_actions`
+- `open_questions`
+- `do_not_repeat`
+- `evidence_index`
+- `observations`
+- `last_compaction`
+- `metrics`
+
+它只在 coding profile/session 的 active-turn-only history 路径下使用，主场景是 coding task session。它用于把过长 active turn 压缩成状态消息，并保留最近几组原始 tool chain。它会从 working memory 同步 completed/pending/observed，但不会替代 working memory 的跨 turn 保存职责。
 
 ## 停止和恢复的真实边界
 
@@ -329,9 +412,11 @@ resume
 
 当前实现能做到：
 
-- 保存已分派/已完成/待继续的子任务信息。
+- 保存已分派/已完成/待继续的子任务信息和动作队列。
+- 保存已观察工具调用账本，减少重复读取和无信息增益调用。
 - 保存最近停止原因和部分进展。
 - 下次 coding context 注入 working memory，提示模型不要重做已完成线索。
+- 在 coding context state 开启时，把旧 active turn 压缩成状态、观察和 evidence index。
 
 当前还不能做到：
 
@@ -339,8 +424,9 @@ resume
 - 持久化一个可重放的任务队列。
 - 自动判断所有任务单元的真实完成度。
 - 把 working memory 从 session metadata 拆成独立 schema。
+- 把 coding context state 当作可回放日志；它是压缩状态，不是原始 trace。
 
-所以它是“断点式工作记忆和续做提示”，不是完整 workflow engine。
+所以它是“状态化工作记忆和续做提示”，不是完整 workflow engine。
 
 ## 总结
 
@@ -350,7 +436,8 @@ resume
 session = 运行时状态和消息容器
 profile = 本轮 agent 身份、system prompt 和 tool_mode
 instruction md = 可调策略层
-working memory = coding 续做状态，存于 session metadata
+working memory = coding 跨 turn 任务状态，存于 session metadata
+coding context state = coding turn 内上下文压缩状态，存于 session metadata
 ```
 
-这四者一起决定模型每个 reasoning step 看到什么、能调用什么工具，以及 coding 任务在停止后能如何继续。
+这些状态一起决定模型每个 reasoning step 看到什么、能调用什么工具，以及 coding 任务在停止后能如何继续。

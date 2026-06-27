@@ -4,7 +4,7 @@ import json
 import os
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from datetime import datetime
 
 from runtime.trace.events import RUN_STARTED, TraceEvent
@@ -17,6 +17,7 @@ from runtime.trace.context_metrics import (
 from runtime.trace.index_store import TraceIndexStore, trace_index_enabled
 from runtime.trace.run_state import RunState, now_iso
 from runtime.trace.summary import write_trace_summary
+from runtime.trace.trace_subscribers import TraceSubscribers
 
 
 class TraceStore:
@@ -29,14 +30,24 @@ class TraceStore:
             if trace_index_enabled()
             else None
         )
+        self._event_subscribers = TraceSubscribers(self._lock)
 
     def start_run(self, run_state: RunState) -> Path:
         run_dir = self.run_dir(run_state)
         run_dir.mkdir(parents=True, exist_ok=True)
+        if not (run_state.metadata or {}).get("trace_only"):
+            self._event_subscribers.register_run(run_state.run_id, run_state.session_id)
         self.write_run_state(run_state)
         self.append_event(run_state, RUN_STARTED, run_state.to_dict())
         self._index_run(run_state)
         return run_dir
+
+    def subscribe(
+        self,
+        session_id: str,
+        cb: Callable[[dict[str, Any]], None],
+    ) -> Callable[[], None]:
+        return self._event_subscribers.subscribe(session_id, cb)
 
     def append_event(
         self,
@@ -66,6 +77,11 @@ class TraceStore:
         with self._lock:
             with (run_dir / "trace.jsonl").open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
+            subscribers = self._event_subscribers.snapshot(
+                run_state.run_id,
+                run_state.session_id,
+            )
+        self._event_subscribers.dispatch(event, subscribers)
 
     def write_run_state(self, run_state: RunState) -> None:
         if (run_state.metadata or {}).get("trace_only"):
@@ -80,16 +96,20 @@ class TraceStore:
         run_state: RunState,
         report: dict[str, Any] | None = None,
     ) -> None:
-        payload = {
-            "run_state": run_state.to_dict(),
-            "report": _json_safe(report or {}),
-            "generated_at": now_iso(),
-        }
-        self._write_json_atomic(self.run_dir(run_state) / "report.json", payload)
-        self.write_metrics(run_state)
-        self.write_context_metrics(run_state)
-        write_trace_summary(self.run_dir(run_state))
-        self._index_run_from_artifacts(run_state, report or {})
+        try:
+            payload = {
+                "run_state": run_state.to_dict(),
+                "report": _json_safe(report or {}),
+                "generated_at": now_iso(),
+            }
+            self._write_json_atomic(self.run_dir(run_state) / "report.json", payload)
+            self.write_metrics(run_state)
+            self.write_context_metrics(run_state)
+            write_trace_summary(self.run_dir(run_state))
+            self._index_run_from_artifacts(run_state, report or {})
+        finally:
+            if not (run_state.metadata or {}).get("trace_only"):
+                self._event_subscribers.clear_run(run_state.run_id)
 
     def write_metrics(self, run_state: RunState) -> None:
         self._write_json_atomic(
@@ -295,6 +315,39 @@ class TraceStore:
         )
         metrics["context_compression_savings_ratio"] = _float(
             context_aggregate.get("compression_savings_ratio")
+        )
+        metrics["context_token_compression_before_tokens"] = _int(
+            context_aggregate.get("compression_before_tokens")
+        )
+        metrics["context_token_compression_after_tokens"] = _int(
+            context_aggregate.get("compression_after_tokens")
+        )
+        metrics["context_token_compression_saved_tokens"] = _int(
+            context_aggregate.get("compression_saved_tokens")
+        )
+        metrics["context_token_compression_ratio"] = _float(
+            context_aggregate.get("token_compression_ratio")
+        )
+        metrics["context_token_compression_savings_ratio"] = _float(
+            context_aggregate.get("token_compression_savings_ratio")
+        )
+        metrics["coding_context_state_builds"] = _int(
+            context_aggregate.get("coding_context_state_build_count")
+        )
+        metrics["coding_context_compacted_count"] = _int(
+            context_aggregate.get("coding_context_compacted_count")
+        )
+        metrics["coding_context_latest_generation"] = _int(
+            context_aggregate.get("coding_context_latest_generation")
+        )
+        metrics["coding_context_max_generation"] = _int(
+            context_aggregate.get("coding_context_max_generation")
+        )
+        metrics["coding_context_latest_prompt_tail_start_index"] = _int(
+            context_aggregate.get("coding_context_latest_prompt_tail_start_index")
+        )
+        metrics["coding_context_latest_compacted_until_index"] = _int(
+            context_aggregate.get("coding_context_latest_compacted_until_index")
         )
         return metrics
 

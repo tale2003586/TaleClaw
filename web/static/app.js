@@ -381,6 +381,460 @@ function renderToolDisclosure(message, toolNamesByCallId) {
   return details;
 }
 
+function createActivityTimeline() {
+  const container = document.createElement("section");
+  container.className = "activity-timeline";
+  const activity = {
+    container,
+    startedAt: performance.now(),
+    finishedAt: null,
+    status: "running",
+    currentStep: 0,
+    maxStep: 0,
+    toolCount: 0,
+    tokenCount: 0,
+    diffSummary: { created: 0, modified: 0, deleted: 0 },
+    runId: "",
+    steps: new Map(),
+    stepOrder: [],
+    tools: new Map(),
+    toolOrder: [],
+    subagents: new Map(),
+    subagentOrder: [],
+    timerId: null,
+  };
+  activity.timerId = window.setInterval(() => renderActivityTimeline(activity), 1000);
+  renderActivityTimeline(activity);
+  return activity;
+}
+
+function applyActivityEvent(activity, event) {
+  if (!activity || !event || event.type !== "event") return;
+  activity.runId = activity.runId || event.run_id || "";
+
+  if (event.event === "reasoning.step.started" || event.event === "reasoning.step.completed") {
+    const step = ensureActivityStep(activity, event.step, event);
+    if (event.event === "reasoning.step.completed") {
+      step.completed = true;
+    }
+    activity.currentStep = Math.max(activity.currentStep, step.number || 0);
+    activity.maxStep = Math.max(activity.maxStep, step.number || 0);
+  } else if (event.event === "tool.call.started") {
+    const tool = ensureActivityTool(activity, event);
+    tool.status = "running";
+    tool.tool = event.tool || tool.tool;
+    tool.args = event.args || tool.args;
+  } else if (event.event === "tool.call.completed" || event.event === "tool.call.failed") {
+    const tool = ensureActivityTool(activity, event);
+    const terminalStatus = event.status || "success";
+    tool.status = event.event.endsWith(".failed") || ["error", "denied"].includes(terminalStatus)
+      ? "error"
+      : terminalStatus;
+    tool.durationMs = event.duration_ms;
+    tool.preview = event.preview || tool.preview;
+    tool.tool = event.tool || tool.tool;
+    if (!tool.counted) {
+      activity.toolCount += 1;
+      tool.counted = true;
+    }
+  } else if (event.event === "model.call.completed") {
+    activity.tokenCount += Number(event.tokens || 0);
+  } else if (event.event === "subagent.started" || event.event === "subagent.completed") {
+    const subagent = ensureActivitySubagent(activity, event);
+    subagent.agentType = event.agent_type || subagent.agentType;
+    subagent.description = event.description || subagent.description;
+    if (event.event === "subagent.completed") {
+      subagent.status = event.success === false ? "error" : "success";
+      subagent.success = event.success;
+      subagent.toolCount = Number(event.tool_count || subagent.toolCount || 0);
+      subagent.reasoningSteps = Number(event.reasoning_steps || subagent.reasoningSteps || 0);
+    }
+  } else if (event.event === "workspace.diff.written") {
+    const summary = event.summary || {};
+    activity.diffSummary = {
+      created: Number(summary.created || 0),
+      modified: Number(summary.modified || 0),
+      deleted: Number(summary.deleted || 0),
+    };
+  }
+
+  renderActivityTimeline(activity);
+}
+
+function finalizeActivityTimeline(activity, status = "complete") {
+  if (!activity) return;
+  activity.status = status;
+  activity.finishedAt = activity.finishedAt || performance.now();
+  if (activity.timerId) {
+    window.clearInterval(activity.timerId);
+    activity.timerId = null;
+  }
+  renderActivityTimeline(activity, { compact: true });
+}
+
+function attachActivitySummaryToLastAssistant(activity) {
+  if (!activity?.container) return;
+  const bodies = [...els.messages.querySelectorAll(".message.assistant .message-body")];
+  const body = bodies[bodies.length - 1];
+  if (!body) return;
+  body.prepend(activity.container);
+  renderActivityTimeline(activity, { compact: true });
+}
+
+function ensureActivityStep(activity, number, event = {}) {
+  const stepNumber = Number(number || 0);
+  const spanId = event.span_id || `step:${stepNumber || activity.stepOrder.length + 1}`;
+  if (!activity.steps.has(spanId)) {
+    activity.steps.set(spanId, {
+      spanId,
+      parentSpanId: event.parent_span_id || "",
+      number: stepNumber,
+      completed: false,
+      firstSeen: activity.stepOrder.length,
+    });
+    activity.stepOrder.push(spanId);
+  }
+  const step = activity.steps.get(spanId);
+  step.number = step.number || stepNumber;
+  step.parentSpanId = step.parentSpanId || event.parent_span_id || "";
+  return step;
+}
+
+function ensureActivityTool(activity, event = {}) {
+  const key = event.span_id || `tool:${activity.toolOrder.length + 1}`;
+  if (!activity.tools.has(key)) {
+    activity.tools.set(key, {
+      spanId: key,
+      parentSpanId: event.parent_span_id || "",
+      step: Number(event.step || 0),
+      tool: event.tool || "tool",
+      args: event.args || "",
+      preview: event.preview || "",
+      durationMs: event.duration_ms,
+      status: "running",
+      counted: false,
+      firstSeen: activity.toolOrder.length,
+    });
+    activity.toolOrder.push(key);
+  }
+  const tool = activity.tools.get(key);
+  tool.parentSpanId = tool.parentSpanId || event.parent_span_id || "";
+  tool.step = tool.step || Number(event.step || 0);
+  return tool;
+}
+
+function ensureActivitySubagent(activity, event = {}) {
+  const key = event.span_id || `subagent:${activity.subagentOrder.length + 1}`;
+  if (!activity.subagents.has(key)) {
+    activity.subagents.set(key, {
+      spanId: key,
+      parentSpanId: event.parent_span_id || "",
+      agentType: event.agent_type || "subagent",
+      description: event.description || "",
+      status: "running",
+      success: null,
+      toolCount: Number(event.tool_count || 0),
+      reasoningSteps: Number(event.reasoning_steps || 0),
+      firstSeen: activity.subagentOrder.length,
+    });
+    activity.subagentOrder.push(key);
+  }
+  const subagent = activity.subagents.get(key);
+  subagent.parentSpanId = subagent.parentSpanId || event.parent_span_id || "";
+  return subagent;
+}
+
+function renderActivityTimeline(activity, options = {}) {
+  const compact = Boolean(options.compact || activity.status !== "running");
+  const container = activity.container;
+  container.innerHTML = "";
+  container.classList.toggle("activity-compact", compact);
+
+  if (compact) {
+    const details = document.createElement("details");
+    details.className = "activity-disclosure";
+    const summary = document.createElement("summary");
+    summary.textContent = activitySummaryText(activity);
+    details.append(summary, renderActivityBody(activity));
+    container.append(details);
+    return;
+  }
+
+  const status = document.createElement("div");
+  status.className = "activity-status-line";
+  status.textContent = activityStatusText(activity);
+  container.append(status, renderActivityBody(activity));
+}
+
+function renderActivityBody(activity) {
+  const body = document.createElement("div");
+  body.className = "activity-body";
+
+  const rootSteps = activity.stepOrder
+    .map((id) => activity.steps.get(id))
+    .filter((step) => step && !stepBelongsToSubagent(activity, step));
+  for (const step of rootSteps) {
+    body.append(renderActivityStep(activity, step));
+  }
+
+  const orphanTools = activity.toolOrder
+    .map((id) => activity.tools.get(id))
+    .filter((tool) => tool && !tool.parentSpanId && !tool.step);
+  for (const tool of orphanTools) {
+    body.append(renderActivityToolRow(activity, tool));
+  }
+
+  const orphanSubagents = activity.subagentOrder
+    .map((id) => activity.subagents.get(id))
+    .filter((subagent) => subagent && !subagent.parentSpanId);
+  for (const subagent of orphanSubagents) {
+    body.append(renderActivitySubagent(activity, subagent));
+  }
+
+  if (body.childElementCount === 0) {
+    const empty = document.createElement("div");
+    empty.className = "activity-empty";
+    empty.textContent = "Starting run";
+    body.append(empty);
+  }
+
+  const diffTotal = changedFileCount(activity.diffSummary);
+  if (diffTotal > 0) {
+    body.append(renderActivityDiff(activity));
+  }
+  return body;
+}
+
+function renderActivityStep(activity, step) {
+  const details = document.createElement("details");
+  details.className = "activity-step";
+  details.open = activity.status === "running";
+
+  const summary = document.createElement("summary");
+  const label = document.createElement("span");
+  label.textContent = `Step ${step.number || step.firstSeen + 1}`;
+  const meta = document.createElement("code");
+  const tools = toolsForStep(activity, step);
+  meta.textContent = `${tools.length} tools`;
+  summary.append(label, meta);
+  details.append(summary);
+
+  const rows = document.createElement("div");
+  rows.className = "activity-step-rows";
+  const usedSubagents = new Set();
+  for (const tool of tools) {
+    rows.append(renderActivityToolRow(activity, tool));
+    for (const subagent of subagentsForParent(activity, tool.spanId)) {
+      usedSubagents.add(subagent.spanId);
+      rows.append(renderActivitySubagent(activity, subagent));
+    }
+  }
+  for (const subagent of subagentsForParent(activity, step.spanId)) {
+    if (!usedSubagents.has(subagent.spanId)) {
+      rows.append(renderActivitySubagent(activity, subagent));
+    }
+  }
+  details.append(rows);
+  return details;
+}
+
+function renderActivityToolRow(activity, tool) {
+  const row = document.createElement("div");
+  row.className = `activity-tool-row ${tool.status || "running"}`;
+  const icon = document.createElement("span");
+  icon.className = "activity-tool-icon";
+  icon.textContent = tool.status === "running" ? "●" : tool.status === "error" ? "✖" : "✔";
+
+  const main = document.createElement("span");
+  main.className = "activity-tool-main";
+  main.textContent = toolLabel(tool);
+
+  const meta = document.createElement("span");
+  meta.className = "activity-tool-meta";
+  meta.textContent = tool.status === "running"
+    ? ""
+    : [formatDurationMs(tool.durationMs), tool.status === "error" ? "error" : ""]
+      .filter(Boolean)
+      .join(" · ");
+
+  row.append(icon, main, meta);
+  return row;
+}
+
+function renderActivitySubagent(activity, subagent) {
+  const details = document.createElement("details");
+  details.className = `activity-subagent ${subagent.status || "running"}`;
+  details.open = activity.status === "running" && subagent.status === "running";
+
+  const summary = document.createElement("summary");
+  const label = document.createElement("span");
+  label.textContent = [subagent.agentType, subagent.description].filter(Boolean).join(" · ");
+  const meta = document.createElement("code");
+  const stepCount = subagent.reasoningSteps || stepsForSubagent(activity, subagent).length;
+  const toolCount = subagent.toolCount || toolsForSubagent(activity, subagent).length;
+  meta.textContent = `${stepCount} steps · ${toolCount} tools`;
+  summary.append(label, meta);
+  details.append(summary);
+
+  const rows = document.createElement("div");
+  rows.className = "activity-subagent-rows";
+  for (const step of stepsForSubagent(activity, subagent)) {
+    rows.append(renderActivityStep(activity, step));
+  }
+  if (rows.childElementCount === 0) {
+    for (const tool of toolsForSubagent(activity, subagent)) {
+      rows.append(renderActivityToolRow(activity, tool));
+    }
+  }
+  details.append(rows);
+  return details;
+}
+
+function renderActivityDiff(activity) {
+  const wrap = document.createElement("div");
+  wrap.className = "activity-diff";
+  for (const [key, label] of [
+    ["created", "created"],
+    ["modified", "modified"],
+    ["deleted", "deleted"],
+  ]) {
+    const count = Number(activity.diffSummary[key] || 0);
+    if (!count) continue;
+    const chip = document.createElement("span");
+    chip.className = `activity-diff-chip ${key}`;
+    chip.textContent = `${label} ${count}`;
+    wrap.append(chip);
+  }
+  if (activity.runId) {
+    const link = document.createElement("a");
+    link.className = "activity-run-link";
+    link.href = `/runs/${encodeURIComponent(activity.runId)}`;
+    link.textContent = "run";
+    wrap.append(link);
+  }
+  return wrap;
+}
+
+function toolsForStep(activity, step) {
+  return activity.toolOrder
+    .map((id) => activity.tools.get(id))
+    .filter((tool) => tool && (
+      tool.parentSpanId === step.spanId
+      || (!tool.parentSpanId && tool.step && tool.step === step.number)
+    ));
+}
+
+function subagentsForParent(activity, parentSpanId) {
+  return activity.subagentOrder
+    .map((id) => activity.subagents.get(id))
+    .filter((subagent) => subagent?.parentSpanId === parentSpanId);
+}
+
+function stepsForSubagent(activity, subagent) {
+  return activity.stepOrder
+    .map((id) => activity.steps.get(id))
+    .filter((step) => step && (
+      step.parentSpanId === subagent.spanId
+      || step.spanId.startsWith(`${subagent.spanId}:step:`)
+    ));
+}
+
+function toolsForSubagent(activity, subagent) {
+  return activity.toolOrder
+    .map((id) => activity.tools.get(id))
+    .filter((tool) => tool && (
+      tool.parentSpanId?.startsWith(`${subagent.spanId}:step:`)
+      || tool.spanId.startsWith(`${subagent.spanId}:tool:`)
+    ));
+}
+
+function stepBelongsToSubagent(activity, step) {
+  return activity.subagentOrder.some((id) => {
+    const subagent = activity.subagents.get(id);
+    return subagent && (
+      step.parentSpanId === subagent.spanId
+      || step.spanId.startsWith(`${subagent.spanId}:step:`)
+    );
+  });
+}
+
+function toolLabel(tool) {
+  const detail = toolDetail(tool);
+  return detail ? `${tool.tool} ${detail}` : tool.tool;
+}
+
+function toolDetail(tool) {
+  const args = parsePreviewArgs(tool.args);
+  if (tool.tool === "bash" || tool.tool === "shell") {
+    return args.command || args.cmd || tool.args || "";
+  }
+  if (tool.tool === "read_file") {
+    return args.path || args.file || tool.args || "";
+  }
+  if (tool.tool === "write_file" || tool.tool === "edit_file") {
+    return args.path || args.file || tool.args || "";
+  }
+  return args.path || args.command || args.cmd || tool.args || "";
+}
+
+function parsePreviewArgs(text) {
+  const clean = String(text || "").replace(/\.\.\.\[truncated\]$/, "");
+  if (!clean.trim().startsWith("{")) return {};
+  try {
+    const parsed = JSON.parse(clean);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function activityStatusText(activity) {
+  const parts = [];
+  if (activity.currentStep) {
+    parts.push(`Step ${activity.currentStep}`);
+  } else {
+    parts.push("Starting");
+  }
+  parts.push(`${activity.toolCount} tools`);
+  parts.push(`${formatNumber(activity.tokenCount)} tokens`);
+  parts.push(formatDurationMs(activityDurationMs(activity)));
+  return parts.join(" · ");
+}
+
+function activitySummaryText(activity) {
+  const files = changedFileCount(activity.diffSummary);
+  return [
+    `Worked ${formatDurationMs(activityDurationMs(activity))}`,
+    `${activity.toolCount} tools`,
+    `${files} files changed`,
+  ].join(" · ");
+}
+
+function changedFileCount(summary) {
+  return Number(summary.created || 0) + Number(summary.modified || 0) + Number(summary.deleted || 0);
+}
+
+function activityDurationMs(activity) {
+  const end = activity.finishedAt || performance.now();
+  return Math.max(0, end - activity.startedAt);
+}
+
+function formatDurationMs(ms) {
+  if (ms === null || ms === undefined || ms === "") return "";
+  const value = Number(ms);
+  if (!Number.isFinite(value)) return "";
+  if (value < 1000) return `${Math.max(1, Math.round(value))}ms`;
+  return `${(value / 1000).toFixed(1)}s`;
+}
+
+function formatNumber(value) {
+  const number = Number(value || 0);
+  if (number >= 1000) {
+    return `${Math.round(number / 100) / 10}k`;
+  }
+  return String(number);
+}
+
 function scrollMessagesToBottom(force = false) {
   const { scrollTop, scrollHeight, clientHeight } = els.chatScroll;
   const isNearBottom = scrollHeight - scrollTop - clientHeight < 150;
@@ -1027,15 +1481,22 @@ async function sendMessage(message) {
       }),
     }, (event) => {
       if (event.type === "delta") {
-        streamingMessage.body.textContent += event.text || "";
+        streamingMessage.content.textContent += event.text || "";
+        scrollMessagesToBottom();
+        return;
+      }
+      if (event.type === "event") {
+        applyActivityEvent(streamingMessage.activity, event);
         scrollMessagesToBottom();
         return;
       }
       if (event.type === "error") {
+        finalizeActivityTimeline(streamingMessage.activity, "error");
         throw new Error(event.error || "流式请求失败");
       }
       if (event.type === "complete") {
         data = event;
+        finalizeActivityTimeline(streamingMessage.activity, "complete");
       }
     });
     if (!data) {
@@ -1049,13 +1510,15 @@ async function sendMessage(message) {
         { role: "user", content: message },
         { role: "assistant", content: data.reply },
       ]);
+    attachActivitySummaryToLastAssistant(streamingMessage.activity);
     updateMetrics(data.session || {});
     await loadSessions();
   } catch (error) {
-    const partial = streamingMessage.body.textContent.trim();
+    finalizeActivityTimeline(streamingMessage.activity, "error");
+    const partial = streamingMessage.content.textContent.trim();
     streamingMessage.item.classList.remove("streaming");
     streamingMessage.item.classList.add("error");
-    streamingMessage.body.textContent = partial
+    streamingMessage.content.textContent = partial
       ? `${partial}\n\n[请求中断：${error.message}]`
       : error.message;
     setStatus("异常", "error");
@@ -1101,11 +1564,15 @@ function renderStreamingAssistantMessage() {
 
   const body = document.createElement("div");
   body.className = "message-body";
+  const activity = createActivityTimeline();
+  const content = document.createElement("div");
+  content.className = "stream-content";
+  body.append(activity.container, content);
 
   item.append(role, body);
   els.messages.append(item);
   scrollMessagesToBottom(true);
-  return { item, body };
+  return { item, body, content, activity };
 }
 
 function newSession() {

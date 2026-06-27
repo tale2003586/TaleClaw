@@ -20,7 +20,10 @@ class ModelPoolEnvTests(unittest.TestCase):
             "LLM_ROUTE_SUMMARY": "mimo",
         }
 
-        pool = build_model_pool_from_env(env)
+        pool = build_model_pool_from_env(
+            env,
+            client_factory=lambda **kwargs: FakeChatClient("ok"),
+        )
 
         self.assertEqual("mimo", pool.primary_profile_name("chat"))
         self.assertEqual("mimo-v2.5-pro", pool.model_for("chat"))
@@ -49,7 +52,10 @@ class ModelPoolEnvTests(unittest.TestCase):
             "LLM_ROUTE_CHAT": "mimo",
         }
 
-        pool = build_model_pool_from_env(env)
+        pool = build_model_pool_from_env(
+            env,
+            client_factory=lambda **kwargs: FakeChatClient("ok"),
+        )
 
         self.assertEqual(["mimo", "deepseek"], pool.route_profile_names("chat"))
         self.assertEqual("mimo-test", pool.model_for("chat"))
@@ -61,11 +67,35 @@ class ModelPoolEnvTests(unittest.TestCase):
             "OPENAI_RELAY_BASE_URL": "http://relay.example",
             "OPENAI_RELAY_MODEL": "gpt-test",
             "OPENAI_RELAY_WIRE_API": "responses",
+            "OPENAI_RELAY_CONTEXT_WINDOW_TOKENS": "200000",
+            "OPENAI_RELAY_MAX_INPUT_TOKENS": "190000",
+            "OPENAI_RELAY_MAX_OUTPUT_TOKENS": "12000",
+            "OPENAI_RELAY_OUTPUT_RESERVE_TOKENS": "6000",
+            "OPENAI_RELAY_TOKENIZER_MODEL": "gpt-4o",
+            "OPENAI_RELAY_BPE_TOKENIZER_ENABLED": "1",
         }
 
-        pool = build_model_pool_from_env(env)
+        pool = build_model_pool_from_env(
+            env,
+            client_factory=lambda **kwargs: FakeChatClient("ok"),
+        )
 
-        self.assertEqual("responses", pool.profile_for("chat").wire_api)
+        profile = pool.profile_for("chat")
+        self.assertEqual("responses", profile.wire_api)
+        self.assertEqual(200000, profile.context_window_tokens)
+        self.assertEqual(190000, profile.max_input_tokens)
+        self.assertEqual(12000, profile.max_output_tokens)
+        self.assertEqual(6000, profile.output_reserve_tokens)
+        self.assertEqual("gpt-4o", profile.tokenizer_model)
+        self.assertTrue(profile.bpe_tokenizer_enabled)
+
+        provider = pool.provider_for_profile("openai_relay")
+        self.assertEqual(200000, provider.context_window_tokens)
+        self.assertEqual(190000, provider.max_input_tokens)
+        self.assertEqual(12000, provider.max_output_tokens)
+        self.assertEqual(6000, provider.output_reserve_tokens)
+        self.assertEqual("gpt-4o", provider.tokenizer_model)
+        self.assertTrue(provider.bpe_tokenizer_enabled)
 
     def test_gemini_provider_uses_openai_compatibility_defaults(self) -> None:
         env = {
@@ -92,6 +122,7 @@ class ModelPoolEnvTests(unittest.TestCase):
                     "base_url": "http://relay.example",
                     "model": "gpt-test",
                     "wire_api": "responses",
+                    "context_window_tokens": 150000,
                 },
             }),
         }
@@ -99,6 +130,7 @@ class ModelPoolEnvTests(unittest.TestCase):
         pool = build_model_pool_from_env(env)
 
         self.assertEqual("responses", pool.profile_for("chat").wire_api)
+        self.assertEqual(150000, pool.routed_provider("chat").context_window_tokens)
 
 
 class RoutedModelProviderTests(unittest.TestCase):

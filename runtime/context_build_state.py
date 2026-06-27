@@ -13,6 +13,7 @@ class BuildState:
     messages: list[dict]
     profile_prompt: str
     instruction_sections: list[ContextSection]
+    skill_catalog: BudgetedText
     runtime_guidance: str
     system_prompt: str
     session_messages: list[dict]

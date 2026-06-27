@@ -1,3 +1,4 @@
+import json
 import unittest
 from types import SimpleNamespace
 
@@ -106,6 +107,31 @@ def _tool_response(index: int, name: str, arguments: dict) -> LLMResponse:
     )
 
 
+def _multi_tool_response(calls: list[tuple[str, str, dict]]) -> LLMResponse:
+    return LLMResponse(
+        content=None,
+        tool_calls=[
+            ToolCall(id=call_id, name=name, arguments=arguments)
+            for call_id, name, arguments in calls
+        ],
+        raw_message={
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": json.dumps(arguments),
+                    },
+                }
+                for call_id, name, arguments in calls
+            ],
+        },
+    )
+
+
 def _final_response(content: str) -> LLMResponse:
     return LLMResponse(
         content=content,
@@ -155,6 +181,125 @@ def _pipeline(registry, provider, *, hooks=None, max_reasoning_steps=24) -> Pipe
 
 
 class PipelineToolLoopGuardTests(unittest.TestCase):
+    def test_multiple_task_tool_calls_are_coalesced_into_parallel_tasks(self) -> None:
+        registry = ToolRegistry()
+        seen = {}
+
+        def task_handler(**kwargs):
+            raise AssertionError("task handler should not be called serially")
+
+        def parallel_handler(tasks, max_workers=None, **kwargs):
+            seen["tasks"] = list(tasks)
+            seen["max_workers"] = max_workers
+            return json.dumps({
+                "results": [
+                    {
+                        "agent_type": task.get("agent_type", "explore"),
+                        "success": True,
+                        "summary": f"done: {task.get('prompt')}",
+                        "files_touched": [],
+                        "tool_count": 0,
+                        "error": None,
+                    }
+                    for task in tasks
+                ],
+            })
+
+        registry.register(
+            function_tool("task", "task test tool", {}, []),
+            task_handler,
+            enabled_modes={"coding"},
+            always_on=True,
+        )
+        registry.register(
+            function_tool("parallel_tasks", "parallel test tool", {}, []),
+            parallel_handler,
+            enabled_modes={"coding"},
+            always_on=True,
+        )
+        provider = ScriptedProvider([
+            _multi_tool_response([
+                ("call-a", "task", {"prompt": "alpha", "agent_type": "explore"}),
+                ("call-b", "task", {"prompt": "beta", "agent_type": "plan"}),
+            ]),
+            _final_response("done"),
+        ])
+        pipeline = _pipeline(registry, provider)
+        session = Session(id="task:test", current_mode="coding")
+
+        reply = pipeline.run(session, SimpleNamespace(tool_mode="coding"))
+
+        self.assertEqual("done", reply)
+        self.assertEqual(["alpha", "beta"], [task["prompt"] for task in seen["tasks"]])
+        self.assertEqual(2, seen["max_workers"])
+        tool_messages = [
+            message for message in session.messages if message.get("role") == "tool"
+        ]
+        self.assertEqual(["call-a", "call-b"], [message["tool_call_id"] for message in tool_messages])
+        self.assertIn("done: alpha", tool_messages[0]["content"])
+        self.assertIn("done: beta", tool_messages[1]["content"])
+        self.assertTrue(tool_messages[0]["metadata"]["auto_parallelized_task_batch"])
+
+    def test_multiple_read_file_tool_calls_are_coalesced_into_read_files(self) -> None:
+        registry = ToolRegistry()
+        seen = {}
+
+        def read_file_handler(**kwargs):
+            raise AssertionError("read_file handler should not be called serially")
+
+        def read_files_handler(files, format="text", **kwargs):
+            seen["files"] = list(files)
+            seen["format"] = format
+            return json.dumps({
+                "results": [
+                    {
+                        "path": item["path"],
+                        "offset": item.get("offset", 0),
+                        "limit": item.get("limit"),
+                        "output": f"content: {item['path']}",
+                    }
+                    for item in files
+                ],
+            })
+
+        registry.register(
+            function_tool("read_file", "read file test tool", {}, []),
+            read_file_handler,
+            enabled_modes={"coding"},
+            always_on=True,
+        )
+        registry.register(
+            function_tool("read_files", "read files test tool", {}, []),
+            read_files_handler,
+            enabled_modes={"coding"},
+            always_on=True,
+        )
+        provider = ScriptedProvider([
+            _multi_tool_response([
+                ("call-a", "read_file", {"path": "a.py", "limit": 10}),
+                ("call-b", "read_file", {"path": "b.py", "offset": 3}),
+            ]),
+            _final_response("done"),
+        ])
+        pipeline = _pipeline(registry, provider)
+        session = Session(id="task:test", current_mode="coding")
+
+        reply = pipeline.run(session, SimpleNamespace(tool_mode="coding"))
+
+        self.assertEqual("done", reply)
+        self.assertEqual("json", seen["format"])
+        self.assertEqual(
+            [{"path": "a.py", "limit": 10}, {"path": "b.py", "offset": 3}],
+            seen["files"],
+        )
+        tool_messages = [
+            message for message in session.messages if message.get("role") == "tool"
+        ]
+        self.assertEqual(["call-a", "call-b"], [message["tool_call_id"] for message in tool_messages])
+        self.assertEqual("content: a.py", tool_messages[0]["content"])
+        self.assertEqual("content: b.py", tool_messages[1]["content"])
+        self.assertTrue(tool_messages[0]["metadata"]["auto_batched_read_file"])
+
     def test_pipeline_reuses_context_prefix_across_reasoning_steps(self) -> None:
         registry = _registry_with_tool("read_file", enabled_modes={"coding"}, always_on=True)
         provider = ScriptedProvider([

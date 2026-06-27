@@ -8,6 +8,12 @@ description: |
   (4) ask about Claude Code, Cursor, or similar agent internals
   (5) want to build agents for business, research, creative, or operational tasks
   Keywords: agent, assistant, autonomous, workflow, tool use, multi-step, orchestration
+tags: [agents, architecture, orchestration, skills, tools]
+triggers: [agent, assistant, autonomous, workflow, orchestration, skill mechanism]
+applies_to: [bot, coding]
+requires_tools: [load_skill]
+priority: 15
+safety: low
 ---
 
 # Agent Builder

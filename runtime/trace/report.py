@@ -84,6 +84,12 @@ def _render_report(
         f"- Context Build Duration: {_value(metrics.get('total_context_build_duration_ms'))} ms total / {_value(metrics.get('avg_context_build_duration_ms'))} ms avg",
         f"- Context Compression Ratio: {_value(metrics.get('context_compression_ratio'))}",
         f"- Context Compression Savings: {_value(metrics.get('context_compression_savings_ratio'))}",
+        f"- Context Token Compression Saved: {_value(metrics.get('context_token_compression_saved_tokens'))}",
+        f"- Context Token Compression Ratio: {_value(metrics.get('context_token_compression_ratio'))}",
+        f"- Coding Context State Builds: {_value(metrics.get('coding_context_state_builds'))}",
+        f"- Coding Context Compactions: {_value(metrics.get('coding_context_compacted_count'))}",
+        f"- Coding Context Generation: {_value(metrics.get('coding_context_latest_generation'))} / max {_value(metrics.get('coding_context_max_generation'))}",
+        f"- Coding Context Tail: prompt_tail={_value(metrics.get('coding_context_latest_prompt_tail_start_index'))}, compacted_until={_value(metrics.get('coding_context_latest_compacted_until_index'))}",
         "",
         "## User Request",
         "",
@@ -175,6 +181,14 @@ def _context_section(context: dict[str, Any], sanitized: list[dict[str, Any]]) -
         f"- Empty Assistant Messages: {_value(context.get('empty_assistant_messages'))}",
         f"- Role Breakdown: `{json.dumps(roles, ensure_ascii=False, default=str)}`",
     ]
+    coding_context = context.get("coding_context_state")
+    if isinstance(coding_context, dict) and coding_context.get("enabled"):
+        lines.extend([
+            f"- Coding Context Compacted: {_value(coding_context.get('compacted'))}",
+            f"- Coding Context Generation: {_value(coding_context.get('generation'))}",
+            f"- Coding Context Tokens: {_value(coding_context.get('before_tokens'))} -> {_value(coding_context.get('after_tokens'))}",
+            f"- Coding Context Tail: prompt_tail={_value(coding_context.get('prompt_tail_start_index'))}, compacted_until={_value(coding_context.get('compacted_until_index'))}",
+        ])
     if sanitized:
         lines.append("")
         lines.append("### Sanitizer")

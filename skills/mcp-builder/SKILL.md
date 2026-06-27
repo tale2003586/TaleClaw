@@ -1,6 +1,12 @@
 ---
 name: mcp-builder
 description: Build MCP (Model Context Protocol) servers that give Claude new capabilities. Use when user wants to create an MCP server, add tools to Claude, or integrate external services.
+tags: [agents, mcp, tools, integration]
+triggers: [mcp, model context protocol, server, tools, external service]
+applies_to: [coding]
+requires_tools: [bash, write_file, edit_file]
+priority: 15
+safety: medium
 ---
 
 # MCP Server Building Skill

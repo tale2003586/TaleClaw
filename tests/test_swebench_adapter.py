@@ -12,6 +12,7 @@ from evaluation.swebench_adapter import (
     clone_swebench_repo,
     dataset_name_candidates,
     load_swebench_instances,
+    load_swebench_records_from_file,
     official_evaluation_command,
     prediction_record,
     repo_clone_url,
@@ -124,6 +125,52 @@ class SweBenchAdapterTests(unittest.TestCase):
 
         self.assertEqual(["repo__repo-1", "repo__repo-2"], [item.instance_id for item in sliced])
         self.assertEqual(["repo__repo-3", "repo__repo-1"], [item.instance_id for item in explicit])
+
+    def test_load_swebench_instances_can_use_local_records_file(self) -> None:
+        records = [
+            {
+                "instance_id": f"repo__repo-{index}",
+                "repo": "owner/repo",
+                "base_commit": f"abc{index}",
+                "problem_statement": f"fix {index}",
+            }
+            for index in range(3)
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "selected_instances.json"
+            path.write_text(json.dumps(records), encoding="utf-8")
+
+            selected = load_swebench_instances(
+                records_path=path,
+                instance_ids=["repo__repo-2"],
+            )
+
+        self.assertEqual(["repo__repo-2"], [item.instance_id for item in selected])
+
+    def test_load_swebench_records_from_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "records.jsonl"
+            path.write_text(
+                "\n".join([
+                    json.dumps({
+                        "instance_id": "repo__repo-1",
+                        "repo": "owner/repo",
+                        "base_commit": "abc1",
+                        "problem_statement": "fix 1",
+                    }),
+                    json.dumps({
+                        "instance_id": "repo__repo-2",
+                        "repo": "owner/repo",
+                        "base_commit": "abc2",
+                        "problem_statement": "fix 2",
+                    }),
+                ]),
+                encoding="utf-8",
+            )
+
+            records = load_swebench_records_from_file(path)
+
+        self.assertEqual(["repo__repo-1", "repo__repo-2"], [record["instance_id"] for record in records])
 
     def test_official_eval_command_accepts_multiple_instance_ids(self) -> None:
         command = official_evaluation_command(

@@ -13,6 +13,10 @@ from runtime.context_history import (
     budget_active_turn,
     budget_conversation_history,
 )
+from runtime.coding_context_state import (
+    CodingContextView,
+    build_coding_context_view,
+)
 from runtime.context_build_state import BuildState
 from runtime.context_sections import ContextBuildReport, ContextSection, message_chars
 from runtime.trace.events import (
@@ -29,9 +33,16 @@ from runtime.trace.rag import (
     security_rag_span_id,
 )
 from runtime.working_memory import render_working_memory_block
+from skill_runtime import SKILL_LOADER
 from memory.vector_runtime import history_vector_scope_for_session
 from knowledge.tracing import Timer, make_rag_trace, write_rag_trace_if_enabled
-from config import WORKING_MEMORY_RESUME_ENABLED
+from config import (
+    CODING_CONTEXT_COMPACTION_TARGET_TOKENS,
+    CODING_CONTEXT_COMPACTION_TRIGGER_TOKENS,
+    CODING_CONTEXT_RECENT_GROUPS,
+    CODING_CONTEXT_STATE_ENABLED,
+    WORKING_MEMORY_RESUME_ENABLED,
+)
 
 
 DEFAULT_INSTRUCTION_LIMIT = 12000
@@ -51,6 +62,7 @@ class ContextPrefix:
     profile_prompt: str
     instruction_sections: list[ContextSection]
     instruction_reductions: list[dict[str, Any]]
+    skill_catalog: BudgetedText
     runtime_guidance: str
     fingerprint: str
     base_fingerprint: str = ""
@@ -69,7 +81,7 @@ class ContextBuilder:
         "Use recall_memory when the user asks about prior preferences or project conventions.",
         "Use memorize when the user states a durable preference or important fact.",
         "Some tools are deferred. Use tool_search to find or unlock tools that are not currently visible.",
-        "Automatic security RAG may be injected only once at the start of a user turn; use security_rag_search if more local security knowledge is needed later.",
+        "For code-security questions involving vulnerabilities, CVE/CWE/GHSA, dependencies, auth, authorization, injection, XSS, SSRF, tokens, secrets, file upload, path traversal, or secure coding guidance, call security_rag_search for local evidence before giving a final answer.",
         "Search-like tools are limited opportunities. Batch queries and gather enough evidence before deciding whether another search is necessary.",
     ]
 
@@ -90,6 +102,7 @@ class ContextBuilder:
         security_route_classifier=None,
         security_knowledge_index=None,
         security_auto_context_enabled: bool = True,
+        skill_loader=None,
     ) -> None:
         self.memory_store = memory_store
         self.instruction_root = Path(instruction_root or Path.cwd()).resolve()
@@ -107,6 +120,7 @@ class ContextBuilder:
         self.security_route_classifier = security_route_classifier
         self.security_knowledge_index = security_knowledge_index
         self.security_auto_context_enabled = bool(security_auto_context_enabled)
+        self.skill_loader = skill_loader if skill_loader is not None else SKILL_LOADER
         self._prefix_cache_lock = threading.Lock()
         self._prefix_cache: dict[str, ContextPrefix] = {}
 
@@ -126,10 +140,10 @@ class ContextBuilder:
             session_messages,
             active_turn_start_index=active_turn_start_index,
         )
-        budgeted_history = budget_conversation_history(
+        budgeted_history = self._budget_conversation_history_for_profile(
             history_messages,
-            enabled=self.budgeter.enabled,
-            rule=self.budgeter.rules.get("conversation_history"),
+            profile=profile,
+            session=session,
         )
         messages = [
             {"role": "system", "content": base.system_prompt},
@@ -147,6 +161,10 @@ class ContextBuilder:
             "includes_history": True,
             "history_message_count": len(history_messages),
             "rendered_history_message_count": len(budgeted_history.rendered_messages),
+            "coding_active_turn_only": self._coding_uses_active_turn_only_history(
+                profile,
+                session=session,
+            ),
         }
         return replace(
             base,
@@ -177,10 +195,16 @@ class ContextBuilder:
         instruction_block, instruction_sections, instruction_reductions = (
             self._build_instruction_block(profile)
         )
+        raw_skill_catalog = self._build_skill_catalog_block()
+        budgeted_skill_catalog = self.budgeter.apply(
+            "skill_catalog",
+            raw_skill_catalog,
+        )
         runtime_guidance = self._runtime_guidance()
         system_prompt = self._build_system_prompt(
             profile_prompt=profile_prompt,
             instruction_block=instruction_block,
+            skill_catalog_block=budgeted_skill_catalog.rendered_text,
             runtime_guidance=runtime_guidance,
         )
         prefix = ContextPrefix(
@@ -188,6 +212,7 @@ class ContextBuilder:
             profile_prompt=profile_prompt,
             instruction_sections=instruction_sections,
             instruction_reductions=instruction_reductions,
+            skill_catalog=budgeted_skill_catalog,
             runtime_guidance=runtime_guidance,
             fingerprint=fingerprint,
             base_fingerprint=fingerprint,
@@ -198,6 +223,7 @@ class ContextBuilder:
                 "cache_hit": False,
                 "mode": str(getattr(profile, "tool_mode", "bot") or "bot"),
                 "includes_history": False,
+                "skill_catalog_chars": len(budgeted_skill_catalog.rendered_text),
             },
         )
         with self._prefix_cache_lock:
@@ -220,7 +246,11 @@ class ContextBuilder:
         reasoning_step: int | None = None,
 
     ) -> ContextBundle:
-        prefix = prefix or self.build_prefix(profile)
+        prefix = prefix or self.build_prefix(
+            profile,
+            session=session,
+            active_turn_start_index=active_turn_start_index,
+        )
         profile_prompt = prefix.profile_prompt
         instruction_sections = prefix.instruction_sections
         instruction_reductions = prefix.instruction_reductions
@@ -233,17 +263,19 @@ class ContextBuilder:
                 active_turn_start_index=active_turn_start_index,
             )
         )
-        if (
-            prefix.budgeted_history is not None
-            and prefix.active_turn_start_index == active_turn_start_index
+        if self._can_reuse_prefix_history(
+            prefix,
+            profile=profile,
+            session=session,
+            active_turn_start_index=active_turn_start_index,
         ):
             history_messages = list(prefix.history_messages)
             budgeted_history = prefix.budgeted_history
         else:
-            budgeted_history = budget_conversation_history(
+            budgeted_history = self._budget_conversation_history_for_profile(
                 history_messages,
-                enabled=self.budgeter.enabled,
-                rule=self.budgeter.rules.get("conversation_history"),
+                profile=profile,
+                session=session,
             )
 
         raw_memory_block = self._build_memory_block(
@@ -290,6 +322,39 @@ class ContextBuilder:
             raw_task_runtime_events,
         )
 
+        if self._coding_context_state_enabled(profile, session=session):
+            return self._build_coding_context_state_bundle(
+                session=session,
+                profile=profile,
+                prefix=prefix,
+                profile_prompt=profile_prompt,
+                instruction_sections=instruction_sections,
+                instruction_reductions=instruction_reductions,
+                skill_catalog=prefix.skill_catalog,
+                runtime_guidance=runtime_guidance,
+                system_prompt=system_prompt,
+                session_messages=session_messages,
+                history_messages=history_messages,
+                budgeted_history=budgeted_history,
+                active_turn_messages=active_turn_messages,
+                active_turn_start_index=active_turn_start_index,
+                current_request=current_request,
+                raw_memory_block=raw_memory_block,
+                budgeted_memory=budgeted_memory,
+                raw_working_memory_block=raw_working_memory_block,
+                raw_retrieved_history=raw_retrieved_history,
+                retrieved_hits=retrieved_hits,
+                budgeted_retrieved_history=budgeted_retrieved_history,
+                raw_security_knowledge=raw_security_knowledge,
+                security_decision=security_decision,
+                security_hits=security_hits,
+                budgeted_security_knowledge=budgeted_security_knowledge,
+                raw_task_runtime_events=raw_task_runtime_events,
+                budgeted_task_runtime_events=budgeted_task_runtime_events,
+                inbox=inbox or [],
+                background_results=background_results or [],
+            )
+
         context_frame = self._build_context_frame(
             memory_block=budgeted_memory.rendered_text,
             working_memory_block=budgeted_working_memory.rendered_text,
@@ -301,9 +366,19 @@ class ContextBuilder:
         budgeted_active_turn = budget_active_turn(
             active_turn_messages,
             enabled=self.budgeter.enabled,
-            rule=self.budgeter.rules.get("active_turn"),
+            rule=self._active_turn_rule_for_profile(profile, session=session),
         )
-        if prefix.budgeted_history is not None and prefix.messages:
+        budgeted_active_turn = self._annotate_active_turn_budget_for_profile(
+            budgeted_active_turn,
+            profile=profile,
+            session=session,
+        )
+        if self._can_reuse_prefix_messages(
+            prefix,
+            profile=profile,
+            session=session,
+            active_turn_start_index=active_turn_start_index,
+        ):
             messages = list(prefix.messages)
         else:
             messages = [
@@ -323,6 +398,7 @@ class ContextBuilder:
             messages=messages,
             profile_prompt=profile_prompt,
             instruction_sections=instruction_sections,
+            skill_catalog=prefix.skill_catalog,
             runtime_guidance=runtime_guidance,
             system_prompt=system_prompt,
             session_messages=session_messages,
@@ -358,6 +434,7 @@ class ContextBuilder:
                 *self._reduction_list(
                     budgeted_history,
                     budgeted_active_turn,
+                    prefix.skill_catalog,
                     budgeted_memory,
                     budgeted_retrieved_history,
                     budgeted_security_knowledge,
@@ -370,6 +447,224 @@ class ContextBuilder:
         )
         report = self._build_report(build_state)
         return ContextBundle(messages=messages, report=report)
+
+    def _build_coding_context_state_bundle(
+        self,
+        *,
+        session,
+        profile,
+        prefix: ContextPrefix,
+        profile_prompt: str,
+        instruction_sections: list[ContextSection],
+        instruction_reductions: list[dict[str, Any]],
+        skill_catalog: BudgetedText,
+        runtime_guidance: str,
+        system_prompt: str,
+        session_messages: list[dict],
+        history_messages: list[dict],
+        budgeted_history: BudgetedMessages,
+        active_turn_messages: list[dict],
+        active_turn_start_index: int | None,
+        current_request: str,
+        raw_memory_block: str,
+        budgeted_memory: BudgetedText,
+        raw_working_memory_block: str,
+        raw_retrieved_history: str,
+        retrieved_hits: list,
+        budgeted_retrieved_history: BudgetedText,
+        raw_security_knowledge: str,
+        security_decision,
+        security_hits: list,
+        budgeted_security_knowledge: BudgetedText,
+        raw_task_runtime_events: str,
+        budgeted_task_runtime_events: BudgetedText,
+        inbox: list,
+        background_results: list,
+    ) -> ContextBundle:
+        effective_active_turn_start_index = (
+            active_turn_start_index
+            if active_turn_start_index is not None
+            else len(history_messages)
+        )
+        budgeted_working_memory = BudgetedText(
+            name="working_memory",
+            raw_text=raw_working_memory_block,
+            rendered_text="",
+            budget_chars=None,
+            strategy="coding_context_state",
+            truncated=bool(raw_working_memory_block),
+            metadata={
+                "budget_enabled": bool(self.budgeter.enabled),
+                "strategy": "coding_context_state",
+                "transport": "coding_context_state",
+                "consumed_by": "coding_context_state",
+            },
+        )
+        context_frame = self._build_context_frame(
+            memory_block=budgeted_memory.rendered_text,
+            working_memory_block="",
+            retrieved_history_block=budgeted_retrieved_history.rendered_text,
+            security_knowledge_block=budgeted_security_knowledge.rendered_text,
+            task_runtime_events_block=budgeted_task_runtime_events.rendered_text,
+        )
+
+        if self._can_reuse_prefix_messages(
+            prefix,
+            profile=profile,
+            session=session,
+            active_turn_start_index=active_turn_start_index,
+        ):
+            messages = list(prefix.messages)
+        else:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                *budgeted_history.rendered_messages,
+            ]
+
+        if context_frame:
+            messages.append({
+                "role": "user",
+                "content": context_frame,
+            })
+
+        view = build_coding_context_view(
+            session,
+            objective=current_request,
+            active_turn_start_index=effective_active_turn_start_index,
+            static_messages=messages,
+            threshold_tokens=CODING_CONTEXT_COMPACTION_TRIGGER_TOKENS,
+            target_tokens=CODING_CONTEXT_COMPACTION_TARGET_TOKENS,
+            keep_recent_groups=CODING_CONTEXT_RECENT_GROUPS,
+        )
+        messages.append(view.state_message)
+        messages.extend(view.recent_messages)
+
+        active_turn_raw = _copy_context_messages(active_turn_messages)
+        active_turn_rendered = _copy_context_messages(view.recent_messages)
+        budgeted_active_turn = BudgetedMessages(
+            name="active_turn",
+            raw_messages=active_turn_raw,
+            rendered_messages=active_turn_rendered,
+            budget_chars=None,
+            floor_chars=0,
+            strategy="coding_context_state",
+            truncated=view.compacted or len(active_turn_rendered) < len(active_turn_raw),
+            reduction=view.reduction,
+            metadata={
+                "budget_enabled": bool(self.budgeter.enabled),
+                "strategy": "coding_context_state",
+                "transport": "chat_messages",
+                "preserve": True,
+                "message_count": len(active_turn_raw),
+                "rendered_message_count": len(active_turn_rendered),
+                "start_index": effective_active_turn_start_index,
+                "prompt_tail_start_index": view.state.prompt_tail_start_index,
+                "compacted_until_index": view.state.compacted_until_index,
+                "generation": view.state.generation,
+                "before_tokens": view.before_tokens,
+                "after_tokens": view.after_tokens,
+                "compacted": view.compacted,
+            },
+        )
+
+        build_state = BuildState(
+            messages=messages,
+            profile_prompt=profile_prompt,
+            instruction_sections=instruction_sections,
+            skill_catalog=skill_catalog,
+            runtime_guidance=runtime_guidance,
+            system_prompt=system_prompt,
+            session_messages=session_messages,
+            history_messages=history_messages,
+            budgeted_history=budgeted_history,
+            active_turn_messages=active_turn_messages,
+            budgeted_active_turn=budgeted_active_turn,
+            active_turn_start_index=active_turn_start_index,
+            current_request=current_request,
+            memory_block=budgeted_memory.rendered_text,
+            raw_memory_block=raw_memory_block,
+            budgeted_memory=budgeted_memory,
+            working_memory_block="",
+            raw_working_memory_block=raw_working_memory_block,
+            budgeted_working_memory=budgeted_working_memory,
+            retrieved_history_block=budgeted_retrieved_history.rendered_text,
+            raw_retrieved_history_block=raw_retrieved_history,
+            budgeted_retrieved_history=budgeted_retrieved_history,
+            retrieved_hits=retrieved_hits,
+            security_knowledge_block=budgeted_security_knowledge.rendered_text,
+            raw_security_knowledge_block=raw_security_knowledge,
+            budgeted_security_knowledge=budgeted_security_knowledge,
+            security_decision=security_decision,
+            security_hits=security_hits,
+            inbox=inbox,
+            background_results=background_results,
+            task_runtime_events=budgeted_task_runtime_events.rendered_text,
+            raw_task_runtime_events=raw_task_runtime_events,
+            budgeted_task_runtime_events=budgeted_task_runtime_events,
+            context_frame=context_frame,
+            reductions=[
+                *instruction_reductions,
+                *self._reduction_list(
+                    budgeted_history,
+                    budgeted_active_turn,
+                    skill_catalog,
+                    budgeted_memory,
+                    budgeted_retrieved_history,
+                    budgeted_security_knowledge,
+                    budgeted_task_runtime_events,
+                ),
+            ],
+            prefix_fingerprint=prefix.fingerprint,
+            prefix_cache_hit=prefix.cache_hit,
+            prefix_metadata=dict(prefix.metadata),
+        )
+        report = self._build_report(build_state)
+        self._append_coding_context_state_report(report, view)
+        return ContextBundle(messages=messages, report=report)
+
+    def _append_coding_context_state_report(
+        self,
+        report: ContextBuildReport,
+        view: CodingContextView,
+    ) -> None:
+        report.sections.append(
+            ContextSection.from_text(
+                "coding_context_state",
+                str(view.state_message.get("content") or ""),
+                raw_text=json.dumps(
+                    view.state.to_dict(),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ),
+                budget_chars=CODING_CONTEXT_COMPACTION_TARGET_TOKENS,
+                truncated=view.compacted,
+                metadata={
+                    "transport": "chat_message",
+                    "preserve": True,
+                    "generation": view.state.generation,
+                    "threshold_tokens": CODING_CONTEXT_COMPACTION_TRIGGER_TOKENS,
+                    "target_tokens": CODING_CONTEXT_COMPACTION_TARGET_TOKENS,
+                    "keep_recent_groups": CODING_CONTEXT_RECENT_GROUPS,
+                    "before_tokens": view.before_tokens,
+                    "after_tokens": view.after_tokens,
+                    "prompt_tail_start_index": view.state.prompt_tail_start_index,
+                    "compacted_until_index": view.state.compacted_until_index,
+                    "recent_message_count": len(view.recent_messages),
+                    "active_message_count": len(view.active_messages),
+                    "compacted": view.compacted,
+                },
+            )
+        )
+        report.metadata = {
+            **dict(report.metadata or {}),
+            "coding_context_state_enabled": True,
+            "coding_context_generation": view.state.generation,
+            "coding_context_prompt_tail_start_index": view.state.prompt_tail_start_index,
+            "coding_context_compacted_until_index": view.state.compacted_until_index,
+            "coding_context_before_tokens": view.before_tokens,
+            "coding_context_after_tokens": view.after_tokens,
+        }
 
     def _build_context_frame(
         self,
@@ -417,7 +712,7 @@ class ContextBuilder:
     def _build_working_memory_block(self, session, *, profile) -> str:
         if not WORKING_MEMORY_RESUME_ENABLED:
             return ""
-        if str(getattr(profile, "tool_mode", "") or "") != "coding":
+        if not self._coding_uses_active_turn_only_history(profile, session=session):
             return ""
         return render_working_memory_block(session)
     
@@ -426,14 +721,35 @@ class ContextBuilder:
         *,
         profile_prompt: str,
         instruction_block: str,
+        skill_catalog_block: str,
         runtime_guidance: str,
     ) -> str:
         sections = [
             profile_prompt,
             instruction_block,
+            skill_catalog_block,
             runtime_guidance,
         ]
         return "\n\n".join(section for section in sections if section.strip())
+
+    def _build_skill_catalog_block(self) -> str:
+        if self.skill_loader is None:
+            return ""
+        try:
+            descriptions = str(self.skill_loader.get_descriptions() or "").strip()
+        except Exception:
+            return ""
+        if not descriptions or descriptions == "(no skills available)":
+            return ""
+        return (
+            "<skill-catalog>\n"
+            "Use load_skill(name=\"...\") when the user request matches a skill's "
+            "description, triggers, tags, or required workflow. Load only the relevant "
+            "skill body before applying it.\n\n"
+            "Available skills:\n"
+            f"{descriptions}\n"
+            "</skill-catalog>"
+        )
 
     def _runtime_guidance(self) -> str:
         return "\n".join(self._guidance_registry)
@@ -564,12 +880,13 @@ class ContextBuilder:
             "budgeter_enabled": self.budgeter.enabled,
             "budget_rules": {
                 name: _budget_rule_signature(self.budgeter.rules.get(name))
-                for name in ("mode_instructions", "project_instructions")
+                for name in ("mode_instructions", "project_instructions", "skill_catalog")
             },
             "instruction_files": [
                 _instruction_file_signature(section, path)
                 for section, path in self._instruction_files(mode)
             ],
+            "skill_catalog": self._skill_catalog_signature(),
         }
         encoded = json.dumps(
             payload,
@@ -578,6 +895,14 @@ class ContextBuilder:
             default=str,
         )
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _skill_catalog_signature(self) -> str:
+        if self.skill_loader is None:
+            return ""
+        try:
+            return str(self.skill_loader.get_descriptions() or "")
+        except Exception as exc:
+            return f"error:{type(exc).__name__}:{exc}"
     
     def _build_memory_block(self, session, *, current_request: str = "") -> str:
         if self.memory_store is None:
@@ -863,6 +1188,7 @@ class ContextBuilder:
         messages = state.messages
         profile_prompt = state.profile_prompt
         instruction_sections = state.instruction_sections
+        skill_catalog = state.skill_catalog
         runtime_guidance = state.runtime_guidance
         system_prompt = state.system_prompt
         budgeted_history = state.budgeted_history
@@ -895,6 +1221,17 @@ class ContextBuilder:
         sections = [
             ContextSection.from_text("system_profile", profile_prompt),
             *instruction_sections,
+            ContextSection.from_text(
+                "skill_catalog",
+                skill_catalog.rendered_text,
+                raw_text=skill_catalog.raw_text,
+                budget_chars=skill_catalog.budget_chars,
+                truncated=skill_catalog.truncated,
+                metadata={
+                    "transport": "system_prompt",
+                    **skill_catalog.metadata,
+                },
+            ),
             ContextSection.from_text("runtime_guidance", runtime_guidance),
             ContextSection.from_text(
                 "system_prompt",
@@ -1090,6 +1427,172 @@ class ContextBuilder:
                 return _message_text(message)
         return ""
 
+    def _budget_conversation_history_for_profile(
+        self,
+        history_messages: list[dict],
+        *,
+        profile,
+        session=None,
+    ) -> BudgetedMessages:
+        rule = self.budgeter.rules.get("conversation_history")
+        if not self._coding_uses_active_turn_only_history(profile, session=session):
+            return budget_conversation_history(
+                history_messages,
+                enabled=self.budgeter.enabled,
+                rule=rule,
+            )
+
+        raw_messages = _copy_context_messages(history_messages)
+        raw_chars = message_chars(raw_messages)
+        transferred_budget = max(0, int(getattr(rule, "budget_chars", 0) or 0))
+        transferred_floor = max(0, int(getattr(rule, "floor_chars", 0) or 0))
+        reduction = None
+        if raw_messages:
+            reduction = {
+                "section": "conversation_history",
+                "reason": "coding_history_budget_transferred_to_active_turn",
+                "before_chars": raw_chars,
+                "after_chars": 0,
+                "budget_chars": 0,
+                "floor_chars": 0,
+                "strategy": "drop_for_coding",
+                "before_messages": len(raw_messages),
+                "after_messages": 0,
+                "transferred_budget_chars": transferred_budget,
+                "transferred_floor_chars": transferred_floor,
+            }
+        return BudgetedMessages(
+            name="conversation_history",
+            raw_messages=raw_messages,
+            rendered_messages=[],
+            budget_chars=0,
+            floor_chars=0,
+            strategy="drop_for_coding",
+            truncated=bool(raw_messages),
+            reduction=reduction,
+            metadata={
+                "budget_enabled": bool(self.budgeter.enabled),
+                "strategy": "drop_for_coding",
+                "transport": "chat_messages",
+                "message_count": len(raw_messages),
+                "rendered_message_count": 0,
+                "coding_active_turn_only": True,
+                "transferred_to": "active_turn",
+                "transferred_budget_chars": transferred_budget,
+                "transferred_floor_chars": transferred_floor,
+            },
+        )
+
+    def _active_turn_rule_for_profile(self, profile, *, session=None) -> Any:
+        rule = self.budgeter.rules.get("active_turn")
+        if rule is None or not self._coding_uses_active_turn_only_history(
+            profile,
+            session=session,
+        ):
+            return rule
+        history_rule = self.budgeter.rules.get("conversation_history")
+        if history_rule is None:
+            return rule
+        return replace(
+            rule,
+            budget_chars=max(1, int(rule.budget_chars) + int(history_rule.budget_chars)),
+            floor_chars=max(0, int(rule.floor_chars) + int(history_rule.floor_chars)),
+        )
+
+    def _annotate_active_turn_budget_for_profile(
+        self,
+        budgeted: BudgetedMessages,
+        *,
+        profile,
+        session=None,
+    ) -> BudgetedMessages:
+        if not self._coding_uses_active_turn_only_history(profile, session=session):
+            return budgeted
+        history_rule = self.budgeter.rules.get("conversation_history")
+        transferred_budget = max(0, int(getattr(history_rule, "budget_chars", 0) or 0))
+        transferred_floor = max(0, int(getattr(history_rule, "floor_chars", 0) or 0))
+        metadata = {
+            **budgeted.metadata,
+            "coding_conversation_history_budget_transferred": True,
+            "transferred_from": "conversation_history",
+            "transferred_budget_chars": transferred_budget,
+            "transferred_floor_chars": transferred_floor,
+        }
+        reduction = budgeted.reduction
+        if reduction is not None:
+            reduction = {
+                **reduction,
+                "transferred_from": "conversation_history",
+                "transferred_budget_chars": transferred_budget,
+                "transferred_floor_chars": transferred_floor,
+            }
+        return replace(
+            budgeted,
+            metadata=metadata,
+            reduction=reduction,
+        )
+
+    def _coding_context_state_enabled(self, profile, *, session=None) -> bool:
+        return bool(CODING_CONTEXT_STATE_ENABLED) and self._coding_uses_active_turn_only_history(
+            profile,
+            session=session,
+        )
+
+    def _can_reuse_prefix_history(
+        self,
+        prefix: ContextPrefix,
+        *,
+        profile,
+        session=None,
+        active_turn_start_index: int | None,
+    ) -> bool:
+        if prefix.budgeted_history is None:
+            return False
+        if prefix.active_turn_start_index != active_turn_start_index:
+            return False
+        coding_context = self._coding_uses_active_turn_only_history(
+            profile,
+            session=session,
+        )
+        history_is_coding = bool(
+            (prefix.budgeted_history.metadata or {}).get("coding_active_turn_only")
+        )
+        return history_is_coding if coding_context else not history_is_coding
+
+    def _can_reuse_prefix_messages(
+        self,
+        prefix: ContextPrefix,
+        *,
+        profile,
+        session=None,
+        active_turn_start_index: int | None,
+    ) -> bool:
+        if not prefix.messages:
+            return False
+        return self._can_reuse_prefix_history(
+            prefix,
+            profile=profile,
+            session=session,
+            active_turn_start_index=active_turn_start_index,
+        )
+
+    def _coding_uses_active_turn_only_history(self, profile, *, session=None) -> bool:
+        if _normalized_mode(getattr(profile, "tool_mode", "")) == "coding":
+            return True
+        if str(getattr(profile, "name", "") or "").startswith("subagent:"):
+            return True
+        if session is None:
+            return False
+        if _normalized_mode(getattr(session, "current_mode", "")) == "coding":
+            return True
+        metadata = getattr(session, "metadata", {}) or {}
+        if str(metadata.get("kind") or "") == "subagent":
+            return True
+        for key in ("mode", "tool_mode", "task_type"):
+            if _normalized_mode(metadata.get(key)) == "coding":
+                return True
+        return False
+
     def _build_task_runtime_events_block(
         self,
         *,
@@ -1210,6 +1713,20 @@ def _message_text(message: dict) -> str:
                 parts.append(str(item))
         return "".join(parts)
     return str(content or "")
+
+
+def _normalized_mode(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _copy_context_messages(messages: list[dict]) -> list[dict]:
+    copied = []
+    for message in messages or []:
+        if isinstance(message, dict):
+            copied.append(dict(message))
+        else:
+            copied.append(message)
+    return copied
 
 
 def _score_tier(score: float) -> str:

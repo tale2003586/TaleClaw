@@ -32,6 +32,7 @@ from tools.hooks import (
     ShellSafetyHook,
     ShellWorkspaceScopeHook,
     ToolLoopGuardHook,
+    ToolResultStoreHook,
     ToolTraceHook,
 )
 from tools.tool_registry import build_lead_tool_registry
@@ -210,6 +211,7 @@ class CodingBenchmarkHarness:
                 ShellWorkspaceScopeHook(workspace),
                 FileWriteScopeHook(workspace),
                 ToolLoopGuardHook(),
+                ToolResultStoreHook(),
                 ToolTraceHook(),
             ]),
             context_builder=ContextBuilder(memory_store=MemoryStore(eval_dir / "memory" / task.id / "task")),

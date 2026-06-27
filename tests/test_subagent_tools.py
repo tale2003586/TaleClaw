@@ -85,6 +85,7 @@ def _registry() -> ToolRegistry:
     registry = ToolRegistry()
     for name in [
         "read_file",
+        "read_files",
         "rg",
         "grep",
         "nl",
@@ -122,6 +123,7 @@ class SubagentToolTests(unittest.TestCase):
         tools = runner._filtered_tools("code")
 
         self.assertIn("read_file", tools._tools)
+        self.assertIn("read_files", tools._tools)
         self.assertIn("rg", tools._tools)
         self.assertIn("grep", tools._tools)
         self.assertIn("nl", tools._tools)
@@ -146,6 +148,7 @@ class SubagentToolTests(unittest.TestCase):
         self.assertIn("grep", visible)
         self.assertIn("nl", visible)
         self.assertIn("code_outline", visible)
+        self.assertIn("read_files", visible)
         self.assertIn("parallel_tasks", visible)
         self.assertIn("task", visible)
         self.assertIn("parallel_tasks", registry.tool_catalog_text(session, "coding"))
@@ -171,7 +174,7 @@ class SubagentToolTests(unittest.TestCase):
         self.assertTrue(fake_runner.calls[0]["prompt"].endswith("inspect auth"))
         self.assertEqual("parent", fake_runner.calls[0]["parent_session"].id)
 
-    def test_task_handler_rejects_missing_scope_file_before_runner(self) -> None:
+    def test_task_handler_allows_missing_scope_file_to_runner(self) -> None:
         fake_runner = FakeRunner()
         configure_subagent_runner(fake_runner)
         handlers = make_lead_handlers(FakeTeam())
@@ -190,17 +193,15 @@ class SubagentToolTests(unittest.TestCase):
             )
 
         payload = json.loads(output)
-        self.assertFalse(payload["success"])
-        self.assertEqual("rejected", payload["status"])
-        self.assertEqual("subagent_missing_required_files", payload["failure_reason"])
-        self.assertIn("missing.py", payload["state"]["missing_files"])
+        self.assertTrue(payload["success"])
+        self.assertEqual(1, len(fake_runner.calls))
+        self.assertIn('"missing.py"', fake_runner.calls[0]["prompt"])
         self.assertEqual(
-            1,
-            session.metadata[ORCHESTRATION_STATE_KEY]["fanout_rejected_count"],
+            0,
+            session.metadata[ORCHESTRATION_STATE_KEY].get("fanout_rejected_count", 0),
         )
-        self.assertEqual([], fake_runner.calls)
 
-    def test_parallel_tasks_rejects_directory_scope_before_runner(self) -> None:
+    def test_parallel_tasks_allows_directory_scope_to_runner(self) -> None:
         fake_runner = FakeRunner()
         configure_subagent_runner(fake_runner)
         handlers = make_lead_handlers(FakeTeam())
@@ -220,13 +221,12 @@ class SubagentToolTests(unittest.TestCase):
             output = handlers["parallel_tasks"](tasks=[task], _session=session)
 
         payload = json.loads(output)
-        self.assertFalse(payload["success"])
-        self.assertEqual("subagent_scope_too_broad", payload["failure_reason"])
-        self.assertEqual(["pkg"], payload["state"]["directories"])
-        self.assertEqual([], payload["results"])
-        self.assertEqual([], fake_runner.calls)
+        self.assertEqual(1, len(payload["results"]))
+        self.assertTrue(payload["results"][0]["success"])
+        self.assertEqual(1, len(fake_runner.calls))
+        self.assertIn('"pkg"', fake_runner.calls[0]["prompt"])
 
-    def test_parallel_tasks_rejects_too_many_scope_files_before_runner(self) -> None:
+    def test_parallel_tasks_allows_many_scope_files_to_runner(self) -> None:
         fake_runner = FakeRunner()
         configure_subagent_runner(fake_runner)
         handlers = make_lead_handlers(FakeTeam())
@@ -250,12 +250,11 @@ class SubagentToolTests(unittest.TestCase):
             output = handlers["parallel_tasks"](tasks=[task], _session=session)
 
         payload = json.loads(output)
-        self.assertFalse(payload["success"])
-        self.assertEqual("subagent_scope_too_broad", payload["failure_reason"])
-        self.assertEqual(6, payload["state"]["scope_file_count"])
-        self.assertEqual(5, payload["state"]["max_scope_files"])
-        self.assertEqual([], payload["results"])
-        self.assertEqual([], fake_runner.calls)
+        self.assertEqual(1, len(payload["results"]))
+        self.assertTrue(payload["results"][0]["success"])
+        self.assertEqual(1, len(fake_runner.calls))
+        for file_path in files:
+            self.assertIn(file_path, fake_runner.calls[0]["prompt"])
 
     def test_parallel_tasks_handler_rejects_repeated_failed_clue(self) -> None:
         failing_runner = FailingRunner()

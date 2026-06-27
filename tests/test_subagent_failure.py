@@ -39,6 +39,38 @@ class SubagentFailureClassificationTests(unittest.TestCase):
             failure.reason,
         )
 
+    def test_recovered_missing_file_does_not_override_completed_findings(self) -> None:
+        failure = classify_subagent_failure(
+            session_messages=[
+                {
+                    "role": "tool",
+                    "status": "success",
+                    "content": "Error: FileNotFoundError: File not found: wrong/path.xml",
+                    "final_arguments": {"path": "wrong/path.xml"},
+                },
+                {
+                    "role": "tool",
+                    "status": "success",
+                    "content": "correct/path.xml\ncorrect/Mapper.java",
+                    "final_arguments": {"path": "correct"},
+                },
+            ],
+            stop_reason=None,
+            structured={
+                "findings": [
+                    {
+                        "path": "correct/path.xml",
+                        "lines": "1-20",
+                        "note": "Recovered by listing the right resource path.",
+                    }
+                ],
+                "incomplete": False,
+                "failure_reason": None,
+            },
+        )
+
+        self.assertIsNone(failure)
+
     def test_status_error_uses_structured_error_message(self) -> None:
         failure = classify_subagent_failure(
             session_messages=[

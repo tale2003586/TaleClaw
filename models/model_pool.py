@@ -68,6 +68,12 @@ class ModelProfile:
     model: str
     max_tokens_param: str = "max_tokens"
     wire_api: str = "chat_completions"
+    context_window_tokens: int | None = None
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
+    output_reserve_tokens: int | None = None
+    tokenizer_model: str = ""
+    bpe_tokenizer_enabled: bool = False
     fallbacks: tuple[str, ...] = ()
 
 
@@ -148,6 +154,12 @@ class ModelPool:
                 self.client_for_profile(profile.name),
                 max_tokens_param=profile.max_tokens_param,
                 wire_api=profile.wire_api,
+                context_window_tokens=profile.context_window_tokens,
+                max_input_tokens=profile.max_input_tokens,
+                max_output_tokens=profile.max_output_tokens,
+                output_reserve_tokens=profile.output_reserve_tokens,
+                tokenizer_model=profile.tokenizer_model,
+                bpe_tokenizer_enabled=profile.bpe_tokenizer_enabled,
             )
         return self._providers[profile.name]
 
@@ -304,6 +316,36 @@ class RoutedModelProvider:
         self.pool = pool
         self.purpose = purpose
 
+    @property
+    def context_window_tokens(self) -> int | None:
+        return self._min_profile_int("context_window_tokens")
+
+    @property
+    def max_input_tokens(self) -> int | None:
+        return self._min_profile_int("max_input_tokens")
+
+    @property
+    def max_output_tokens(self) -> int | None:
+        return self._min_profile_int("max_output_tokens")
+
+    @property
+    def output_reserve_tokens(self) -> int | None:
+        return self._min_profile_int("output_reserve_tokens")
+
+    @property
+    def tokenizer_model(self) -> str:
+        for profile in self.pool.route_profiles_for_call(self.purpose):
+            if profile.bpe_tokenizer_enabled and profile.tokenizer_model:
+                return profile.tokenizer_model
+        return ""
+
+    @property
+    def bpe_tokenizer_enabled(self) -> bool:
+        return any(
+            bool(profile.bpe_tokenizer_enabled)
+            for profile in self.pool.route_profiles_for_call(self.purpose)
+        )
+
     def chat(
         self,
         *,
@@ -415,6 +457,18 @@ class RoutedModelProvider:
             message=f"All model providers failed for purpose '{self.purpose}': {detail}",
             cause=last_error,
         )
+
+    def _min_profile_int(self, attr: str) -> int | None:
+        values: list[int] = []
+        for profile in self.pool.route_profiles_for_call(self.purpose):
+            value = getattr(profile, attr, None)
+            try:
+                parsed = int(value)
+            except Exception:
+                continue
+            if parsed > 0:
+                values.append(parsed)
+        return min(values) if values else None
 
 
 def build_model_pool_from_env(
@@ -595,6 +649,84 @@ def _profile_from_mapping(
         )
         or str(default_settings.get("wire_api") or "chat_completions").strip()
     )
+    context_window_tokens = _profile_int_setting(
+        raw,
+        ("context_window_tokens", "context_window", "max_context_tokens", "context_limit"),
+        env,
+        _provider_env_names(
+            profile_name,
+            provider,
+            selected_match=selected_match,
+            suffix="CONTEXT_WINDOW_TOKENS",
+        ) + _provider_env_names(
+            profile_name,
+            provider,
+            selected_match=selected_match,
+            suffix="CONTEXT_LIMIT",
+        ),
+    )
+    max_input_tokens = _profile_int_setting(
+        raw,
+        ("max_input_tokens", "input_context_limit", "input_token_limit"),
+        env,
+        _provider_env_names(
+            profile_name,
+            provider,
+            selected_match=selected_match,
+            suffix="MAX_INPUT_TOKENS",
+        ),
+    )
+    max_output_tokens = _profile_int_setting(
+        raw,
+        ("max_output_tokens", "output_token_limit", "max_completion_tokens"),
+        env,
+        _provider_env_names(
+            profile_name,
+            provider,
+            selected_match=selected_match,
+            suffix="MAX_OUTPUT_TOKENS",
+        ),
+    )
+    output_reserve_tokens = _profile_int_setting(
+        raw,
+        ("output_reserve_tokens", "reserved_output_tokens", "max_output_reserve_tokens"),
+        env,
+        _provider_env_names(
+            profile_name,
+            provider,
+            selected_match=selected_match,
+            suffix="OUTPUT_RESERVE_TOKENS",
+        ),
+    )
+    tokenizer_model = (
+        str(raw.get("tokenizer_model") or "").strip()
+        or _first_env(
+            env,
+            _provider_env_names(
+                profile_name,
+                provider,
+                selected_match=selected_match,
+                suffix="TOKENIZER_MODEL",
+            ),
+        )
+    )
+    bpe_tokenizer_enabled = _profile_bool_setting(
+        raw,
+        ("bpe_tokenizer_enabled", "tokenizer_enabled", "use_bpe_tokenizer"),
+        env,
+        _provider_env_names(
+            profile_name,
+            provider,
+            selected_match=selected_match,
+            suffix="BPE_TOKENIZER_ENABLED",
+        ) + _provider_env_names(
+            profile_name,
+            provider,
+            selected_match=selected_match,
+            suffix="TOKENIZER_ENABLED",
+        ),
+        default=False,
+    )
     fallbacks = _parse_profile_list(raw.get("fallbacks", ()))
 
     return ModelProfile(
@@ -605,6 +737,12 @@ def _profile_from_mapping(
         model=model,
         max_tokens_param=max_tokens_param,
         wire_api=wire_api,
+        context_window_tokens=context_window_tokens,
+        max_input_tokens=max_input_tokens,
+        max_output_tokens=max_output_tokens,
+        output_reserve_tokens=output_reserve_tokens,
+        tokenizer_model=tokenizer_model,
+        bpe_tokenizer_enabled=bpe_tokenizer_enabled,
         fallbacks=fallbacks,
     )
 
@@ -707,6 +845,67 @@ def _first_env(env: Mapping[str, str], names: list[str]) -> str:
         if value:
             return value
     return ""
+
+
+def _profile_int_setting(
+    raw: Mapping[str, Any],
+    raw_keys: tuple[str, ...],
+    env: Mapping[str, str],
+    env_names: list[str],
+) -> int | None:
+    for key in raw_keys:
+        value = raw.get(key)
+        parsed = _positive_int_or_none(value)
+        if parsed is not None:
+            return parsed
+    for name in _dedupe(env_names):
+        parsed = _positive_int_or_none(env.get(name))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _positive_int_or_none(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if parsed > 0:
+        return parsed
+    return None
+
+
+def _profile_bool_setting(
+    raw: Mapping[str, Any],
+    raw_keys: tuple[str, ...],
+    env: Mapping[str, str],
+    env_names: list[str],
+    *,
+    default: bool = False,
+) -> bool:
+    for key in raw_keys:
+        if key in raw:
+            return _bool_value(raw.get(key), default=default)
+    for name in _dedupe(env_names):
+        value = env.get(name)
+        if value is not None and str(value).strip() != "":
+            return _bool_value(value, default=default)
+    return bool(default)
+
+
+def _bool_value(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if not text:
+        return bool(default)
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return bool(default)
 
 
 def _merge_profile_chains(

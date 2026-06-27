@@ -15,6 +15,8 @@ agent 失败时，最终回复通常不够用。
 - 工具调用参数和输出摘要是什么。
 - 哪个 hook 拒绝了工具。
 - workspace 改了什么。
+- 上下文有没有被压缩，coding context state 到第几代。
+- Web stream 看到的实时 activity 是否和原始 trace 对得上。
 - 最终 run 状态是什么。
 
 这些信息由 `runtime/trace/` 负责。
@@ -34,7 +36,11 @@ agent 失败时，最终回复通常不够用。
 - `write_run_state(run_state)`
 - `write_report(run_state, report)`
 - `write_metrics(run_state)`
+- `write_context_metrics(run_state)`
+- `subscribe(session_id, cb)`
 - `run_dir(run_state_or_id)`
+
+`subscribe()` 是进程内实时事件旁路。它不会替代 `trace.jsonl`，只是让 Web stream 在 run 过程中收到截断、脱敏后的事件副本。
 
 ## run 目录里的文件
 
@@ -44,12 +50,15 @@ agent 失败时，最终回复通常不够用。
 - `trace.jsonl`
 - `report.json`
 - `metrics.json`
+- `context_metrics.json`
 - `trace_summary.json`
 - `trace_summary.md`
 - `report.md`
 - coding task 下可能还有 `workspace_diff.json`
 
 其中 `trace_summary.json` / `trace_summary.md` 由 trace core 根据 `trace.jsonl`、`run_state.json` 和 `report.json` 生成，用来快速查看执行路径、失败原因、工具链、文件影响和验证结果。
+
+`context_metrics.json` 从 `context.build.completed` 事件聚合而来，用来查看 section reduction、压缩 step、token emergency trim、coding context state generation 和压缩前后 token。
 
 `report.md` 不是 trace core 直接写的，而是由 `plugins/run_report` 在 `after_run` 阶段生成。
 
@@ -117,6 +126,8 @@ tool 级：
 - `tool.call.failed`
 - `tool_executed`
 
+长工具结果如果被 `ToolResultStoreHook` 存储，`tool.call.completed` 和 session tool message 的 metadata 会带 `tool_result_ref`，包括 result id、backend、uri、chars 和 sha256。trace 只保留输出预览，完整结果由 tool result store 保存。
+
 workspace 级：
 
 - `workspace.resolved`
@@ -163,11 +174,29 @@ metrics 是从 `trace.jsonl` 聚合出来的。
 - model retry count
 - model route attempts
 - sanitized messages
+- duplicate tool call ratio / count
+- truncated tool output count
+- subagent fanout / incomplete count
+- context compression 和 coding context state 相关聚合指标
 - run duration
 - models
 - tools
 
 这使得 trace 不只是调试日志，也能形成 run 级指标。
+
+## context_metrics.json 怎么来
+
+`TraceStore.write_report()` 会调用 `write_context_metrics()`。
+
+它会扫描 `trace.jsonl` 中的 `context.build.completed` 事件，并为每次 context build 生成一条记录。记录里会保留：
+
+- context build duration。
+- section 数、raw/rendered chars。
+- reductions 和 reduced sections。
+- 是否触发 token emergency trim。
+- coding context state 是否开启、generation、prompt tail、compacted until、节省 token。
+
+`aggregate` 部分会把这些记录汇总成 run 级视角，方便定位“这个 run 为什么后面开始重复工具调用”或“哪一步压缩最重”。
 
 ## trace_summary
 
@@ -195,6 +224,31 @@ metrics 是从 `trace.jsonl` 聚合出来的。
 `trace_summary.json` 适合 UI 或评测脚本读。
 
 短生命周期 subagent 会创建自己的 `RunState`，并通过 `span_id` / `parent_span_id` 挂到父 run 的 reasoning step 下。Web 侧会把 `session_id` 以 `subtask:` 开头的事件，以及 `subagent.started` / `subagent.completed` 等事件单独聚合为 subagent trace 区块，避免和主 agent trace 混在一起。
+
+## 实时 Trace 订阅与 Web 活动流
+
+`runtime/trace/trace_subscribers.py` 提供 `TraceSubscribers`：
+
+- `register_run(run_id, session_id)`：顶层 run 启动时建立 run -> session 映射。
+- `subscribe(session_id, cb)`：Web 端注册当前 session 的回调。
+- `snapshot(run_id, fallback_session_id)`：`append_event()` 写盘后取出本 session 的订阅者。
+- `dispatch(event, subscribers)`：在锁外调用回调，回调异常不会影响 trace 写盘。
+
+派发前会做一轮事件副本清洗：
+
+- 常见 secret key 会被过滤。
+- 字符串和大对象最多保留 500 字符预览。
+- 原始 `trace.jsonl` 仍按 `_json_safe()` 写完整结构化事件。
+
+Web 层的 `_stream_event_projection()` 再做第二轮白名单投影，只把这些事件推给浏览器：
+
+- reasoning step started/completed。
+- tool call started/completed/failed。
+- model call completed 里的 token usage。
+- subagent started/completed。
+- workspace diff summary。
+
+前端 `web/static/app.js` 把这些 NDJSON `event` 行渲染成 activity timeline：step 分组、工具行、subagent 嵌套、token/工具计数和文件变更 chips。最终回答仍走原来的 `delta`/`complete` 流，activity stream 只是运行证据的实时视图。
 
 ## TraceIndexStore
 
@@ -303,7 +357,7 @@ Web 侧可以读取这些文件，把它们展示成：
 当前 trace 还没有：
 
 - OpenTelemetry 原生导出。
-- 跨进程 trace collector。
+- 跨进程 trace collector 或外部事件广播后端；实时 Web activity stream 目前是同进程订阅。
 - 大规模原始 trace 存储后端。
 - span duration 的统一闭合模型。
 - 后台记忆事件可能在主 run 报告之后补写，因此实时查看时可能短暂看到 memory 摘要尚未完成。

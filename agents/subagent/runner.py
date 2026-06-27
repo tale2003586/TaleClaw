@@ -29,7 +29,7 @@ from agents.subagent.trace import (
     trace_subagent_completed,
     trace_subagent_started,
 )
-from config import SUBAGENT_MAX_REASONING_STEPS
+from config import SUBAGENT_MAX_REASONING_STEPS, WORKING_MEMORY_CHECKPOINT_ENABLED
 from modes.base import ModeProfile
 from runtime.context import ContextBuilder
 from runtime.failure_reasons import (
@@ -37,8 +37,15 @@ from runtime.failure_reasons import (
     StopReason,
 )
 from runtime.pipeline import Pipeline, get_last_assistant_text
+from runtime.working_memory import (
+    inherit_working_memory,
+    load_working_memory,
+    save_working_memory,
+)
 from sessions import Session
 from tools.tool_registry import ToolRegistry
+
+STEP_LIMIT_SUMMARY_MAX_TOKENS = 1600
 
 
 class TaskSubagentRunner:
@@ -123,10 +130,19 @@ class TaskSubagentRunner:
             )
             stop_reason = _stop_reason(session)
             truncated = stop_reason == StopReason.REASONING_STEP_LIMIT.value
-            if truncated:
-                summary = incomplete_summary(summary or get_last_assistant_text(session.messages))
             summary_text = summary or get_last_assistant_text(session.messages)
-            structured = extract_structured_result(summary_text)
+            if truncated:
+                recovered_summary = self._summarize_after_step_limit(
+                    pipeline=pipeline,
+                    session=session,
+                    profile=profile,
+                )
+                if recovered_summary:
+                    summary_text = recovered_summary
+            structured = extract_structured_result(summary_text, agent_type=agent_type)
+            result_summary = str(structured.get("summary") or summary_text or "")
+            if truncated:
+                result_summary = incomplete_summary(result_summary)
             failure = classify_subagent_failure(
                 session_messages=session.messages,
                 stop_reason=stop_reason,
@@ -134,18 +150,29 @@ class TaskSubagentRunner:
                 truncated=truncated,
             )
             findings = structured.get("findings") or []
+            payload = (
+                structured.get("payload")
+                if isinstance(structured.get("payload"), dict)
+                else {}
+            )
             incomplete = bool(truncated or structured.get("incomplete") or failure)
             success = not incomplete and failure is None
             result = SubagentResult(
                 agent_type=agent_type,
                 success=success,
-                summary=summary_text,
+                summary=result_summary,
                 status=status_for_result(
                     success=success,
                     incomplete=incomplete,
                     findings=findings,
                     failure=failure,
+                    payload=payload,
                 ),
+                output_schema=str(structured.get("output_schema") or ""),
+                payload=payload,
+                format_valid=bool(structured.get("format_valid", True)),
+                format_error=str(structured.get("format_error") or ""),
+                format_repaired=bool(structured.get("format_repaired")),
                 files_touched=extract_files_touched(session.messages),
                 tool_count=count_tool_calls(session.messages),
                 error=failure.message if failure else None,
@@ -157,7 +184,10 @@ class TaskSubagentRunner:
                 failure_message=failure.message if failure else None,
                 recoverable=failure.recoverable if failure else False,
                 retry_hint=failure.retry_hint if failure else None,
-                evidence=failure.evidence if failure else [],
+                evidence=failure.evidence if failure else structured.get("evidence") or [],
+                covered_scope=structured.get("covered_scope") or [],
+                open_questions=structured.get("open_questions") or [],
+                needs_parent_verification=bool(structured.get("needs_parent_verification")),
             )
             trace_subagent_completed(
                 trace_store,
@@ -214,6 +244,58 @@ class TaskSubagentRunner:
             max_tokens=base_runner.max_tokens,
             max_reasoning_steps=self.max_reasoning_steps,
         )
+
+    def _summarize_after_step_limit(
+        self,
+        *,
+        pipeline: Pipeline,
+        session: Session,
+        profile: ModeProfile,
+    ) -> str:
+        session.add_message(
+            "user",
+            _step_limit_summary_prompt(self.max_reasoning_steps),
+            metadata={
+                "kind": "subagent_step_limit_summary_request",
+                "reason": StopReason.REASONING_STEP_LIMIT.value,
+            },
+        )
+        try:
+            context = pipeline.agent_runner.context_builder.build(
+                session=session,
+                profile=profile,
+                include_security_knowledge=False,
+            )
+            provider, model = pipeline.provider_and_model_for("summary")
+            response = provider.chat(
+                model=model,
+                messages=getattr(context, "messages", []),
+                tools=[],
+                tool_choice="none",
+                max_tokens=min(
+                    max(1, int(pipeline.max_tokens)),
+                    STEP_LIMIT_SUMMARY_MAX_TOKENS,
+                ),
+            )
+        except Exception as exc:
+            session.metadata["subagent_step_limit_summary_error"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
+            return ""
+        content = str(response.content or "").strip()
+        if not content:
+            session.metadata["subagent_step_limit_summary_error"] = "empty_summary"
+            return ""
+        session.add_message(
+            "assistant",
+            content,
+            metadata={
+                "kind": "subagent_step_limit_summary",
+                "reason": StopReason.REASONING_STEP_LIMIT.value,
+            },
+        )
+        session.metadata["subagent_step_limit_summary_used"] = True
+        return content
 
     def _filtered_tools(self, agent_type: str) -> ToolRegistry:
         allowed = SUBTASK_TOOL_WHITELIST.get(agent_type, set())
@@ -273,6 +355,25 @@ class TaskSubagentRunner:
             current_mode="coding",
             metadata=metadata,
         )
+        if WORKING_MEMORY_CHECKPOINT_ENABLED and parent_session is not None:
+            inherit_working_memory(
+                source_session=parent_session,
+                target_session=session,
+                objective=prompt,
+                task_id=session.id,
+                include_pending_units=False,
+            )
+            memory = load_working_memory(session)
+            if memory is not None:
+                memory.task_id = session.id
+                memory.objective = prompt
+                memory.archived_findings["inherited_parent_working_memory"] = {
+                    "parent_session_id": getattr(parent_session, "id", ""),
+                    "description": description,
+                    "agent_type": agent_type,
+                    "mode": "snapshot",
+                }
+                save_working_memory(session, memory)
         session.add_message(
             "user",
             subtask_prompt(prompt=prompt, agent_type=agent_type, description=description),
@@ -291,3 +392,34 @@ def _normalize_agent_type(agent_type: str | None) -> str | None:
 def _stop_reason(session: Session) -> str | None:
     value = (getattr(session, "metadata", {}) or {}).get(REASONING_LOOP_STOP_REASON_KEY)
     return str(value) if value else None
+
+
+def _step_limit_summary_prompt(max_steps: int) -> str:
+    return (
+        "<subagent-step-limit-summary>\n"
+        f"You hit the subagent reasoning step limit ({max_steps}). Do not call tools. "
+        "Do not continue investigation. Summarize only the work already completed "
+        "from the conversation and tool results above so the parent agent can reuse "
+        "the partial progress.\n\n"
+        "Return JSON only with this shape:\n"
+        "{\"schema_version\":\"subagent.explore.v1\",\"agent_type\":\"explore\","
+        "\"status\":\"partial\",\"summary\":\"short summary of completed work\","
+        "\"payload\":{\"findings\":[{\"claim\":\"reusable fact already supported\","
+        "\"path\":\"relative/file.py\",\"lines\":\"1-20\","
+        "\"entry\":\"symbol_or_section\",\"evidence\":\"short observed signal\","
+        "\"confidence\":\"high|medium|low\","
+        "\"needs_parent_verification\":true}],"
+        "\"evidence\":[{\"path\":\"relative/file.py\",\"lines\":\"1-20\","
+        "\"quote_or_signal\":\"...\"}],"
+        "\"covered_scope\":[\"relative/file.py\"],"
+        "\"open_questions\":[\"specific unfinished item\"],"
+        "\"needs_parent_verification\":true},"
+        "\"incomplete\":true,"
+        "\"failure_reason\":\"subagent_step_limit\","
+        "\"failure_message\":\"Hit the reasoning step limit after partial progress.\","
+        "\"recoverable\":true,"
+        "\"retry_hint\":\"Retry with a narrower scope or continue from the listed open_questions.\"}\n\n"
+        "If no reliable file-backed findings exist, return findings=[] and evidence=[], "
+        "but still fill open_questions and retry_hint.\n"
+        "</subagent-step-limit-summary>"
+    )

@@ -1182,6 +1182,200 @@ button {
   font-size: 12px;
 }
 
+.stream-content {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.activity-timeline {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: normal;
+}
+
+.activity-timeline.activity-compact {
+  margin-bottom: 12px;
+}
+
+.activity-status-line {
+  min-width: 0;
+  overflow: hidden;
+  color: #526168;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.activity-body {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.activity-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.activity-step,
+.activity-subagent,
+.activity-disclosure {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.activity-step summary,
+.activity-subagent summary,
+.activity-disclosure summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: #526168;
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.activity-step summary::-webkit-details-marker,
+.activity-subagent summary::-webkit-details-marker,
+.activity-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.activity-step summary::before,
+.activity-subagent summary::before,
+.activity-disclosure summary::before {
+  flex: 0 0 auto;
+  color: var(--accent);
+  content: "›";
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  font-size: 18px;
+  line-height: 0.8;
+  transition: transform 140ms ease;
+}
+
+.activity-step[open] summary::before,
+.activity-subagent[open] summary::before,
+.activity-disclosure[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.activity-step summary span,
+.activity-subagent summary span,
+.activity-disclosure summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-step summary code,
+.activity-subagent summary code {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.activity-step-rows,
+.activity-subagent-rows {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 7px;
+  padding-left: 18px;
+}
+
+.activity-subagent {
+  padding: 7px 0 0 10px;
+  border-left: 2px solid rgba(154, 200, 193, 0.55);
+}
+
+.activity-tool-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  min-height: 22px;
+  color: #526168;
+  font-size: 12px;
+}
+
+.activity-tool-icon {
+  width: 16px;
+  color: var(--accent);
+  text-align: center;
+  line-height: 1;
+}
+
+.activity-tool-row.running .activity-tool-icon {
+  animation: stream-cursor 900ms steps(2, jump-none) infinite;
+}
+
+.activity-tool-row.error .activity-tool-icon,
+.activity-subagent.error summary::before {
+  color: #dc2626;
+}
+
+.activity-tool-main {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-tool-meta {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.activity-diff {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.activity-diff-chip,
+.activity-run-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  max-width: 100%;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: #42515a;
+  background: rgba(255, 255, 255, 0.04);
+  text-decoration: none;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.activity-diff-chip.created {
+  border-color: rgba(20, 184, 166, 0.35);
+}
+
+.activity-diff-chip.deleted {
+  border-color: rgba(220, 38, 38, 0.35);
+}
+
+.activity-run-link:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .tool-disclosure {
   min-width: 0;
   max-width: 100%;

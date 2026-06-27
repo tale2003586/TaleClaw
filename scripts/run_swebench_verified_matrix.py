@@ -92,6 +92,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Run only these SWE-bench instance ids. May be repeated or comma-separated.",
     )
     parser.add_argument(
+        "--instances-file",
+        default="",
+        help="Override config local SWE-bench records JSON/JSONL file.",
+    )
+    parser.add_argument(
         "--max-reasoning-steps",
         type=int,
         default=0,
@@ -311,6 +316,7 @@ def default_swebench_config() -> dict[str, Any]:
         "limit": 10,
         "offset": 0,
         "instance_ids": [],
+        "instances_file": "",
         "model_name": "",
         "max_reasoning_steps": 80,
         "reuse_workspace": False,
@@ -336,6 +342,8 @@ def apply_cli_overrides(config: dict[str, Any], args: argparse.Namespace) -> Non
     instance_ids = parse_ids(args.instance_id)
     if instance_ids:
         swebench["instance_ids"] = instance_ids
+    if args.instances_file:
+        swebench["instances_file"] = args.instances_file
     if args.max_reasoning_steps > 0:
         swebench["max_reasoning_steps"] = args.max_reasoning_steps
     config["swebench"] = swebench
@@ -539,6 +547,8 @@ def build_verified_command(
     ]
     for instance_id in parse_ids(swebench.get("instance_ids") or []):
         cmd.extend(["--instance-id", instance_id])
+    if swebench.get("instances_file"):
+        cmd.extend(["--instances-file", str(swebench["instances_file"])])
     if swebench.get("model_name"):
         cmd.extend(["--model-name", str(swebench["model_name"])])
     if truthy(swebench.get("reuse_workspace")):

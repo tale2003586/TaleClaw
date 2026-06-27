@@ -39,7 +39,7 @@ class SubagentDispatchValidationTests(unittest.TestCase):
     def tearDown(self) -> None:
         configure_subagent_runner(None)
 
-    def test_missing_scope_file_is_rejected_with_suggestion_before_spawn(self) -> None:
+    def test_missing_scope_file_is_allowed_to_subagent(self) -> None:
         runner = FakeRunner()
         configure_subagent_runner(runner)
         handlers = make_lead_handlers(FakeTeam())
@@ -65,18 +65,12 @@ class SubagentDispatchValidationTests(unittest.TestCase):
             output = handlers["parallel_tasks"](tasks=[task], _session=session)
 
         payload = json.loads(output)
-        self.assertTrue(payload["dispatch_rejected"])
-        self.assertFalse(payload["success"])
-        self.assertEqual("subagent_missing_required_files", payload["failure_reason"])
-        self.assertEqual(["frontend/dashboard/build.js"], payload["missing_paths"])
-        self.assertEqual(
-            ["frontend/dashboard/build.mjs"],
-            payload["suggestions"]["frontend/dashboard/build.js"],
-        )
-        self.assertEqual([], payload["results"])
-        self.assertEqual([], runner.calls)
+        self.assertEqual(1, len(payload["results"]))
+        self.assertTrue(payload["results"][0]["success"])
+        self.assertEqual(1, len(runner.calls))
+        self.assertIn("frontend/dashboard/build.js", runner.calls[0]["prompt"])
 
-    def test_prompt_only_file_list_is_rejected_even_when_path_exists(self) -> None:
+    def test_prompt_only_file_hint_is_allowed_to_subagent(self) -> None:
         runner = FakeRunner()
         configure_subagent_runner(runner)
         handlers = make_lead_handlers(FakeTeam())
@@ -97,12 +91,10 @@ class SubagentDispatchValidationTests(unittest.TestCase):
             output = handlers["parallel_tasks"](tasks=[task], _session=session)
 
         payload = json.loads(output)
-        self.assertTrue(payload["dispatch_rejected"])
-        self.assertEqual("subagent_scope_too_broad", payload["failure_reason"])
-        self.assertEqual(["package.json"], payload["state"]["verified_prompt_paths"])
-        self.assertIn("scope.files is required", payload["hint"])
-        self.assertEqual([], payload["results"])
-        self.assertEqual([], runner.calls)
+        self.assertEqual(1, len(payload["results"]))
+        self.assertTrue(payload["results"][0]["success"])
+        self.assertEqual(1, len(runner.calls))
+        self.assertIn("package.json", runner.calls[0]["prompt"])
 
 
 if __name__ == "__main__":

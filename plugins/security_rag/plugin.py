@@ -28,7 +28,7 @@ class SecurityRagPlugin(Plugin):
             ToolRegistration(
                 schema=function_tool(
                     "security_rag_search",
-                    "Search the local code security RAG knowledge base for secure coding, vulnerability, CWE/CVE, auth, injection, XSS, SSRF, token, and dependency security guidance.",
+                    "Search the local code security RAG knowledge base for secure coding, vulnerability, CWE/CVE/GHSA, auth, authorization, injection, XSS, SSRF, token, secrets, dependency, file upload, and path traversal guidance. Use this before answering security-related questions that need local evidence.",
                     {
                         "query": {
                             "type": "string",
@@ -48,7 +48,7 @@ class SecurityRagPlugin(Plugin):
                 handler=self.search,
                 risk="low",
                 enabled_modes={"bot", "coding"},
-                always_on=False,
+                always_on=True,
                 source="plugin:security_rag",
             )
         ]

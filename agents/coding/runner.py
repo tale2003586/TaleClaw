@@ -1,6 +1,13 @@
 from runtime.context import ContextBuilder
 from runtime.failure_reasons import REASONING_LOOP_STOP_REASON_KEY
 from runtime.pipeline import Pipeline, get_last_assistant_text
+from runtime.coding_handoff import (
+    CODING_CONVERSATION_SUMMARY_METADATA_KEY,
+    CODING_HANDOFF_METADATA_KEY,
+    PENDING_CODING_TASK_SUMMARY_METADATA_KEY,
+    build_coding_session_handoff,
+    build_coding_task_summary,
+)
 from runtime.trace.events import (
     WORKSPACE_DIFF_WRITTEN,
     WORKSPACE_RESOLVED,
@@ -71,6 +78,13 @@ class TaskSessionRunner:
             session=parent_session,
         )
         self.workspace_resolver.bind_session(parent_session, workspace)
+        session_handoff = build_coding_session_handoff(
+            parent_session,
+            current_user_request=user_text,
+        )
+        parent_session.metadata[CODING_CONVERSATION_SUMMARY_METADATA_KEY] = (
+            session_handoff.prior_summary
+        )
         record = self.factory.create(
             parent_session_id=parent_session.id,
             task_type="coding",
@@ -78,6 +92,7 @@ class TaskSessionRunner:
             user_id=explicit_user_id_for_session(parent_session),
             user_role=user_role_for_session(parent_session),
         )
+        record.session.metadata[CODING_HANDOFF_METADATA_KEY] = session_handoff.to_dict()
         if WORKING_MEMORY_CHECKPOINT_ENABLED:
             inherit_working_memory(
                 source_session=parent_session,
@@ -103,6 +118,8 @@ class TaskSessionRunner:
                 "parent_session_id": parent_session.id,
                 "task_type": record.task_type,
                 "user_request_preview": event_preview(user_text),
+                "handoff_recent_turn_count": len(session_handoff.recent_turns),
+                "handoff_has_prior_summary": bool(session_handoff.prior_summary.strip()),
             })
             trace_store.write_run_state(run_state)
         workspace_before = None
@@ -119,6 +136,7 @@ class TaskSessionRunner:
             task_memory=task_memory,
             parent_session_id=parent_session.id,
             user_text=user_text,
+            session_handoff=session_handoff,
         )
         record.session.add_message(
             "user",
@@ -127,6 +145,7 @@ class TaskSessionRunner:
                 user_text,
                 global_memory,
                 workspace=workspace,
+                session_handoff=session_handoff,
             ),
         )
 
@@ -182,6 +201,23 @@ class TaskSessionRunner:
 
         if extraction.error:
             record.session.metadata["conclusion_extraction_error"] = extraction.error
+        parent_task_summary = build_coding_task_summary(
+            task_id=record.task_id,
+            parent_session_id=record.parent_session_id,
+            task_type=record.task_type,
+            status=record.session.metadata.get("status", "completed"),
+            user_request=user_text,
+            task_reply=reply,
+            extraction_summary=extraction.summary,
+            task_log_path=record.session.metadata.get("task_log_path", ""),
+            conclusions_path=record.session.metadata.get("conclusions_path", ""),
+            promoted_count=len(promotion.promoted),
+            skipped_count=len(promotion.skipped),
+            rejected_count=len(promotion.rejected),
+        )
+        parent_session.metadata[PENDING_CODING_TASK_SUMMARY_METADATA_KEY] = (
+            parent_task_summary
+        )
         self.sessions.save(record.session)
         workspace_diff = None
         if (
@@ -258,6 +294,7 @@ class TaskSessionRunner:
         task_memory: MemoryStore,
         parent_session_id: str,
         user_text: str,
+        session_handoff,
     ) -> None:
         task_memory.append("now", f"Parent session: {parent_session_id}")
         task_memory.append("now", f"Task request: {user_text}")
@@ -268,7 +305,9 @@ class TaskSessionRunner:
         )
         task_memory.write_recent_context(
             f"- parent_session: `{parent_session_id}`\n"
-            f"- task_request: {user_text}"
+            f"- task_request: {user_text}\n"
+            f"- handoff_recent_turns: {len(session_handoff.recent_turns)}\n"
+            f"- handoff_has_prior_summary: {bool(session_handoff.prior_summary.strip())}"
         )
 
     def _build_task_request(
@@ -278,6 +317,7 @@ class TaskSessionRunner:
         global_memory: MemoryStore,
         *,
         workspace,
+        session_handoff,
     ) -> str:
         global_memory_text = global_memory.read_all()
         workspace_root = str(workspace.root)
@@ -297,6 +337,7 @@ class TaskSessionRunner:
             "When read_file/list_files returns a truncated result, continue with the "
             "provided offset instead of rereading the same page.\n"
             "</coding-workspace>\n\n"
+            f"{session_handoff.render_prompt_block()}\n\n"
             "<execution-guidance>\n"
             "For broad read-only architecture reviews with independent lines of inquiry, "
             "use one early parallel_tasks fan-out, then synthesize the returned findings. "

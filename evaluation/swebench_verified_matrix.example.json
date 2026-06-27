@@ -13,6 +13,7 @@
     "limit": 1,
     "offset": 0,
     "instance_ids": [],
+    "instances_file": "",
     "model_name": "",
     "max_reasoning_steps": 80,
     "reuse_workspace": false,

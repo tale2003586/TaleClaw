@@ -19,11 +19,19 @@ class SubagentFailure:
     retry_hint: str | None = None
     evidence: list[dict[str, Any]] = field(default_factory=list)
 
-    def is_partial(self, findings: list[dict[str, Any]] | None = None) -> bool:
-        return bool(findings)
+    def is_partial(
+        self,
+        findings: list[dict[str, Any]] | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> bool:
+        return bool(findings) or _payload_has_content(payload)
 
-    def status_for(self, findings: list[dict[str, Any]] | None = None) -> str:
-        if self.is_partial(findings):
+    def status_for(
+        self,
+        findings: list[dict[str, Any]] | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        if self.is_partial(findings, payload):
             return STATUS_PARTIAL
         return STATUS_FAILED
 
@@ -75,7 +83,7 @@ def classify_subagent_failure(
             reason=SubagentFailureReason.STEP_LIMIT.value,
             message="Subagent hit the reasoning step limit before completing the task.",
             recoverable=True,
-            retry_hint="Split the task into a smaller scope with explicit files and a concrete deliverable.",
+            retry_hint="Split the task into a smaller objective with a concrete deliverable or narrower search boundary.",
             evidence=[{"stop_reason": stop_reason or StopReason.REASONING_STEP_LIMIT.value}],
         )
 
@@ -100,16 +108,41 @@ def classify_subagent_failure(
             evidence=[{"stop_reason": stop_reason}],
         )
 
+    if _structured_completed_with_findings(structured):
+        return None
+
     tool_failure = _classify_tool_failure(session_messages)
     if tool_failure is not None:
         return tool_failure
 
-    if structured.get("incomplete") and not structured.get("findings"):
+    if structured.get("format_valid") is False:
+        return SubagentFailure(
+            reason=SubagentFailureReason.INVALID_OUTPUT_FORMAT.value,
+            message=(
+                "Subagent did not return a valid JSON object matching the required "
+                "output protocol."
+            ),
+            recoverable=True,
+            retry_hint=(
+                "Retry once with a narrower task and require strict JSON only, "
+                "without markdown or prose outside the JSON object."
+            ),
+            evidence=[{
+                "format_error": str(structured.get("format_error") or "invalid_json_object"),
+                "output_schema": str(structured.get("output_schema") or ""),
+            }],
+        )
+
+    if (
+        structured.get("incomplete")
+        and not structured.get("findings")
+        and not _payload_has_content(structured.get("payload"))
+    ):
         return SubagentFailure(
             reason=SubagentFailureReason.EMPTY_FINDINGS.value,
             message="Subagent marked the task incomplete and returned no findings.",
             recoverable=True,
-            retry_hint="Retry with explicit target files or ask the parent agent to gather a file list first.",
+            retry_hint="Retry with a clearer objective, search query, module hint, or smaller directory boundary.",
             evidence=[],
         )
 
@@ -122,12 +155,13 @@ def status_for_result(
     incomplete: bool,
     findings: list[dict[str, Any]] | None,
     failure: SubagentFailure | None,
+    payload: dict[str, Any] | None = None,
 ) -> str:
     if success and not incomplete and failure is None:
         return STATUS_COMPLETED
     if failure is not None:
-        return failure.status_for(findings)
-    if incomplete and findings:
+        return failure.status_for(findings, payload)
+    if incomplete and (findings or _payload_has_content(payload)):
         return STATUS_PARTIAL
     return STATUS_FAILED
 
@@ -139,6 +173,16 @@ def _structured_failure_reason(structured: dict[str, Any]) -> str:
     if structured.get("incomplete") and structured.get("scope_too_broad"):
         return SubagentFailureReason.SCOPE_TOO_BROAD.value
     return ""
+
+
+def _structured_completed_with_findings(structured: dict[str, Any]) -> bool:
+    findings = structured.get("findings")
+    return (
+        isinstance(findings, list)
+        and bool(findings)
+        and not structured.get("incomplete")
+        and not structured.get("failure_reason")
+    )
 
 
 def _structured_failure(reason: str, structured: dict[str, Any]) -> SubagentFailure:
@@ -224,19 +268,19 @@ def _defaults_for_reason(reason: str) -> tuple[str, str | None, bool]:
     if reason == SubagentFailureReason.STEP_LIMIT.value:
         return (
             "Subagent hit the reasoning step limit before completing the task.",
-            "Split the task into a smaller scope with explicit files and a concrete deliverable.",
+            "Split the task into a smaller objective with a concrete deliverable or narrower search boundary.",
             True,
         )
     if reason == SubagentFailureReason.SCOPE_TOO_BROAD.value:
         return (
             "Subagent reported that the assigned scope is too broad.",
-            "Retry with fewer files, a narrower module, or one question at a time.",
+            "Retry with a narrower module, a sharper search query, or one question at a time.",
             True,
         )
     if reason == SubagentFailureReason.EMPTY_FINDINGS.value:
         return (
             "Subagent returned no findings.",
-            "Provide verified files or search terms before retrying.",
+            "Provide a clearer module hint, search term, symbol, or concrete question before retrying.",
             True,
         )
     if reason == SubagentFailureReason.MISSING_REQUIRED_FILES.value:
@@ -269,6 +313,12 @@ def _defaults_for_reason(reason: str) -> tuple[str, str | None, bool]:
             "Retry once with a shorter prompt and explicit output format.",
             True,
         )
+    if reason == SubagentFailureReason.INVALID_OUTPUT_FORMAT.value:
+        return (
+            "Subagent did not return a valid JSON object matching the required output protocol.",
+            "Retry once with a narrower task and require strict JSON only.",
+            True,
+        )
     if reason == SubagentFailureReason.UNKNOWN_AGENT_TYPE.value:
         return (
             "Unknown subagent type.",
@@ -286,6 +336,21 @@ def _defaults_for_reason(reason: str) -> tuple[str, str | None, bool]:
         "Inspect the exception before retrying the same task.",
         False,
     )
+
+
+def _payload_has_content(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    for value in payload.values():
+        if isinstance(value, list) and value:
+            return True
+        if isinstance(value, dict) and value:
+            return True
+        if isinstance(value, str) and value.strip():
+            return True
+        if isinstance(value, (int, float, bool)) and value:
+            return True
+    return False
 
 
 def _evidence_list(value: Any) -> list[dict[str, Any]]:

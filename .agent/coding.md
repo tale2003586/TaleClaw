@@ -20,6 +20,7 @@
 
 - 不要一次性读取超大文件全文。
 - 先用 `repo_map`、`code_outline`、`rg`、`git_diff`、`git_status` 或分段读取定位相关区域。
+- 已经知道 2-8 个具体文件且只需要读取窗口时，优先用 `read_files(files=[...])` 批量读取；不要连续发多个 `read_file(...)`。
 - 如果工具返回内容被截断，要根据路径、行号、符号继续精确读取。
 - 当 `read_file` 或 `list_files` 返回 truncation/offset 信息时，沿着 offset 继续读取，不要反复读取同一段。
 - 大输出命令要过滤、分页或摘要，避免把上下文塞满。
@@ -36,27 +37,49 @@
 - 对架构梳理、跨子系统检查、多线索只读分析，先用 `repo_map` 建立确定性的文件地图，再决定是否继续下钻。
 - 使用 `repo_map(path=...)` 逐层缩小范围，避免用重复的 `list_files` 扫整个仓库。
 - 对大文件先用 `code_outline` 查看符号、入口和行号，再按窗口读取关键片段。
-- 把任务拆成可验证的线索：每条线索应有明确目标、文件范围和交付格式。
-- 父 agent 负责跨线索综合；子 agent 只负责定位、提取和报告局部事实。
+- 把任务拆成可验证的线索：每条线索应有明确目标、可接受的搜索边界和交付格式。
+- 父 agent 负责跨线索综合；子 agent 负责在边界内定位、提取和报告局部事实。
+
+
+## Repository Modification Work
+- 修改仓库前先判断改动类型：文档/样式/测试/纯重构/行为变更/安全敏感变更。不同类型采用不同验证强度，不要对小改动做过度流程。
+- 修改前必须先检查当前工作区状态和相关 diff，识别用户已有改动；不要覆盖、回退或混入无关变更。
+- 修改前读取目标代码的调用方、被调用方、测试和配置，确认改动边界；不要只改第一个匹配点。
+- 对涉及认证、授权、输入校验、文件上传、路径处理、命令执行、SQL/查询构造、网络请求、CORS、密钥、日志、反序列化、依赖升级或配置变更的任务，修改前做轻量安全检查：
+  - 明确新增或改变的 trust boundary。
+  - 搜索项目里已有安全处理模式并优先复用。
+  - 检查是否需要后端校验、权限检查、错误处理、日志脱敏或回归测试。
+  - 安全知识不确定时，调用 `security_rag_search` 获取本地安全证据后再改。
+- 如果安全检查发现当前需求本身可能引入高风险行为，先收窄实现方案；不要为了完成任务而放宽权限、绕过校验、硬编码 secret、扩大 CORS、禁用 TLS/认证或吞掉安全错误。
+- 实现时保持最小可行改动。优先修改已有入口、已有 helper 和已有测试结构；不要为了局部需求引入新的全局抽象。
+- 修改后必须复盘 workspace diff，确认只包含本任务相关文件和预期行为变化。
+- 修改后运行最相关的测试、类型检查、lint 或最小验证命令；无法运行时说明原因。
+- 对安全敏感变更，完成后生成任务安全报告，至少包含：
+  - `Security surface`: 本次触及的安全边界或说明不适用。
+  - `Checks performed`: 做过的搜索、代码检查、测试或验证。
+  - `Risk assessment`: 剩余风险，按 low/medium/high 标记。
+  - `Follow-ups`: 需要人工复核或后续补强的点。
+- 对非安全敏感的小改动，最终报告中可简短写明 `Security: not applicable` 或 `Security: no sensitive surface changed`。
+- 最终回复必须区分“已验证事实”和“推断/未验证风险”，不要把未运行的测试或未检查的安全项说成已完成。
 
 ## Subagent Orchestration
 
 - 只有宽任务、多线索任务或独立事实抽取任务才使用子 agent；窄修复和单文件任务直接处理。
-- `parallel_tasks` / `task` 只用于短时 scout 工作：定位、列举、从明确文件中提取局部事实。
+- `parallel_tasks` / `task` 只用于短时 scout 工作：定位、列举、从限定主题/模块/目录/文件线索中提取局部事实。
+- 如果同一轮有多个独立 scout 子任务，必须优先使用一个 `parallel_tasks(tasks=[...])` 调用；不要连续发多个 `task(...)`。
 - `spawn_teammate` 用于跨文件综合、设计分析、实现方案或需要多轮迭代的复杂工作。
-- 调用 `task` 或 `parallel_tasks` 前必须满足：
-  - 已经通过 `repo_map`、`list_files`、`rg` 或 `code_outline` 验证目标文件存在。
-  - 每个子任务的 `scope.files` 最多包含 5 个具体 workspace-relative 文件。
-  - `scope.files` 必须来自已验证结果，不能只在 prompt 里写文件名。
-  - 子任务目标使用 locate/extract/report 这类窄动作，不能要求宽泛总结整个目录。
-  - 大文件任务必须 code_outline-first，不能要求子 agent 读取整个大文件。
-- 禁止给子 agent 派发这类模糊任务：`investigate this path`、`summarize this subsystem`、`for each directory describe`，除非已经附带具体文件列表和输出限制。
+- 调用 `task` 或 `parallel_tasks` 前尽量给出：
+  - 目标主题、模块、目录、关键字、符号名或文件线索。
+  - 明确的 locate/extract/report 交付格式。
+  - 对大文件或大目录的读取策略，例如先 `repo_map` / `list_files` / `rg` / `code_outline`，再读目标窗口。
+- 不要求父 agent 先把 `scope.files` 固定死；子 agent 可以在边界内自行发现具体文件。
+- 避免给子 agent 派发无限开放任务，例如“理解整个项目”。如果需要目录/子系统梳理，要给出清晰边界和输出上限。
 
 ## Subagent Failure Handling
 
 - 子 agent 返回失败时，先读取 `failure_reason`、`recoverable`、`retry_hint`、`status`、`evidence` 和 `findings`，再决定下一步。
-- `subagent_step_limit` 或 `subagent_scope_too_broad`：只允许针对该线索重试一次，并且必须缩小文件范围或改成 code_outline-first。
-- `subagent_tool_error`：只有改变方法时才重试，例如换文件、减少 scope、先做 outline；不要原样重发。
+- `subagent_step_limit`：只允许针对该线索重试一次，并且必须缩小目标、减少输出要求或改成 code_outline-first。
+- `subagent_tool_error`：只有改变方法时才重试，例如换搜索词、调整目录、先做 outline；不要原样重发。
 - `subagent_missing_required_files`、`subagent_empty_findings` 或线索本身不可行：记录原因，继续其他线索，不要盲目重试。
 - 一次 targeted retry 后仍失败，就停止对子任务继续 fan-out；改为父 agent 小范围直接处理，或诚实报告 incomplete reason。
 - 不要忽略 `retry_hint` 后退回大范围 `read_file` / `list_files` 扫描，这会消耗主预算并可能触发循环保护。

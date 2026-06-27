@@ -1,6 +1,12 @@
 ---
 name: pdf
 description: Process PDF files - extract text, create PDFs, merge documents. Use when user asks to read PDF, create PDF, or work with PDF files.
+tags: [documents, pdf, extraction, generation]
+triggers: [pdf, extract text, create pdf, merge pdf, read pdf]
+applies_to: [bot, coding]
+requires_tools: [bash, storage_read_file, storage_write_file]
+priority: 10
+safety: low
 ---
 
 # PDF Processing Skill

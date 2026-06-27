@@ -230,6 +230,69 @@ python scripts/run_swebench_verified.py \
   --repo-cache-root .evals/swebench_repo_cache
 ```
 
+## HuggingFace 访问不了时
+
+如果服务器报：
+
+```text
+[Errno 101] Network is unreachable
+```
+
+说明还没进入 agent 运行，卡在加载 HuggingFace dataset。优先尝试给当前 shell 设置可访问的 HuggingFace endpoint：
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+python scripts/run_swebench_verified.py --dry-run --limit 10
+```
+
+如果服务器仍然不能访问 HuggingFace，可以在本地或任意能联网机器先导出任务列表：
+
+```bash
+python scripts/run_swebench_verified.py \
+  --dry-run \
+  --limit 10 \
+  --eval-root .evals/swebench_verified_seed
+```
+
+脚本会生成：
+
+```text
+.evals/swebench_verified_seed/swe_verified_<timestamp>/selected_instances.json
+```
+
+把这个文件上传到服务器，例如：
+
+```text
+~/codde/TaleClaw/evaluation/swebench_verified_10.json
+```
+
+服务器上用本地文件运行，不再访问 HuggingFace：
+
+```bash
+python scripts/run_swebench_verified.py \
+  --instances-file evaluation/swebench_verified_10.json \
+  --limit 10 \
+  --max-reasoning-steps 80 \
+  --clone-retries 4 \
+  --git-timeout-seconds 1200
+```
+
+也可以只跑其中一个：
+
+```bash
+python scripts/run_swebench_verified.py \
+  --instances-file evaluation/swebench_verified_10.json \
+  --instance-id astropy__astropy-12907
+```
+
+矩阵 runner 同样支持：
+
+```bash
+python scripts/run_swebench_verified_matrix.py \
+  --config evaluation/swebench_verified_matrix.example.json \
+  --instances-file evaluation/swebench_verified_10.json
+```
+
 ## 生成官方评测命令
 
 如果你有官方 SWE-bench repo：

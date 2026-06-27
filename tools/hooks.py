@@ -1,13 +1,12 @@
 
 from collections import deque
-import hashlib
-import json
 import re
 import time
 from pathlib import Path
 from typing import Any
 
 from config import WORKDIR
+from runtime.tool_signature import tool_call_signature, tool_result_hash
 from tools.executor import HookOutcome, ToolExecutionRequest, ToolExecutionResult, ToolHook
 
 
@@ -104,14 +103,18 @@ class ToolLoopGuardHook(ToolHook):
         window_size: int = 6,
         tool_repeat_limit: int = 60,
         result_repeat_limit: int = 3,
+        cached_repeat_limit: int = 2,
     ) -> None:
         self.repeat_limit = max(2, repeat_limit)
         self.tool_repeat_limit = max(2, int(tool_repeat_limit))
         self.window_size = max(self.tool_repeat_limit, window_size)
         self.result_repeat_limit = max(2, int(result_repeat_limit))
+        self.cached_repeat_limit = max(2, int(cached_repeat_limit))
         self._recent: dict[str, deque[str]] = {}
         self._recent_tools: dict[str, deque[str]] = {}
         self._result_hash_counts: dict[str, dict[str, int]] = {}
+        self._result_cache: dict[str, dict[str, str]] = {}
+        self._cached_repeat_counts: dict[str, dict[str, int]] = {}
 
     def matches(self, request: ToolExecutionRequest) -> bool:
         return True
@@ -125,6 +128,26 @@ class ToolLoopGuardHook(ToolHook):
         tool_repeats = sum(1 for item in recent_tools if item == request.tool_name)
         recent.append(fingerprint)
         recent_tools.append(request.tool_name)
+
+        cached_output = self._cached_output(key, fingerprint, request)
+        if cached_output is not None:
+            counts = self._cached_repeat_counts.setdefault(key, {})
+            count = counts.get(fingerprint, 0) + 1
+            counts[fingerprint] = count
+            if count >= self.cached_repeat_limit:
+                return HookOutcome(
+                    deny_reason=(
+                        "Error: Repeated cached tool call blocked by "
+                        "tool_loop_guard. You already repeated the exact same "
+                        "tool call after receiving cached data and a warning. "
+                        "Change strategy now: use the cached information, inspect "
+                        "a different path/query/offset, or summarize and conclude."
+                    )
+                )
+            return HookOutcome(
+                updated_output=self._with_repeat_warning(cached_output)
+            )
+
         if repeats + 1 >= self.repeat_limit:
             return HookOutcome(
                 deny_reason=(
@@ -150,6 +173,8 @@ class ToolLoopGuardHook(ToolHook):
             return None
         if result.status != "success":
             return None
+        if request.tool_name in _CACHE_REPLAY_TOOLS:
+            self._store_result(request, result.output)
         output_hash = _output_hash(result.output)
         if not output_hash:
             return None
@@ -173,23 +198,63 @@ class ToolLoopGuardHook(ToolHook):
         self._recent.pop(session_id or "_global", None)
         self._recent_tools.pop(session_id or "_global", None)
         self._result_hash_counts.pop(session_id or "_global", None)
+        self._result_cache.pop(session_id or "_global", None)
+        self._cached_repeat_counts.pop(session_id or "_global", None)
 
     def _fingerprint(self, request: ToolExecutionRequest) -> str:
-        return json.dumps(
-            {
-                "tool": request.tool_name,
-                "arguments": request.arguments,
-            },
-            sort_keys=True,
-            ensure_ascii=False,
-            default=str,
+        return tool_call_signature(request.tool_name, request.arguments)
+
+    def _cached_output(
+        self,
+        session_key: str,
+        fingerprint: str,
+        request: ToolExecutionRequest,
+    ) -> str | None:
+        if request.tool_name not in _CACHE_REPLAY_TOOLS:
+            return None
+        cached = self._result_cache.get(session_key, {}).get(fingerprint)
+        if cached:
+            return cached
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        cache = metadata.get(_TOOL_RESULT_CACHE_KEY)
+        if not isinstance(cache, dict):
+            return None
+        cached_entry = cache.get(fingerprint)
+        if not isinstance(cached_entry, dict):
+            return None
+        output = str(cached_entry.get("output") or "")
+        if not output:
+            return None
+        step = cached_entry.get("step")
+        return f"[tool-cache] already read at step {step}; unchanged.\n{output}"
+
+    def _store_result(self, request: ToolExecutionRequest, output: str) -> None:
+        if not output or result_is_error(output) or _LOOP_GUARD_WARNING in output:
+            return
+        key = request.session_id or "_global"
+        fingerprint = self._fingerprint(request)
+        self._result_cache.setdefault(key, {})[fingerprint] = output
+
+    def _with_repeat_warning(self, output: str) -> str:
+        return (
+            f"{output.rstrip()}\n\n"
+            "[tool-loop-guard] You are repeating the exact same tool call. "
+            "This result was replayed from cache instead of executing the tool "
+            "again. Change strategy now: use the cached information, inspect a "
+            "different path/query/offset, or summarize and conclude. If you "
+            "repeat this exact call again, the loop will be stopped."
         )
 
 
 _RESULT_HASH_TOOLS = {
     "list_files",
     "rg",
+    "grep",
+    "nl",
     "read_file",
+    "read_files",
+    "repo_map",
+    "code_outline",
     "storage_list_files",
     "storage_read_file",
     "sandbox_list_files",
@@ -197,14 +262,17 @@ _RESULT_HASH_TOOLS = {
 }
 
 
+_CACHE_REPLAY_TOOLS = set(_RESULT_HASH_TOOLS)
+_TOOL_RESULT_CACHE_KEY = "_tool_result_cache"
+_LOOP_GUARD_WARNING = "[tool-loop-guard]"
+
+
+def result_is_error(output: str) -> bool:
+    return str(output or "").lstrip().startswith("Error:")
+
+
 def _output_hash(output: str) -> str:
-    normalized = str(output or "")
-    if normalized.startswith("[tool-cache] already read at step "):
-        normalized = normalized.split("\n", 1)[1] if "\n" in normalized else ""
-    normalized = normalized.strip()
-    if not normalized:
-        return ""
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return tool_result_hash(output)
 
 
 class ToolTraceHook(ToolHook):
@@ -227,6 +295,55 @@ class ToolTraceHook(ToolHook):
             "final_arguments": result.final_arguments,
             "result_preview": str(result.output)[:500],
         })
+
+
+class ToolResultStoreHook(ToolHook):
+    name = "tool_result_store"
+
+    def __init__(
+        self,
+        *,
+        min_chars: int = 1000,
+        skip_tools: set[str] | None = None,
+    ) -> None:
+        self.min_chars = max(0, int(min_chars))
+        self.skip_tools = set(skip_tools or {"retrieve_tool_result"})
+
+    def matches(self, request: ToolExecutionRequest) -> bool:
+        return request.tool_name not in self.skip_tools
+
+    def after(self, request: ToolExecutionRequest, result: ToolExecutionResult) -> None:
+        output = str(result.output or "")
+        if len(output) < self.min_chars:
+            return None
+        if _LOOP_GUARD_WARNING in output:
+            return None
+        if output.startswith("[tool-cache] already read at step "):
+            return None
+        try:
+            from runtime.tool_result_store import (
+                TOOL_RESULT_STORE_REF_KEY,
+                store_tool_result,
+            )
+
+            stored = store_tool_result(
+                session_id=request.session_id,
+                call_id=request.call_id,
+                tool_name=request.tool_name,
+                arguments=result.final_arguments,
+                content=output,
+                status=result.status,
+            )
+            result.metadata[TOOL_RESULT_STORE_REF_KEY] = {
+                "result_id": stored.result_id,
+                "backend": stored.backend,
+                "uri": stored.uri,
+                "chars": stored.chars,
+                "sha256": stored.sha256,
+            }
+        except Exception as exc:
+            result.metadata["tool_result_store_error"] = str(exc)
+        return None
 
 
 def _absolute_cd_targets(command: str) -> list[str]:

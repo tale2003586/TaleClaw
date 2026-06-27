@@ -8,6 +8,7 @@ from runtime.reflection import ReflectionAgent, ReflectionDecision
 from modes.base import ModeProfile
 from sessions import Session
 from tools.executor import ToolExecutor
+from tools.hooks import ToolLoopGuardHook
 from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry
 
@@ -51,6 +52,20 @@ class FakeReflectionAgent:
     def should_reflect(self, **kwargs):
         self.calls.append(("should", kwargs))
         return True
+
+    def reflect(self, **kwargs):
+        self.calls.append(("reflect", kwargs))
+        return self.decision
+
+
+class LoopGuardReflectionAgent:
+    def __init__(self, decision):
+        self.decision = decision
+        self.calls = []
+
+    def should_reflect(self, **kwargs):
+        self.calls.append(("should", kwargs))
+        return False
 
     def reflect(self, **kwargs):
         self.calls.append(("reflect", kwargs))
@@ -183,6 +198,42 @@ class AgentRunnerTests(unittest.TestCase):
         self.assertEqual("agent_loop_guard", session.messages[-1]["metadata"]["kind"])
         self.assertEqual("reflection_stop", session.messages[-1]["metadata"]["reason"])
 
+    def test_loop_guard_denial_asks_reflection_before_stopping(self):
+        provider = RecordingProvider([
+            _tool_response(1),
+            _tool_response(2),
+            _tool_response(3),
+            _final_response("done after reflection"),
+        ])
+        reflection = LoopGuardReflectionAgent(ReflectionDecision(
+            action="revise",
+            reason="repeated tool call",
+            instruction="Use the denied tool result as a signal and finish without repeating it.",
+        ))
+        runner = AgentRunner(
+            tools=_registry(),
+            tool_executor=ToolExecutor([ToolLoopGuardHook(repeat_limit=3)]),
+            provider=provider,
+            model="test-model",
+            context_builder=ContextBuilder(),
+            reflection_agent=reflection,
+        )
+        session = Session(id="agent:loop-reflect")
+        session.add_message("user", "do it")
+        spec = AgentSpec(name="main", profile=_profile("bot"), model_purpose="chat")
+
+        runner.run_turn(session=session, spec=spec)
+
+        self.assertEqual("done after reflection", session.messages[-1]["content"])
+        self.assertEqual(4, len(provider.calls))
+        self.assertEqual(["should", "should", "reflect"], [item[0] for item in reflection.calls])
+        self.assertTrue(reflection.calls[-1][1]["execution"].loop_guard_denied)
+        self.assertTrue(any(
+            message.get("metadata", {}).get("kind") == "reflection_instruction"
+            and message.get("metadata", {}).get("trigger") == "loop_guard_denied"
+            for message in session.messages
+        ))
+
 
 class ReflectionAgentTests(unittest.TestCase):
     def test_reflection_agent_parses_markdown_fenced_json_decision(self):
@@ -210,6 +261,31 @@ class ReflectionAgentTests(unittest.TestCase):
         self.assertEqual("ask_user", decision.action)
         self.assertEqual("Need approval.", decision.message)
         self.assertEqual("reflect-model", provider.calls[0]["model"])
+
+    def test_reflection_agent_repairs_malformed_json_decision(self):
+        provider = RecordingProvider([
+            LLMResponse(
+                content="{\"action\":\"revise\",\"instruction\":\"Use cached result\",}",
+                raw_message={"role": "assistant", "content": ""},
+            )
+        ])
+        agent = ReflectionAgent(provider=provider, model="reflect-model")
+        execution = SimpleNamespace(
+            loop_guard_denied=True,
+            unavailable_tools=[],
+            tool_results=[],
+        )
+
+        decision = agent.reflect(
+            session=Session(id="reflect:repair"),
+            profile=_profile("bot"),
+            response=_final_response(""),
+            execution=execution,
+            reasoning_steps=3,
+        )
+
+        self.assertEqual("revise", decision.action)
+        self.assertEqual("Use cached result", decision.instruction)
 
 
 if __name__ == "__main__":

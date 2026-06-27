@@ -2,6 +2,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from runtime.units.json_repair import repair_json_object
+
 
 @dataclass(frozen=True)
 class ReflectionDecision:
@@ -114,18 +116,13 @@ class ReflectionAgent:
 
 
 def _parse_decision(text: str) -> ReflectionDecision:
-    raw = _extract_json(text)
-    if not raw:
-        return ReflectionDecision(action="continue", reason="Reflection returned no JSON.")
-    try:
-        data = json.loads(raw)
-    except Exception as exc:
+    repaired = repair_json_object(text)
+    if not repaired.ok or not isinstance(repaired.payload, dict):
         return ReflectionDecision(
             action="continue",
-            reason=f"Reflection JSON parse failed: {exc}",
+            reason="Reflection returned no valid JSON; raw_text=" + str(repaired.text or text or ""),
         )
-    if not isinstance(data, dict):
-        return ReflectionDecision(action="continue", reason="Reflection JSON was not an object.")
+    data = repaired.payload
     action = str(data.get("action") or "continue").strip().lower()
     if action not in {"continue", "revise", "ask_user", "stop"}:
         action = "continue"
@@ -135,19 +132,3 @@ def _parse_decision(text: str) -> ReflectionDecision:
         instruction=str(data.get("instruction") or ""),
         message=str(data.get("message") or ""),
     )
-
-
-def _extract_json(text: str) -> str:
-    cleaned = (text or "").strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        cleaned = "\n".join(lines).strip()
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        return ""
-    return cleaned[start:end + 1]

@@ -8,6 +8,7 @@ from web.server import (
     _build_subagent_logs,
     _parent_trace_events,
     _render_subagent_logs,
+    _stream_event_projection,
     render_chat_markdown,
 )
 
@@ -99,6 +100,25 @@ class StreamingHttpTests(unittest.TestCase):
 
     def test_chat_stream_endpoint_returns_delta_and_complete_events(self) -> None:
         class AgentService:
+            def subscribe_session(self, session_key, cb):
+                self.session_key = session_key
+                cb({
+                    "event": "tool.call.started",
+                    "run_id": "run_123",
+                    "step": 1,
+                    "span_id": "run_123:tool:1:call_1",
+                    "payload": {
+                        "tool_name": "read_file",
+                        "arguments_preview": '{"path":"README.md"}',
+                    },
+                })
+                self.unsubscribed = False
+
+                def unsub():
+                    self.unsubscribed = True
+
+                return unsub
+
             def ask_stream(
                 self,
                 *,
@@ -134,8 +154,48 @@ class StreamingHttpTests(unittest.TestCase):
         self.assertEqual(("default", "hello"), agent_service.request)
         self.assertEqual(("local", "admin"), agent_service.user)
         self.assertEqual("/tmp/project", agent_service.workspace_root)
-        self.assertEqual(["delta", "delta", "complete"], [event["type"] for event in events])
+        self.assertEqual("web:local:default", agent_service.session_key)
+        self.assertTrue(agent_service.unsubscribed)
+        self.assertEqual(["event", "delta", "delta", "complete"], [event["type"] for event in events])
+        self.assertEqual("tool.call.started", events[0]["event"])
+        self.assertEqual("read_file", events[0]["tool"])
+        self.assertEqual('{"path":"README.md"}', events[0]["args"])
         self.assertEqual("你好", events[-1]["reply"])
+
+    def test_stream_event_projection_is_whitelisted_and_small(self) -> None:
+        projected = _stream_event_projection({
+            "event": "model.call.completed",
+            "run_id": "run_123",
+            "step": 2,
+            "payload": {
+                "model": "test-model",
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 25,
+                    "total_tokens": 125,
+                },
+                "context_report": {"large": "x" * 1000},
+                "api_key": "secret",
+            },
+        })
+
+        self.assertEqual({
+            "event",
+            "run_id",
+            "step",
+            "model",
+            "tokens",
+            "input_tokens",
+            "output_tokens",
+        }, set(projected))
+        self.assertEqual(125, projected["tokens"])
+        self.assertNotIn("context_report", projected)
+        self.assertNotIn("api_key", projected)
+
+        self.assertIsNone(_stream_event_projection({
+            "event": "context.build.completed",
+            "payload": {"context_report": {"large": "x" * 1000}},
+        }))
 
     def test_stream_headers_disable_nginx_buffering(self) -> None:
         handler = object.__new__(RequestHandler)

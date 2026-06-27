@@ -11,6 +11,7 @@ from agents.subagent.failure import (
     internal_error_failure,
     timeout_failure,
 )
+from agents.subagent.prompting import output_schema_for
 from agents.subagent.retry import annotate_retry_result, should_auto_retry
 from config import WORKING_MEMORY_CHECKPOINT_ENABLED
 from runtime.failure_reasons import StopReason
@@ -143,11 +144,17 @@ def _error_result(
     retry_count: int = 0,
 ) -> dict[str, Any]:
     failure = failure or internal_error_failure(error)
+    agent_type = str(task.get("agent_type") or "explore")
     return {
-        "agent_type": str(task.get("agent_type") or "explore"),
+        "agent_type": agent_type,
         "success": False,
         "summary": "",
         "status": STATUS_FAILED,
+        "output_schema": output_schema_for(agent_type),
+        "payload": {},
+        "format_valid": True,
+        "format_error": "",
+        "format_repaired": False,
         "files_touched": [],
         "tool_count": 0,
         "error": error,
@@ -160,6 +167,9 @@ def _error_result(
         "recoverable": failure.recoverable,
         "retry_hint": failure.retry_hint,
         "evidence": failure.evidence,
+        "covered_scope": [],
+        "open_questions": [],
+        "needs_parent_verification": False,
         "retry_count": retry_count,
         "auto_retry": retry_count > 0,
         "recovered": False,

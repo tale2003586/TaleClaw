@@ -33,10 +33,22 @@ class OpenAICompatibleProvider:
         *,
         max_tokens_param: str = "max_tokens",
         wire_api: str = "chat_completions",
+        context_window_tokens: int | None = None,
+        max_input_tokens: int | None = None,
+        max_output_tokens: int | None = None,
+        output_reserve_tokens: int | None = None,
+        tokenizer_model: str | None = None,
+        bpe_tokenizer_enabled: bool = False,
     ) -> None:
         self.client = client
         self.max_tokens_param = max_tokens_param or "max_tokens"
         self.wire_api = wire_api or "chat_completions"
+        self.context_window_tokens = context_window_tokens
+        self.max_input_tokens = max_input_tokens
+        self.max_output_tokens = max_output_tokens
+        self.output_reserve_tokens = output_reserve_tokens
+        self.tokenizer_model = tokenizer_model or ""
+        self.bpe_tokenizer_enabled = bool(bpe_tokenizer_enabled)
 
     def chat(
         self,

@@ -9,6 +9,46 @@ def _ok(_name, _args):
 
 
 class ToolSafetyTests(unittest.TestCase):
+    def test_tool_loop_guard_replays_cached_duplicate_once_then_blocks(self) -> None:
+        executor = ToolExecutor([ToolLoopGuardHook()])
+        calls = []
+
+        def invoker(_name, args):
+            calls.append(dict(args))
+            return "cached file view"
+
+        results = []
+        for index in range(3):
+            results.append(
+                executor.execute(
+                    ToolExecutionRequest(
+                        call_id=f"call-{index}",
+                        tool_name="read_file",
+                        arguments={"path": "app.py"},
+                        session_id="web:test",
+                    ),
+                    invoker,
+                )
+            )
+
+        self.assertEqual(1, len(calls))
+        self.assertEqual("success", results[0].status)
+        self.assertEqual("success", results[1].status)
+        self.assertEqual("denied", results[2].status)
+        self.assertEqual("cached file view", results[0].output)
+        self.assertIn("cached file view", results[1].output)
+        self.assertIn("repeating the exact same tool call", results[1].output)
+        self.assertIn("replayed from cache", results[1].output)
+        self.assertIn("Repeated cached tool call blocked", results[2].output)
+        self.assertTrue(any(
+            item.hook_name == "tool_loop_guard" and item.decision == "cache"
+            for item in results[1].pre_hook_trace
+        ))
+        self.assertTrue(any(
+            item.hook_name == "tool_loop_guard" and item.decision == "deny"
+            for item in results[2].pre_hook_trace
+        ))
+
     def test_tool_loop_guard_blocks_same_tool_argument_churn(self) -> None:
         executor = ToolExecutor([ToolLoopGuardHook(tool_repeat_limit=3)])
 

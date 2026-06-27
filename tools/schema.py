@@ -219,7 +219,7 @@ BASE_TOOLS = [
     ),
     function_tool(
         "read_file",
-        "Read UTF-8 file contents from the current coding workspace. Use workspace-relative paths only; never an absolute path. If the result is truncated, continue with the returned offset.",
+        "Read UTF-8 file contents from the current coding workspace. Use workspace-relative paths only; never an absolute path. If the result is truncated, continue with the returned offset. For several known files, prefer read_files.",
         {
             "path": {
                 "type": "string",
@@ -236,6 +236,75 @@ BASE_TOOLS = [
             },
         },
         ["path"],
+    ),
+    function_tool(
+        "read_files",
+        (
+            "Batch-read several UTF-8 files from the current coding workspace. "
+            "Use this instead of multiple read_file calls when you already know "
+            "2-8 concrete workspace-relative paths. Each item supports its own "
+            "offset and limit; when limit is omitted, batch reads default to a "
+            "bounded 200-line window per file to protect context."
+        ),
+        {
+            "files": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "description": "Concrete workspace-relative files to read. Do not pass directories or absolute paths.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Workspace-relative file path. Never pass an absolute path.",
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Starting line offset for this file. Defaults to 0.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Max lines to read from this file. Defaults to 200 for batch reads.",
+                        },
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+        ["files"],
+    ),
+    function_tool(
+        "retrieve_tool_result",
+        (
+            "Retrieve exact text from a previously compressed tool result by result_id. "
+            "Use only when a compressed tool message explicitly says the original full "
+            "result was stored and exact omitted text is needed."
+        ),
+        {
+            "result_id": {
+                "type": "string",
+                "description": "Tool result id, such as tr_abc123 or tool_result://tr_abc123.",
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Character offset for paging through the stored result. Defaults to 0.",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 200,
+                "maximum": 50000,
+                "description": "Maximum characters to return. Defaults to 12000.",
+            },
+            "query": {
+                "type": "string",
+                "description": "Optional case-insensitive text query; returns matching line windows instead of offset paging.",
+            },
+        },
+        ["result_id"],
     ),
     function_tool(
         "write_file",
@@ -679,7 +748,7 @@ LEAD_ONLY_TOOLS = [
     function_tool(
         "task",
         """Spawn a short-lived subagent for one bounded subtask with fresh, isolated context.
-Subagents have about 16 reasoning steps and a restricted tool set. They are best for locating, listing, or extracting local facts from explicit files. For large files, give them code_outline-first instructions and targeted line windows. They are not suited for broad cross-file synthesis, multi-round design work, or implementation that needs iteration; use spawn_teammate for that.""",
+Subagents have about 16 reasoning steps and a restricted tool set. They are best for locating, listing, or extracting local facts from a bounded topic, directory, module, or file hint. They may discover concrete files with repo_map/list_files/rg/code_outline inside that scope. They are not suited for broad multi-round design work or implementation that needs iteration; use spawn_teammate for that.""",
         {
             "prompt": {
                 "type": "string",
@@ -696,16 +765,23 @@ Subagents have about 16 reasoning steps and a restricted tool set. They are best
             },
             "scope": {
                 "type": "object",
-                "description": "Required bounded file scope for file-oriented subagents. files must come from repo_map/list_files/code_outline, use verified workspace-relative file paths only, and contain at most 5 files.",
+                "description": "Optional bounded scope hint, such as files, directories, modules, symbols, or search terms. Scope is advisory; the subagent may discover concrete files within it.",
                 "properties": {
                     "files": {
                         "type": "array",
-                        "maxItems": 5,
                         "items": {"type": "string"},
-                        "description": "Verified workspace-relative file paths. Do not guess file names or pass directories.",
+                        "description": "Optional workspace-relative file hints.",
+                    },
+                    "directories": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional directory or module path hints.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional search query or symbol hint.",
                     },
                 },
-                "required": ["files"],
             },
             "objective": {
                 "type": "string",
@@ -725,7 +801,7 @@ Subagents have about 16 reasoning steps and a restricted tool set. They are best
     function_tool(
         "parallel_tasks",
         """Spawn several short-lived subagents in parallel for independent, bounded subtasks.
-Each subagent has about 16 reasoning steps, isolated context, and restricted tools. Use only after repo_map or another deterministic step gives concrete scopes. Good uses: bounded locate/list/extract shards with explicit files; use code_outline for large files before targeted reads. Bad uses: broad directory-level architecture synthesis, writing code with iteration, or multi-round feedback; use spawn_teammate or the parent agent for those.""",
+Each subagent has about 16 reasoning steps, isolated context, and restricted tools. Good uses: independent locate/list/extract shards over bounded topics, modules, directories, symbols, or file hints. Subagents may discover concrete files with repo_map/list_files/rg/code_outline. Bad uses: broad multi-round architecture decisions, writing code with iteration, or feedback loops; use spawn_teammate or the parent agent for those.""",
         {
             "tasks": {
                 "type": "array",
@@ -748,16 +824,23 @@ Each subagent has about 16 reasoning steps, isolated context, and restricted too
                         },
                         "scope": {
                             "type": "object",
-                            "description": "Required bounded file scope for file-oriented subagents. files must come from repo_map/list_files/code_outline, use verified workspace-relative file paths only, and contain at most 5 files.",
+                            "description": "Optional bounded scope hint, such as files, directories, modules, symbols, or search terms. Scope is advisory; the subagent may discover concrete files within it.",
                             "properties": {
                                 "files": {
                                     "type": "array",
-                                    "maxItems": 5,
                                     "items": {"type": "string"},
-                                    "description": "Verified workspace-relative file paths. Do not guess file names or pass directories.",
+                                    "description": "Optional workspace-relative file hints.",
+                                },
+                                "directories": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Optional directory or module path hints.",
+                                },
+                                "query": {
+                                    "type": "string",
+                                    "description": "Optional search query or symbol hint.",
                                 },
                             },
-                            "required": ["files"],
                         },
                         "objective": {
                             "type": "string",

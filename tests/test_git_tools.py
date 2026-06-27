@@ -73,6 +73,7 @@ class GitToolTests(unittest.TestCase):
         self.assertIn("edit_file", visible)
         self.assertIn("write_file", visible)
         self.assertIn("list_files", visible)
+        self.assertIn("read_files", visible)
         self.assertIn("git_status", visible)
         self.assertIn("git_diff", visible)
         self.assertIn("git_log", visible)
@@ -126,6 +127,34 @@ class GitToolTests(unittest.TestCase):
             cached = handlers.run_read("long.txt", limit=2, offset=2, _session=session)
             self.assertIn("[tool-cache] already read at step", cached)
             self.assertIn("line 2", cached)
+
+    def test_read_files_batches_multiple_workspace_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "project"
+            workspace.mkdir()
+            (workspace / "a.py").write_text("A0\nA1\nA2\n", encoding="utf-8")
+            (workspace / "b.py").write_text("B0\nB1\nB2\n", encoding="utf-8")
+            session = _session_for(workspace)
+
+            output = handlers.run_read_files(
+                [
+                    {"path": "a.py", "limit": 2},
+                    {"path": "b.py", "offset": 1, "limit": 1},
+                ],
+                _session=session,
+            )
+
+            self.assertIn("[read_files] reading 2 file(s)", output)
+            self.assertIn("===== read_files 1/2: a.py offset=0 limit=2 =====", output)
+            self.assertIn("A0", output)
+            self.assertIn("A1", output)
+            self.assertIn("offset=2", output)
+            self.assertIn("===== read_files 2/2: b.py offset=1 limit=1 =====", output)
+            self.assertIn("B1", output)
+            self.assertNotIn("B0", output)
+
+            escaped = handlers.run_read_files(["../outside.py"], _session=session)
+            self.assertIn("Path escapes workspace", escaped)
 
     def test_subagent_large_read_returns_outline_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

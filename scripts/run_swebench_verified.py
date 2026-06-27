@@ -50,6 +50,14 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="Specific instance id. May be repeated or comma-separated.",
     )
+    parser.add_argument(
+        "--instances-file",
+        default="",
+        help=(
+            "Local JSON/JSONL SWE-bench records file. When provided, the script "
+            "selects instances from this file instead of contacting Hugging Face."
+        ),
+    )
     parser.add_argument("--eval-root", default=str(DEFAULT_EVAL_ROOT))
     parser.add_argument("--workspace-root", default=str(DEFAULT_WORKSPACE_ROOT))
     parser.add_argument("--model-name", default=None)
@@ -89,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         instance_ids=instance_ids,
         limit=args.limit,
         offset=args.offset,
+        records_path=args.instances_file or None,
     )
     write_json(batch_dir / "selected_instances.json", [instance.__dict__ for instance in instances])
 
@@ -245,6 +254,7 @@ def build_payload(
             "limit": args.limit,
             "offset": args.offset,
             "selected_count": len(instances),
+            "instances_file": args.instances_file or "",
         },
         "runtime": {
             "model_name": args.model_name or "",

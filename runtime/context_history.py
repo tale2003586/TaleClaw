@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 from runtime.context_budget import SectionBudgetRule
+from runtime.tool_result_compression import compact_tool_result_for_tail, compress_tool_result
 
 
 LATEST_RESULT_PROTECTED_TOOLS = {
@@ -12,6 +13,9 @@ LATEST_RESULT_PROTECTED_TOOLS = {
     "repo_map",
     "code_outline",
     "list_files",
+    "rg",
+    "grep",
+    "git_diff",
 }
 
 
@@ -398,14 +402,19 @@ def _compress_old_tool_results(
         if index in recent_keep or index in latest_protected or tool_name in preserve_tools:
             continue
         content = _message_text(message)
-        placeholder = _compressed_tool_placeholder(tool_name, message)
-        if content == placeholder:
+        compressed_result = compress_tool_result(
+            tool_name=tool_name,
+            message=message,
+            content=content,
+            max_chars=max(500, int(rule.summary_chars or 1800)),
+        )
+        if content == compressed_result.content:
             continue
-        message["content"] = placeholder
+        message["content"] = compressed_result.content
         message["metadata"] = {
             **(message.get("metadata") if isinstance(message.get("metadata"), dict) else {}),
             "compressed_by": "context_budget",
-            "original_chars": len(content),
+            **compressed_result.metadata,
         }
         compressed += 1
     return rendered, compressed
@@ -428,6 +437,21 @@ def _latest_tool_result_indexes(
 
 
 def _compressed_tool_placeholder(tool_name: str, message: dict[str, Any]) -> str:
+    if tool_name == "read_files":
+        args = message.get("final_arguments") if isinstance(message.get("final_arguments"), dict) else {}
+        files = args.get("files") if isinstance(args.get("files"), list) else []
+        paths = []
+        for item in files[:8]:
+            if isinstance(item, dict) and item.get("path"):
+                paths.append(str(item.get("path")))
+            elif isinstance(item, str):
+                paths.append(item)
+        path_text = ", ".join(paths) if paths else "(unknown files)"
+        return (
+            "<read_files result compressed for context budget; "
+            f"files={path_text}; re-read needed windows with read_files(files=[...]) "
+            "or read_file(path=..., offset=..., limit=...)>"
+        )
     if tool_name in {"read_file", "storage_read_file", "sandbox_read_file"}:
         args = message.get("final_arguments") if isinstance(message.get("final_arguments"), dict) else {}
         path = str(args.get("path") or "")
@@ -571,6 +595,7 @@ def _compact_tool_group_if_needed(
     if messages_chars(group) <= limit:
         return _copy_messages(group)
     rendered: list[dict[str, Any]] = []
+    tool_names = _tool_names_by_id(group)
     remaining = max(200, limit)
     for message in group:
         copied = dict(message)
@@ -578,10 +603,19 @@ def _compact_tool_group_if_needed(
             content = _message_text(copied)
             keep = max(120, remaining // max(1, len(group)))
             if len(content) > keep:
-                copied["content"] = (
-                    content[:keep].rstrip()
-                    + "\n...[active turn tool result truncated by context budget]"
+                tool_id = str(copied.get("tool_call_id") or "")
+                tool_name = tool_names.get(tool_id, "unknown_tool")
+                copied["content"] = compact_tool_result_for_tail(
+                    tool_name=tool_name,
+                    message=copied,
+                    content=content,
+                    max_chars=keep,
                 )
+                copied["metadata"] = {
+                    **(copied.get("metadata") if isinstance(copied.get("metadata"), dict) else {}),
+                    "compressed_by": "context_budget_tail",
+                    "original_chars": len(content),
+                }
         rendered.append(copied)
     return rendered
 
@@ -591,6 +625,7 @@ def _force_trim_tool_contents(
     limit: int,
 ) -> list[dict[str, Any]]:
     rendered = _copy_messages(messages)
+    tool_names = _tool_names_by_id(rendered)
     marker = "\n...[active turn tool result truncated by context budget]"
     for index in range(len(rendered) - 1, -1, -1):
         if messages_chars(rendered) <= limit:
@@ -602,7 +637,21 @@ def _force_trim_tool_contents(
         overflow = messages_chars(rendered) - limit
         keep = max(80, len(content) - overflow - len(marker))
         if keep < len(content):
-            message["content"] = content[:keep].rstrip() + marker
+            tool_id = str(message.get("tool_call_id") or "")
+            tool_name = tool_names.get(tool_id, "unknown_tool")
+            message["content"] = compact_tool_result_for_tail(
+                tool_name=tool_name,
+                message=message,
+                content=content,
+                max_chars=keep,
+            )
+            if messages_chars(rendered) > limit:
+                message["content"] = _message_text(message)[:keep].rstrip() + marker
+            message["metadata"] = {
+                **(message.get("metadata") if isinstance(message.get("metadata"), dict) else {}),
+                "compressed_by": "context_budget_force_tail",
+                "original_chars": len(content),
+            }
     return rendered
 
 
