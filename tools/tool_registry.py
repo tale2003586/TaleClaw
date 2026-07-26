@@ -201,7 +201,11 @@ class ToolRegistry:
 
         tool = self._tools[name]
         try:
-            if trace_store is not None and run_state is not None:
+            if (
+                trace_store is not None
+                and run_state is not None
+                and tool.governance != ToolGovernanceMetadata()
+            ):
                 try:
                     trace_store.append_event(
                         run_state,
