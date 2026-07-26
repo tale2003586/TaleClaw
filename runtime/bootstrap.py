@@ -49,6 +49,7 @@ from memory.postgres_repository import PostgresMemoryRepository
 from memory.promotion_service import MemoryPromotionService
 from memory.semantic_retrieval import SemanticMemoryRetrievalService
 from memory.store import MemoryStore
+from memory.governance import MemoryGovernancePipeline
 from memory.scoped_store import ScopedMemoryStore
 from memory.vector_runtime import (
     build_history_vector_index_from_env,
@@ -263,6 +264,11 @@ def build_runtime() -> AppRuntime:
                 max_tokens=_env_int("MEMORY_CANDIDATE_EXTRACT_MAX_TOKENS", 220),
             ),
             max_tokens=_env_int("MEMORY_CANDIDATE_EXTRACT_MAX_TOKENS", 220),
+        ),
+        governance=(
+            MemoryGovernancePipeline()
+            if _env_bool("MEMORY_GOVERNANCE_ENABLED", False)
+            else None
         ),
     )
     memory_lifecycle = MemoryLifecycle(

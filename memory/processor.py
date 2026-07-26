@@ -8,6 +8,14 @@ from models.model_task_runner import ModelTaskRunner
 from memory.candidates import MemoryCandidate
 from memory.store import MemoryStore
 from memory.vector_runtime import history_vector_scope_for_session
+from memory.commands import MemoryContext
+from memory.domain import MemoryOwnerScope
+from memory.governance import (
+    MemoryGovernancePipeline,
+    MemoryPolicyAction,
+    MemoryWriteRequest,
+)
+from memory.notes import MemoryNoteOrigin
 
 
 @dataclass
@@ -21,6 +29,7 @@ class MemoryProcessingResult:
     similar_hits: list[dict] = field(default_factory=list)
     candidate_content: str = ""
     candidate_confidence: float = 0.0
+    governance_audit: dict = field(default_factory=dict)
 
 
 class MemoryProcessingDevice:
@@ -35,6 +44,7 @@ class MemoryProcessingDevice:
         similar_top_k: int = 8,
         similar_min_score: float = 0.55,
         similar_min_hits: int = 2,
+        governance: MemoryGovernancePipeline | None = None,
     ) -> None:
         self.history_vector_index = history_vector_index
         self.scope_resolver = scope_resolver or history_vector_scope_for_session
@@ -42,6 +52,7 @@ class MemoryProcessingDevice:
         self.similar_top_k = max(1, int(similar_top_k))
         self.similar_min_score = float(similar_min_score)
         self.similar_min_hits = max(1, int(similar_min_hits))
+        self.governance = governance
 
     def process_user_description(
         self,
@@ -55,6 +66,31 @@ class MemoryProcessingDevice:
         text = user_text.strip()
         if not result.candidate_selected:
             return result
+
+        if self.governance is not None:
+            context = MemoryContext.from_session(session)
+            scope = MemoryOwnerScope.TASK if context.task_id else MemoryOwnerScope.USER
+            scope_id = context.task_id or context.user_id
+            governed = self.governance.evaluate(MemoryWriteRequest(
+                content=text,
+                origin=MemoryNoteOrigin.INFERRED_BY_LLM,
+                scope=scope,
+                scope_id=scope_id,
+                confidence=result.candidate_confidence,
+                source=source_ref,
+            ))
+            result.governance_audit = {
+                "action": governed.audit.action.value,
+                "reason": governed.audit.reason,
+                "content_digest": governed.audit.content_digest,
+                "scope": governed.audit.scope,
+                "origin": governed.audit.origin,
+                "classification": governed.audit.classification,
+            }
+            if governed.decision.action is MemoryPolicyAction.DISCARD:
+                result.candidate_selected = False
+                result.candidate_save_result = "Discarded by memory governance"
+                return result
 
         related = store.trigger_related_candidates(text, source_ref=source_ref)
         result.related_triggered += len(related)
