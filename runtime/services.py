@@ -23,3 +23,7 @@ class RuntimeServices:
     trace_store: Any
     cancellation_registry: Any
     message_bus: Any
+    semantic_memory_repository: Any = None
+    semantic_memory_command_service: Any = None
+    semantic_memory_retrieval_service: Any = None
+    semantic_memory_index_synchronizer: Any = None

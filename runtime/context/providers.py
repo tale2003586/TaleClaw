@@ -118,9 +118,14 @@ class MemoryContextProvider:
             session,
             profile=profile,
         )
+        memory_budget_name = (
+            "semantic_memory"
+            if raw_memory.lstrip().startswith("<semantic_memory>")
+            else "memory"
+        )
         return MemoryContext(
             raw_memory=raw_memory,
-            budgeted_memory=builder.budgeter.apply("memory", raw_memory),
+            budgeted_memory=builder.budgeter.apply(memory_budget_name, raw_memory),
             raw_working_memory=raw_working,
             budgeted_working_memory=builder.budgeter.apply(
                 "working_memory",

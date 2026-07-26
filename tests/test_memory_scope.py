@@ -9,6 +9,11 @@ from applications.coding import session as coding_application_module
 from applications.coding.session import TaskSessionFactory
 from tools import handlers
 from tools.tool_registry import ToolRegistry
+from memory.command_service import MemoryCommandService
+from memory.index_sync import MemoryIndexSynchronizer
+from memory.semantic_retrieval import SemanticMemoryRetrievalService
+from tests.fakes.in_memory_memory_index import InMemoryMemoryIndex
+from tests.fakes.in_memory_memory_repository import InMemoryMemoryRepository
 
 
 def _tool_schema(name: str) -> dict:
@@ -41,6 +46,9 @@ def _memory_registry() -> ToolRegistry:
 
 
 class MemoryScopeTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        handlers.configure_semantic_memory_services()
+
     def test_coding_application_factory_stores_portable_relative_memory_root(self) -> None:
         class RecordingSessions:
             def get_or_create(self, session_id: str) -> Session:
@@ -76,6 +84,58 @@ class MemoryScopeTests(unittest.TestCase):
 
             self.assertEqual("Saved to MEMORY.md", result)
             self.assertIn("global preference", global_memory.memory_path.read_text())
+
+    def test_semantic_memorize_uses_repository_not_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            global_memory = MemoryStore(Path(tmp) / "memory")
+            before = global_memory.memory_path.read_text()
+            repository = InMemoryMemoryRepository()
+            index = InMemoryMemoryIndex()
+            commands = MemoryCommandService(repository)
+            retrieval = SemanticMemoryRetrievalService(repository, index)
+            synchronizer = MemoryIndexSynchronizer(repository, index)
+            handlers.configure_semantic_memory_services(
+                command_service=commands,
+                retrieval_service=retrieval,
+                index_synchronizer=synchronizer,
+            )
+            registry = _memory_registry()
+            session = Session(
+                id="web:alice:a",
+                metadata={"user_id": "alice"},
+            )
+
+            with patch.object(handlers, "MEMORY", global_memory):
+                saved = registry.execute(
+                    "memorize",
+                    {"content": "Prefer concise answers"},
+                    session=session,
+                    mode="bot",
+                )
+                recalled = registry.execute(
+                    "recall_memory",
+                    {"query": "concise"},
+                    session=session,
+                    mode="bot",
+                )
+
+            self.assertIn("Saved semantic memory", saved)
+            self.assertIn("<semantic_memory>", recalled)
+            self.assertIn("Prefer concise answers", recalled)
+            self.assertEqual(before, global_memory.memory_path.read_text())
+            self.assertEqual(1, len(repository.items))
+
+    def test_semantic_memorize_rejects_legacy_file_section(self) -> None:
+        handlers.configure_semantic_memory_services(
+            command_service=MemoryCommandService(InMemoryMemoryRepository()),
+        )
+        result = handlers.run_memorize(
+            content="temporary state",
+            section="now",
+            _session=Session(id="web:default"),
+        )
+
+        self.assertIn("no longer accepts file sections", result)
 
     def test_coding_application_memorize_and_recall_use_local_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

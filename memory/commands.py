@@ -44,6 +44,27 @@ class MemoryContext:
     def permits(self, owner: OwnerKey) -> bool:
         return owner in self.allowed_owners()
 
+    @classmethod
+    def from_session(cls, session) -> "MemoryContext":
+        from user_scope import user_id_for_session
+
+        metadata = getattr(session, "metadata", {}) or {}
+        application = metadata.get("application")
+        if not application and metadata.get("kind") == "coding_application":
+            application = "coding"
+        return cls(
+            user_id=user_id_for_session(session),
+            session_id=str(getattr(session, "id", "") or ""),
+            application=str(application) if application else None,
+            workspace_id=_optional_text(
+                metadata.get("workspace_id") or metadata.get("workspace_root")
+            ),
+            project_id=_optional_text(
+                metadata.get("project_id") or metadata.get("repository")
+            ),
+            task_id=_optional_text(metadata.get("task_id")),
+        )
+
 
 @dataclass(frozen=True)
 class MemoryWriteProposal:
@@ -99,3 +120,8 @@ class MemoryTransition:
         object.__setattr__(self, "expected_version", int(self.expected_version))
         object.__setattr__(self, "reason", str(self.reason or "").strip())
         object.__setattr__(self, "metadata", dict(self.metadata or {}))
+
+
+def _optional_text(value) -> str | None:
+    text = str(value or "").strip()
+    return text or None
