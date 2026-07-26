@@ -56,6 +56,7 @@ class MemoryLifecycle:
         command_service=None,
         promotion_service=None,
         index_legacy_memory_files: bool = False,
+        write_legacy_history_files: bool = True,
     ) -> None:
         self.store = store
         self.summarizer = summarizer or HistorySummarizer()
@@ -72,6 +73,7 @@ class MemoryLifecycle:
         self.command_service = command_service
         self.promotion_service = promotion_service
         self.index_legacy_memory_files = bool(index_legacy_memory_files)
+        self.write_legacy_history_files = bool(write_legacy_history_files)
 
     def after_turn(self, session) -> MemoryLifecycleResult:
         store = self.store
@@ -94,6 +96,8 @@ class MemoryLifecycle:
                 source_ref=source_ref,
                 result=result,
             )
+            if hasattr(self.command_service, "drain_trace_events"):
+                result.trace_events.extend(self.command_service.drain_trace_events())
         elif explicit:
             save_result = store.append("memory", explicit)
             if save_result.startswith("Saved"):
@@ -141,10 +145,11 @@ class MemoryLifecycle:
                 })
 
         assistant_summary = self.summarizer.summarize(assistant_text)
-        history = self._format_history_entry(user_text, assistant_summary)
-        if history:
-            store.append_history(history, source_ref=source_ref)
-            result.history_updated = True
+        if self.write_legacy_history_files:
+            history = self._format_history_entry(user_text, assistant_summary)
+            if history:
+                store.append_history(history, source_ref=source_ref)
+                result.history_updated = True
         result.vector_indexed += self._index_session_turn(
             session,
             result,
@@ -159,24 +164,25 @@ class MemoryLifecycle:
                 source_ref=source_ref,
             )
 
-        recent_turns = store.read_recent_turns()
-        recent_turns.append(
-            self._format_recent_turn(
-                session,
-                user_text,
-                assistant_summary,
-                source_ref=source_ref,
+        if self.write_legacy_history_files:
+            recent_turns = store.read_recent_turns()
+            recent_turns.append(
+                self._format_recent_turn(
+                    session,
+                    user_text,
+                    assistant_summary,
+                    source_ref=source_ref,
+                )
             )
-        )
-        evicted_turns = recent_turns[:-self.recent_limit]
-        store.write_recent_turns(recent_turns[-self.recent_limit :])
-        result.recent_context_updated = True
+            evicted_turns = recent_turns[:-self.recent_limit]
+            store.write_recent_turns(recent_turns[-self.recent_limit :])
+            result.recent_context_updated = True
 
-        if self.archive_store:
-            for turn in evicted_turns:
-                archived = self.archive_store.append(ArchivedRecentTurn(**turn))
-                if archived:
-                    result.archived_count += 1
+            if self.archive_store:
+                for turn in evicted_turns:
+                    archived = self.archive_store.append(ArchivedRecentTurn(**turn))
+                    if archived:
+                        result.archived_count += 1
         return result
 
     def _process_governed_memory(

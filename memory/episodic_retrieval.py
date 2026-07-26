@@ -88,6 +88,12 @@ class EpisodicHistoryRetrievalService:
         self.top_k = max(1, int(top_k))
         self.min_score = float(min_score)
         self.trace = trace
+        self.trace_events: list[dict] = []
+
+    def drain_trace_events(self) -> list[dict]:
+        events = list(self.trace_events)
+        self.trace_events.clear()
+        return events
 
     def retrieve(self, query: str, boundary: EpisodicBoundary) -> EpisodicResult:
         if self.index is None or not str(query).strip():
@@ -145,14 +151,15 @@ class EpisodicHistoryRetrievalService:
         return "\n\n".join(lines)
 
     def _emit(self, result: EpisodicResult) -> None:
-        if self.trace is None:
-            return
         payload = {
             "hit_count": len(result.hits),
             "session_id": result.boundary.session_id if result.boundary else None,
             "task_id": result.boundary.task_id if result.boundary else None,
             "degraded": result.degraded,
         }
+        self.trace_events.append({"event": "memory.episodic.retrieved", "payload": payload})
+        if self.trace is None:
+            return
         try:
             self.trace("memory.episodic.retrieved", payload)
         except TypeError:

@@ -15,7 +15,7 @@
       "active_turn",
       "memory",
       "working_memory",
-      "retrieved_history",
+      "episodic_history",
       "security_knowledge",
       "task_runtime_events",
       "inbox",
@@ -33,14 +33,14 @@
       "active_turn": true,
       "memory": false,
       "working_memory": false,
-      "retrieved_history": false,
+      "episodic_history": false,
       "security_knowledge": false,
       "task_runtime_events": false,
       "inbox": false,
       "background_results": false,
       "context_frame": false
     },
-    "estimated_tokens": 340
+    "estimated_tokens": 337
   },
   "coding": {
     "roles": [
@@ -59,7 +59,7 @@
       "active_turn",
       "memory",
       "working_memory",
-      "retrieved_history",
+      "episodic_history",
       "security_knowledge",
       "task_runtime_events",
       "inbox",
@@ -78,13 +78,13 @@
       "active_turn": true,
       "memory": false,
       "working_memory": false,
-      "retrieved_history": false,
+      "episodic_history": false,
       "security_knowledge": false,
       "task_runtime_events": false,
       "inbox": false,
       "background_results": false,
       "context_frame": false
     },
-    "estimated_tokens": 487
+    "estimated_tokens": 484
   }
 }

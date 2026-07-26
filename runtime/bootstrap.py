@@ -292,6 +292,10 @@ def build_runtime() -> AppRuntime:
             if _env_bool("SEMANTIC_MEMORY_WRITE_ENABLED", False)
             else None
         ),
+        write_legacy_history_files=_env_bool(
+            "MEMORY_LEGACY_HISTORY_FILES_ENABLED",
+            False,
+        ),
     )
     if _env_bool("MEMORY_LIFECYCLE_BACKGROUND", True):
         memory_lifecycle = BackgroundMemoryLifecycle(

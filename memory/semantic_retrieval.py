@@ -39,6 +39,12 @@ class SemanticMemoryRetrievalService:
         self.top_k = max(1, int(top_k))
         self.trace = trace
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.trace_events: list[dict] = []
+
+    def drain_trace_events(self) -> list[dict]:
+        events = list(self.trace_events)
+        self.trace_events.clear()
+        return events
 
     def retrieve(
         self,
@@ -116,8 +122,6 @@ class SemanticMemoryRetrievalService:
         return "\n".join(lines)
 
     def _emit(self, query: str, context: MemoryContext, result: SemanticMemoryResult) -> None:
-        if self.trace is None:
-            return
         payload = {
             "query_digest": normalize_memory_text(query)[:80],
             "session_id": context.session_id,
@@ -127,6 +131,9 @@ class SemanticMemoryRetrievalService:
             "memory_ids": [hit.item.id for hit in result.hits],
             "scores": [hit.score for hit in result.hits],
         }
+        self.trace_events.append({"event": "memory.semantic.retrieved", "payload": payload})
+        if self.trace is None:
+            return
         try:
             self.trace("memory.semantic.retrieved", payload)
         except TypeError:

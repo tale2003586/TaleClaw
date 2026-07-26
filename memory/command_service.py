@@ -31,6 +31,12 @@ class MemoryCommandService:
         self.conflict_service = conflict_service or MemoryConflictService()
         self.trace = trace
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.trace_events: list[dict] = []
+
+    def drain_trace_events(self) -> list[dict]:
+        events = list(self.trace_events)
+        self.trace_events.clear()
+        return events
 
     def remember(
         self,
@@ -251,8 +257,6 @@ class MemoryCommandService:
         reason: str,
         previous_memory_id: str | None = None,
     ) -> None:
-        if self.trace is None:
-            return
         payload = {
             "memory_id": item.id,
             "owner_scope": item.owner_scope.value,
@@ -267,6 +271,9 @@ class MemoryCommandService:
             "content_digest": hashlib.sha256(item.content.encode()).hexdigest()[:16],
             "content_preview": item.content[:160],
         }
+        self.trace_events.append({"event": event, "payload": payload})
+        if self.trace is None:
+            return
         try:
             self.trace(event, payload)
         except TypeError:

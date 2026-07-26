@@ -12,6 +12,12 @@ def _now_iso() -> str:
 
 
 class MemoryStore:
+    """Legacy Markdown adapter.
+
+    Production semantic memory uses MemoryCommandService and PostgreSQL. This
+    adapter remains for migration, read-only compatibility, and Coding task-local
+    state while those callers are retired.
+    """
     def __init__(self, root: Path | None = None) -> None:
         self.root = root or WORKDIR / "memory"
         self.root.mkdir(parents=True, exist_ok=True)

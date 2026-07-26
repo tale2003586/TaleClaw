@@ -124,6 +124,13 @@ class MemoryScopeTests(unittest.TestCase):
             self.assertIn("Prefer concise answers", recalled)
             self.assertEqual(before, global_memory.memory_path.read_text())
             self.assertEqual(1, len(repository.items))
+            event_names = [
+                event["event"]
+                for event in session.metadata.get("memory_trace_events", [])
+            ]
+            self.assertIn("memory.item.created", event_names)
+            self.assertIn("memory.index.completed", event_names)
+            self.assertIn("memory.semantic.retrieved", event_names)
 
     def test_semantic_memorize_rejects_legacy_file_section(self) -> None:
         handlers.configure_semantic_memory_services(

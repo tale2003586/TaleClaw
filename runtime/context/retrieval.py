@@ -59,6 +59,11 @@ class ContextRetrievalService:
             query,
             EpisodicBoundary.from_session(session),
         )
+        if hasattr(self.episodic_retrieval_service, "drain_trace_events"):
+            events = self.episodic_retrieval_service.drain_trace_events()
+            metadata = getattr(session, "metadata", None)
+            if events and isinstance(metadata, dict):
+                metadata.setdefault("memory_trace_events", []).extend(events)
         return self.episodic_retrieval_service.render(result), list(result.hits)
 
     def _retrieval_query(self, current_request: str, active_turn_messages: list[dict]) -> str:

@@ -1260,6 +1260,53 @@ class RunTraceTests(unittest.TestCase):
             self.assertEqual(workspace.resolve(), resolved.root)
             self.assertEqual("default", resolved.source)
 
+    def test_memory_metrics_cover_governed_lifecycle_and_zero_denominators(self) -> None:
+        events = [
+            {"event": "memory.item.created", "payload": {}},
+            {"event": "memory.candidate.created", "payload": {}},
+            {"event": "memory.item.promoted", "payload": {}},
+            {"event": "memory.item.duplicate", "payload": {}},
+            {"event": "memory.index.completed", "payload": {}},
+            {"event": "memory.index.failed", "payload": {}},
+            {
+                "event": "memory.semantic.retrieved",
+                "payload": {
+                    "hit_count": 1,
+                    "drop_reasons": {
+                        "inactive_or_expired": 1,
+                        "stale_version": 1,
+                        "scope_mismatch": 1,
+                    },
+                },
+            },
+            {
+                "event": "memory.context.dropped",
+                "payload": {"reason": "unused", "context_token_ratio": 0.2},
+            },
+        ]
+
+        summary = build_trace_summary_payload(
+            run_state={},
+            metrics={},
+            report={},
+            events=events,
+        )["memory"]
+        empty = build_trace_summary_payload(
+            run_state={},
+            metrics={},
+            report={},
+            events=[],
+        )["memory"]
+
+        self.assertEqual(1.0, summary["promotion_rate"])
+        self.assertEqual(0.5, summary["duplicate_rate"])
+        self.assertEqual(0.5, summary["index_failure_rate"])
+        self.assertEqual(0.2, summary["context_token_ratio"])
+        self.assertGreater(summary["stale_hit_rate"], 0)
+        self.assertGreater(summary["cross_scope_leak_rate"], 0)
+        self.assertEqual(0.0, empty["promotion_rate"])
+        self.assertEqual(0.0, empty["retrieval_hit_rate"])
+
 
 if __name__ == "__main__":
     unittest.main()

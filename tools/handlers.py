@@ -2976,6 +2976,8 @@ def run_memorize(*, content: str, section: str = "memory", _session=None) -> str
                 SEMANTIC_MEMORY_INDEX_SYNCHRONIZER.drain(limit=10)
             except Exception:
                 pass
+        _queue_memory_trace_events(_session, SEMANTIC_MEMORY_COMMAND_SERVICE)
+        _queue_memory_trace_events(_session, SEMANTIC_MEMORY_INDEX_SYNCHRONIZER)
         return f"Saved semantic memory {item.id} ({item.status.value})."
     return memory_store_for_session(_session).append(section, content)
 
@@ -2988,9 +2990,21 @@ def run_recall_memory(*, query: str | None = None, _session=None) -> str:
             str(query or ""),
             MemoryContext.from_session(_session),
         )
+        _queue_memory_trace_events(_session, SEMANTIC_MEMORY_RETRIEVAL_SERVICE)
         rendered = SEMANTIC_MEMORY_RETRIEVAL_SERVICE.render(result)
         return rendered or "No relevant memory found."
     return memory_store_for_session(_session).recall(query)
+
+
+def _queue_memory_trace_events(session, service) -> None:
+    if session is None or service is None or not hasattr(service, "drain_trace_events"):
+        return
+    events = service.drain_trace_events()
+    if not events:
+        return
+    metadata = getattr(session, "metadata", None)
+    if isinstance(metadata, dict):
+        metadata.setdefault("memory_trace_events", []).extend(events)
 
 MEMORY_HANDLERS = {
     "memorize": run_memorize,

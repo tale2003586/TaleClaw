@@ -29,6 +29,12 @@ class MemoryIndexSynchronizer:
         self.retry_base_seconds = max(1, int(retry_base_seconds))
         self.trace = trace
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.trace_events: list[dict] = []
+
+    def drain_trace_events(self) -> list[dict]:
+        events = list(self.trace_events)
+        self.trace_events.clear()
+        return events
 
     def drain(self, limit: int = 100) -> IndexSyncResult:
         events = self.repository.claim_index_events(limit)
@@ -64,8 +70,6 @@ class MemoryIndexSynchronizer:
         return IndexSyncResult(len(events), completed, retried)
 
     def _emit(self, name: str, event, error: str) -> None:
-        if self.trace is None:
-            return
         payload = {
             "outbox_event_id": event.id,
             "memory_id": event.memory_id,
@@ -75,6 +79,9 @@ class MemoryIndexSynchronizer:
             "index_status": "failed" if error else "completed",
             "error": error[:500],
         }
+        self.trace_events.append({"event": name, "payload": payload})
+        if self.trace is None:
+            return
         try:
             self.trace(name, payload)
         except TypeError:

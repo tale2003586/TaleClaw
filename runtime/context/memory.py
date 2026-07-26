@@ -23,6 +23,7 @@ class ContextMemoryService:
                 current_request,
                 MemoryContext.from_session(session),
             )
+            _queue_trace_events(session, self.semantic_memory_retriever)
             return self.semantic_memory_retriever.render(result)
         if self.memory_store is None:
             return ""
@@ -42,3 +43,12 @@ class ContextMemoryService:
         if self.working_memory_renderer is None:
             return ""
         return self.working_memory_renderer(session)
+
+
+def _queue_trace_events(session, service) -> None:
+    if not hasattr(service, "drain_trace_events"):
+        return
+    events = service.drain_trace_events()
+    metadata = getattr(session, "metadata", None)
+    if events and isinstance(metadata, dict):
+        metadata.setdefault("memory_trace_events", []).extend(events)

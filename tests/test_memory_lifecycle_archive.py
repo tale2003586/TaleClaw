@@ -130,6 +130,30 @@ class MemoryLifecycleArchiveTests(unittest.TestCase):
             self.assertEqual([], provider.calls)
             self.assertIn("ASSISTANT_SUMMARY:\ndone", memory.read_history())
 
+    def test_normal_production_mode_stops_duplicate_history_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = MemoryStore(Path(tmp) / "memory")
+            vector_index = RecordingVectorIndex()
+            lifecycle = MemoryLifecycle(
+                memory,
+                history_vector_index=vector_index,
+                write_legacy_history_files=False,
+            )
+            session = Session(id="web:alice:a", metadata={"user_id": "alice"})
+            session.add_message("user", "current session event")
+            session.add_message("assistant", "done")
+
+            result = lifecycle.after_turn(session)
+
+            self.assertFalse(result.history_updated)
+            self.assertFalse(result.recent_context_updated)
+            self.assertEqual("# History\n\n", memory.read_history())
+            self.assertEqual([], memory.read_recent_turns())
+            self.assertEqual(
+                ["session_turn"],
+                [record.source_type for record in vector_index.records],
+            )
+
     def test_recent_markdown_bounds_context_but_json_keeps_full_user_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             memory = MemoryStore(Path(tmp) / "memory")
