@@ -169,8 +169,9 @@ BASE_TOOLS = [
         (
             "Build a deterministic, paginated repository map for planning broad coding work. "
             "Use this before repository-wide architecture review or multi-subsystem fan-out. "
-            "It returns directory aggregates and shallow file entries with optional line counts; "
-            "drill down with path=... instead of repeatedly listing directories."
+            "It returns directory aggregates plus an aider-style ranked symbol map of key "
+            "classes/functions/signatures selected from cross-file references; drill down "
+            "with path=... or code_outline/read_file for details."
         ),
         {
             "path": {
@@ -185,6 +186,12 @@ BASE_TOOLS = [
             "include_lines": {
                 "type": "boolean",
                 "description": "Include inexpensive line counts for text files. Defaults to true.",
+            },
+            "max_symbols": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 300,
+                "description": "Maximum ranked symbols to include in the symbol map. Defaults to the configured repo map budget.",
             },
             "offset": {
                 "type": "integer",

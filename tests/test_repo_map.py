@@ -51,6 +51,44 @@ class RepoMapToolTests(unittest.TestCase):
             self.assertIn("To continue: repo_map(", first)
             self.assertIn("[tool-cache] already read", cached)
 
+    def test_repo_map_includes_ranked_symbol_map_from_cross_file_references(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / "lib.py").write_text(
+                "\n".join([
+                    "class CoreService:",
+                    "    def run(self):",
+                    "        return helper()",
+                    "",
+                    "def helper():",
+                    "    return 1",
+                ]),
+                encoding="utf-8",
+            )
+            (workspace / "consumer.py").write_text(
+                "\n".join([
+                    "from lib import CoreService, helper",
+                    "",
+                    "def boot():",
+                    "    service = CoreService()",
+                    "    return service.run() + helper()",
+                ]),
+                encoding="utf-8",
+            )
+            session = Session(id="task:repo-map-symbols", metadata={"workspace_root": str(workspace)})
+
+            payload = json.loads(
+                handlers.run_repo_map(".", max_depth=2, max_symbols=6, _session=session)
+            )
+
+            self.assertEqual("reference_pagerank", payload["symbol_rank_algorithm"])
+            ranked = {(item["path"], item["name"]) for item in payload["ranked_symbols"]}
+            self.assertIn(("lib.py", "CoreService"), ranked)
+            self.assertIn(("lib.py", "helper"), ranked)
+            symbol_map = "\n".join(payload["symbol_map"])
+            self.assertIn("lib.py:", symbol_map)
+            self.assertIn("class CoreService:", symbol_map)
+
     def test_repo_map_is_visible_for_coding_lead(self) -> None:
         registry = build_lead_tool_registry()
         session = Session(id="task:repo-map-visible", active_agent="coding")

@@ -1,3 +1,6 @@
+import ast
+from collections import Counter, defaultdict
+import keyword
 import json
 import os
 import hashlib
@@ -60,6 +63,74 @@ DEFAULT_RG_MATCHES = 100
 RG_TIMEOUT_SECONDS = 30
 MAX_GREP_MATCHES = 500
 DEFAULT_GREP_MATCHES = 100
+REPO_MAP_DEFAULT_MAX_SYMBOLS = int(os.getenv("REPO_MAP_MAX_SYMBOLS", "80"))
+REPO_MAP_MAX_SYMBOLS = int(os.getenv("REPO_MAP_SYMBOL_CAP", "300"))
+REPO_MAP_SOURCE_SUFFIXES = {
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".mjs",
+    ".cjs",
+}
+REPO_MAP_IDENTIFIER_RE = re.compile(r"\b[A-Za-z_$][A-Za-z0-9_$]{2,}\b")
+REPO_MAP_FILE_RE = re.compile(
+    r"(?<![\w./-])[\w./-]+\.(?:py|js|jsx|ts|tsx|mjs|cjs)(?![\w./-])"
+)
+REPO_MAP_IDENTIFIER_STOPWORDS = {
+    "and",
+    "any",
+    "are",
+    "args",
+    "async",
+    "await",
+    "bool",
+    "class",
+    "const",
+    "dict",
+    "else",
+    "export",
+    "false",
+    "for",
+    "from",
+    "function",
+    "import",
+    "int",
+    "let",
+    "list",
+    "none",
+    "not",
+    "null",
+    "object",
+    "return",
+    "self",
+    "str",
+    "this",
+    "true",
+    "type",
+    "var",
+    "with",
+}
+REPO_MAP_GENERIC_IDENTIFIERS = {
+    "add",
+    "build",
+    "data",
+    "get",
+    "item",
+    "load",
+    "main",
+    "name",
+    "path",
+    "read",
+    "run",
+    "save",
+    "set",
+    "text",
+    "update",
+    "value",
+    "write",
+}
 TOOL_RESULT_CACHE_KEY = "_tool_result_cache"
 TOOL_CACHE_STEP_KEY = "_tool_result_cache_step"
 
@@ -504,10 +575,11 @@ def run_repo_map(
     max_depth: int | None = None,
     include_lines: bool = True,
     offset: int = 0,
+    max_symbols: int | None = None,
     *,
     _session=None,
 ) -> str:
-    """Return a deterministic repository map with directory aggregates."""
+    """Return a deterministic repository map with directory aggregates and ranked symbols."""
     try:
         root = workspace_root_for_session(_session).resolve()
         target = safe_workspace_path(path or ".", session=_session)
@@ -521,12 +593,21 @@ def run_repo_map(
             depth = max(0, int(REPO_MAP_DEFAULT_MAX_DEPTH))
         offset = _nonnegative_int(offset, default=0)
         include_lines = bool(include_lines)
+        symbol_limit = _bounded_positive_int(
+            max_symbols,
+            default=REPO_MAP_DEFAULT_MAX_SYMBOLS,
+            maximum=REPO_MAP_MAX_SYMBOLS,
+        )
+        focus = _repo_map_focus_from_session(_session)
         cache_key = _tool_cache_key(
             "repo_map",
             {
                 "path": normalized_path,
                 "max_depth": depth,
                 "include_lines": include_lines,
+                "max_symbols": symbol_limit,
+                "focus_files": focus["files"],
+                "focus_identifiers": focus["identifiers"],
                 "offset": offset,
             },
         )
@@ -542,11 +623,18 @@ def run_repo_map(
             max_depth=depth,
             include_lines=include_lines,
         )
+        ranked_symbols = _build_ranked_symbol_map_payload(
+            root=root,
+            file_paths=file_paths,
+            max_symbols=symbol_limit,
+            focus=focus,
+        )
         payload = {
             "path": normalized_path,
             "source": source,
             "max_depth": depth,
             "include_lines": include_lines,
+            "max_symbols": symbol_limit,
             "offset": offset,
             "repair_round_limit": ORCHESTRATION_REPAIR_ROUNDS,
             "total_files": totals["files"],
@@ -555,6 +643,7 @@ def run_repo_map(
             "directories": directories,
             "files": files,
             "files_omitted_by_depth": max(0, totals["files"] - len(files)),
+            **ranked_symbols,
         }
         rendered = json.dumps(payload, ensure_ascii=False, indent=2)
         output = _format_repo_map_window(
@@ -562,6 +651,7 @@ def run_repo_map(
             path_label=normalized_path,
             max_depth=depth,
             include_lines=include_lines,
+            max_symbols=symbol_limit,
             offset=offset,
         )
         _tool_cache_set(_session, cache_key, output)
@@ -771,6 +861,7 @@ def _format_repo_map_window(
     path_label: str,
     max_depth: int,
     include_lines: bool,
+    max_symbols: int,
     offset: int = 0,
 ) -> str:
     total = len(lines)
@@ -787,7 +878,8 @@ def _format_repo_map_window(
             f"[repo_map] showed lines {offset}-{next_offset} of {total}. "
             "To continue: "
             f"repo_map(path=\"{path_label}\", max_depth={max_depth}, "
-            f"include_lines={str(bool(include_lines)).lower()}, offset={next_offset}). "
+            f"include_lines={str(bool(include_lines)).lower()}, "
+            f"max_symbols={max_symbols}, offset={next_offset}). "
             f"{remaining} lines remain."
         )
         output = f"{output}\n{notice}" if output else notice
@@ -813,34 +905,109 @@ def _format_code_outline_window(
 
 
 def _extract_code_symbols(lines: list[str], *, suffix: str) -> list[dict]:
+    if suffix == ".py":
+        return _extract_python_symbols(lines)
+    if suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}:
+        return _extract_js_ts_symbols(lines)
+    return []
+
+
+def _extract_python_symbols(lines: list[str]) -> list[dict]:
+    text = "\n".join(lines)
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return _extract_python_symbols_with_regex(lines)
+
+    symbols: list[dict] = []
+    class_stack: list[str] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+            symbols.append(_python_ast_symbol(node, "class", lines, class_stack))
+            class_stack.append(node.name)
+            self.generic_visit(node)
+            class_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+            kind = "method" if class_stack else "function"
+            symbols.append(_python_ast_symbol(node, kind, lines, class_stack))
+            self.generic_visit(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+            kind = "method" if class_stack else "function"
+            symbols.append(_python_ast_symbol(node, kind, lines, class_stack))
+            self.generic_visit(node)
+
+    Visitor().visit(tree)
+    return sorted(symbols, key=lambda item: (int(item["line"]), item["name"]))
+
+
+def _python_ast_symbol(
+    node: ast.AST,
+    kind: str,
+    lines: list[str],
+    class_stack: list[str],
+) -> dict:
+    line_no = int(getattr(node, "lineno", 1) or 1)
+    name = str(getattr(node, "name", ""))
+    item = {
+        "name": name,
+        "kind": kind,
+        "line": line_no,
+        "signature": _definition_signature(lines, line_no),
+    }
+    if class_stack:
+        item["container"] = ".".join(class_stack)
+    return item
+
+
+def _extract_python_symbols_with_regex(lines: list[str]) -> list[dict]:
     symbols: list[dict] = []
     for index, line in enumerate(lines, 1):
-        symbol = _python_symbol(line, index) if suffix == ".py" else None
-        if symbol is None and suffix in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}:
-            symbol = _js_ts_symbol(line, index)
+        symbol = _python_symbol(line, index, lines=lines)
         if symbol is not None:
             symbols.append(symbol)
     return symbols
 
 
-def _python_symbol(line: str, line_no: int) -> dict | None:
+def _python_symbol(line: str, line_no: int, *, lines: list[str]) -> dict | None:
     match = re.match(r"^(?P<indent>\s*)(?P<kind>class|def)\s+(?P<name>[A-Za-z_]\w*)", line)
     if not match:
         match = re.match(r"^(?P<indent>\s*)async\s+def\s+(?P<name>[A-Za-z_]\w*)", line)
         if not match:
             return None
         kind = "method" if match.group("indent") else "function"
-        return {"name": match.group("name"), "kind": kind, "line": line_no}
+        return {
+            "name": match.group("name"),
+            "kind": kind,
+            "line": line_no,
+            "signature": _definition_signature(lines, line_no),
+        }
     indent = match.group("indent")
     raw_kind = match.group("kind")
     if raw_kind == "class":
         kind = "class"
     else:
         kind = "method" if indent else "function"
-    return {"name": match.group("name"), "kind": kind, "line": line_no}
+    return {
+        "name": match.group("name"),
+        "kind": kind,
+        "line": line_no,
+        "signature": _definition_signature(lines, line_no),
+    }
 
 
-def _js_ts_symbol(line: str, line_no: int) -> dict | None:
+def _extract_js_ts_symbols(lines: list[str]) -> list[dict]:
+    symbols: list[dict] = []
+    for index, line in enumerate(lines, 1):
+        symbol = _js_ts_symbol(line, index, lines=lines)
+        if symbol is not None:
+            symbols.append(symbol)
+    return symbols
+
+
+def _js_ts_symbol(line: str, line_no: int, *, lines: list[str]) -> dict | None:
     stripped = line.strip()
     patterns = [
         (r"^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)", "function"),
@@ -851,8 +1018,458 @@ def _js_ts_symbol(line: str, line_no: int) -> dict | None:
     for pattern, kind in patterns:
         match = re.match(pattern, stripped)
         if match:
-            return {"name": match.group(1), "kind": kind, "line": line_no}
+            return {
+                "name": match.group(1),
+                "kind": kind,
+                "line": line_no,
+                "signature": _definition_signature(lines, line_no),
+            }
     return None
+
+
+def _definition_signature(lines: list[str], line_no: int) -> str:
+    if line_no <= 0 or line_no > len(lines):
+        return ""
+    parts = [lines[line_no - 1].strip()]
+    balance = _delimiter_balance(parts[0])
+    next_line = line_no
+    while next_line < len(lines) and len(parts) < 5 and balance > 0:
+        candidate = lines[next_line].strip()
+        if not candidate:
+            break
+        parts.append(candidate)
+        balance += _delimiter_balance(candidate)
+        if candidate.endswith(("{", ":", "=>")) and balance <= 0:
+            break
+        next_line += 1
+    signature = " ".join(part for part in parts if part)
+    return signature[:240]
+
+
+def _delimiter_balance(text: str) -> int:
+    return text.count("(") + text.count("[") + text.count("{") - text.count(")") - text.count("]") - text.count("}")
+
+
+def _extract_code_references(text: str, *, suffix: str) -> Counter:
+    if suffix == ".py":
+        return _extract_python_references(text)
+    return _extract_token_references(text)
+
+
+def _extract_python_references(text: str) -> Counter:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return _extract_token_references(text)
+
+    refs: Counter = Counter()
+
+    class RefVisitor(ast.NodeVisitor):
+        def visit_Name(self, node: ast.Name) -> None:  # noqa: N802
+            if isinstance(node.ctx, ast.Load) and _repo_identifier_ok(node.id):
+                refs[node.id] += 1
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:  # noqa: N802
+            if _repo_identifier_ok(node.attr):
+                refs[node.attr] += 1
+            self.generic_visit(node)
+
+    RefVisitor().visit(tree)
+    return refs
+
+
+def _extract_token_references(text: str) -> Counter:
+    refs: Counter = Counter()
+    for name in REPO_MAP_IDENTIFIER_RE.findall(text):
+        if _repo_identifier_ok(name):
+            refs[name] += 1
+    return refs
+
+
+def _repo_identifier_ok(name: str) -> bool:
+    if not name or len(name) < 3:
+        return False
+    lowered = name.lower()
+    if lowered in REPO_MAP_IDENTIFIER_STOPWORDS or keyword.iskeyword(name):
+        return False
+    if name.startswith("__") and name.endswith("__"):
+        return False
+    return any(char.isalpha() for char in name)
+
+
+def _build_ranked_symbol_map_payload(
+    *,
+    root: Path,
+    file_paths: list[Path],
+    max_symbols: int,
+    focus: dict[str, list[str]],
+) -> dict:
+    source_files: list[str] = []
+    symbols_by_file: dict[str, list[dict]] = defaultdict(list)
+    references_by_ident: dict[str, Counter] = defaultdict(Counter)
+    definitions_by_ident: dict[str, list[dict]] = defaultdict(list)
+    skipped_symbol_files = 0
+
+    for file_path in file_paths:
+        suffix = file_path.suffix.lower()
+        if suffix not in REPO_MAP_SOURCE_SUFFIXES:
+            continue
+        rel = file_path.relative_to(root).as_posix()
+        text = _repo_file_text(file_path)
+        if text is None:
+            skipped_symbol_files += 1
+            continue
+        lines = text.splitlines()
+        source_files.append(rel)
+        for symbol in _extract_code_symbols(lines, suffix=suffix):
+            name = str(symbol.get("name") or "")
+            if not _repo_identifier_ok(name):
+                continue
+            enriched = {
+                **symbol,
+                "path": rel,
+                "signature": str(symbol.get("signature") or "")[:240],
+            }
+            symbols_by_file[rel].append(enriched)
+            definitions_by_ident[name].append(enriched)
+        for ident, count in _extract_code_references(text, suffix=suffix).items():
+            if count > 0:
+                references_by_ident[ident][rel] += count
+
+    source_files = sorted(set(source_files))
+    all_symbols = [symbol for path in source_files for symbol in symbols_by_file.get(path, [])]
+    ranked_symbols, ranked_files = _rank_repo_symbols(
+        source_files=source_files,
+        all_symbols=all_symbols,
+        symbols_by_file=symbols_by_file,
+        references_by_ident=references_by_ident,
+        definitions_by_ident=definitions_by_ident,
+        focus=focus,
+        max_symbols=max_symbols,
+    )
+    return {
+        "symbol_rank_algorithm": "reference_pagerank",
+        "symbol_source_files": len(source_files),
+        "symbol_files_skipped": skipped_symbol_files,
+        "symbol_count": len(all_symbols),
+        "focus": focus,
+        "ranked_files": ranked_files,
+        "ranked_symbols": ranked_symbols,
+        "symbol_map": _render_symbol_map_lines(ranked_symbols),
+    }
+
+
+def _repo_file_text(path: Path) -> str | None:
+    try:
+        if path.stat().st_size > REPO_MAP_MAX_FILE_BYTES:
+            return None
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if b"\0" in data[:8192]:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return data.decode("utf-8", errors="replace")
+
+
+def _rank_repo_symbols(
+    *,
+    source_files: list[str],
+    all_symbols: list[dict],
+    symbols_by_file: dict[str, list[dict]],
+    references_by_ident: dict[str, Counter],
+    definitions_by_ident: dict[str, list[dict]],
+    focus: dict[str, list[str]],
+    max_symbols: int,
+) -> tuple[list[dict], list[dict]]:
+    if not source_files or not all_symbols:
+        return [], []
+
+    edges = _repo_map_symbol_edges(
+        references_by_ident=references_by_ident,
+        definitions_by_ident=definitions_by_ident,
+        focus=focus,
+    )
+    file_scores = _weighted_pagerank(source_files, edges, focus=focus) if edges else {}
+    if not file_scores:
+        file_scores = _fallback_file_scores(source_files, symbols_by_file, focus=focus)
+
+    outgoing: Counter = Counter()
+    for src, _dst, _ident, weight in edges:
+        outgoing[src] += weight
+
+    definition_scores: Counter = Counter()
+    for src, dst, ident, weight in edges:
+        total = outgoing[src]
+        if total <= 0:
+            continue
+        definition_scores[(dst, ident)] += file_scores.get(src, 0.0) * weight / total
+
+    focus_files = set(focus.get("files", []))
+    focus_identifiers = set(focus.get("identifiers", []))
+    ranked: list[dict] = []
+    for symbol in all_symbols:
+        path = str(symbol["path"])
+        name = str(symbol["name"])
+        score = float(definition_scores[(path, name)])
+        score += float(file_scores.get(path, 0.0)) * 0.03
+        score += _symbol_kind_bonus(str(symbol.get("kind") or "")) * 0.0001
+        if name in focus_identifiers:
+            score *= 4.0
+            score += 0.2
+        if _repo_path_is_focused(path, focus_files):
+            score *= 2.0
+            score += 0.05
+        ranked.append({
+            "path": path,
+            "name": name,
+            "kind": symbol.get("kind", ""),
+            "line": int(symbol.get("line") or 0),
+            "rank": round(score, 8),
+            "signature": symbol.get("signature", ""),
+            **({"container": symbol["container"]} if symbol.get("container") else {}),
+        })
+
+    ranked.sort(key=lambda item: (-float(item["rank"]), item["path"], int(item["line"]), item["name"]))
+    ranked = ranked[:max_symbols]
+
+    ranked_file_items = _ranked_file_items(
+        source_files,
+        file_scores=file_scores,
+        symbols_by_file=symbols_by_file,
+        ranked_symbols=ranked,
+    )
+    return ranked, ranked_file_items
+
+
+def _repo_map_symbol_edges(
+    *,
+    references_by_ident: dict[str, Counter],
+    definitions_by_ident: dict[str, list[dict]],
+    focus: dict[str, list[str]],
+) -> list[tuple[str, str, str, float]]:
+    edges: list[tuple[str, str, str, float]] = []
+    focus_identifiers = set(focus.get("identifiers", []))
+    for ident in sorted(set(references_by_ident).intersection(definitions_by_ident)):
+        definers = sorted({str(symbol["path"]) for symbol in definitions_by_ident[ident]})
+        if not definers:
+            continue
+        multiplier = _identifier_rank_multiplier(
+            ident,
+            definer_count=len(definers),
+            focus_identifiers=focus_identifiers,
+        )
+        for src, count in sorted(references_by_ident[ident].items()):
+            if count <= 0:
+                continue
+            for dst in definers:
+                weight = multiplier * (float(count) ** 0.5)
+                if src == dst:
+                    weight *= 0.25
+                if weight > 0:
+                    edges.append((src, dst, ident, weight))
+    return edges
+
+
+def _identifier_rank_multiplier(
+    ident: str,
+    *,
+    definer_count: int,
+    focus_identifiers: set[str],
+) -> float:
+    multiplier = 1.0
+    if ident in focus_identifiers:
+        multiplier *= 10.0
+    is_snake = "_" in ident and any(char.isalpha() for char in ident)
+    is_kebab = "-" in ident and any(char.isalpha() for char in ident)
+    is_camel = any(char.isupper() for char in ident) and any(char.islower() for char in ident)
+    if (is_snake or is_kebab or is_camel) and len(ident) >= 8:
+        multiplier *= 4.0
+    if ident.lower() in REPO_MAP_GENERIC_IDENTIFIERS:
+        multiplier *= 0.05
+    if len(ident) <= 4 and definer_count > 1:
+        multiplier *= 0.05
+    if ident.startswith("_"):
+        multiplier *= 0.2
+    if definer_count > 5:
+        multiplier *= 0.2
+    return multiplier
+
+
+def _weighted_pagerank(
+    source_files: list[str],
+    edges: list[tuple[str, str, str, float]],
+    *,
+    focus: dict[str, list[str]],
+    damping: float = 0.85,
+    iterations: int = 28,
+) -> dict[str, float]:
+    nodes = sorted(set(source_files))
+    if not nodes:
+        return {}
+    node_set = set(nodes)
+    personalization = _repo_map_personalization(nodes, focus=focus)
+    ranks = dict(personalization)
+    incoming: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    outgoing: Counter = Counter()
+    for src, dst, _ident, weight in edges:
+        if src not in node_set or dst not in node_set or weight <= 0:
+            continue
+        incoming[dst].append((src, weight))
+        outgoing[src] += weight
+
+    if not incoming:
+        return personalization
+
+    for _ in range(iterations):
+        dangling = sum(ranks[node] for node in nodes if outgoing[node] <= 0)
+        next_ranks: dict[str, float] = {}
+        for node in nodes:
+            rank = (1.0 - damping) * personalization[node]
+            rank += damping * dangling * personalization[node]
+            for src, weight in incoming.get(node, []):
+                rank += damping * ranks[src] * weight / outgoing[src]
+            next_ranks[node] = rank
+        total = sum(next_ranks.values()) or 1.0
+        ranks = {node: value / total for node, value in next_ranks.items()}
+    return ranks
+
+
+def _repo_map_personalization(source_files: list[str], *, focus: dict[str, list[str]]) -> dict[str, float]:
+    focus_files = set(focus.get("files", []))
+    focus_identifiers = set(focus.get("identifiers", []))
+    weights: dict[str, float] = {}
+    for path in source_files:
+        weight = 1.0
+        if _repo_path_is_focused(path, focus_files):
+            weight += 20.0
+        components = set(Path(path).parts)
+        components.add(Path(path).stem)
+        if components.intersection(focus_identifiers):
+            weight += 6.0
+        weights[path] = weight
+    total = sum(weights.values()) or 1.0
+    return {path: weight / total for path, weight in weights.items()}
+
+
+def _fallback_file_scores(
+    source_files: list[str],
+    symbols_by_file: dict[str, list[dict]],
+    *,
+    focus: dict[str, list[str]],
+) -> dict[str, float]:
+    personalization = _repo_map_personalization(source_files, focus=focus)
+    weights = {
+        path: personalization.get(path, 0.0) + max(1, len(symbols_by_file.get(path, []))) * 0.01
+        for path in source_files
+    }
+    total = sum(weights.values()) or 1.0
+    return {path: value / total for path, value in weights.items()}
+
+
+def _ranked_file_items(
+    source_files: list[str],
+    *,
+    file_scores: dict[str, float],
+    symbols_by_file: dict[str, list[dict]],
+    ranked_symbols: list[dict],
+) -> list[dict]:
+    selected_symbol_counts: Counter = Counter(symbol["path"] for symbol in ranked_symbols)
+    items = []
+    for path in source_files:
+        items.append({
+            "path": path,
+            "rank": round(float(file_scores.get(path, 0.0)), 8),
+            "symbol_count": len(symbols_by_file.get(path, [])),
+            "selected_symbols": int(selected_symbol_counts[path]),
+        })
+    items.sort(key=lambda item: (-float(item["rank"]), item["path"]))
+    return items[: max(20, min(len(items), REPO_MAP_DEFAULT_MAX_SYMBOLS))]
+
+
+def _render_symbol_map_lines(ranked_symbols: list[dict]) -> list[str]:
+    by_path: dict[str, list[dict]] = defaultdict(list)
+    for symbol in ranked_symbols:
+        by_path[str(symbol["path"])].append(symbol)
+
+    lines: list[str] = []
+    for path in sorted(by_path):
+        lines.append(f"{path}:")
+        last_line = -1
+        for symbol in sorted(by_path[path], key=lambda item: (int(item["line"]), item["name"])):
+            line_no = int(symbol["line"])
+            if last_line >= 0 and line_no - last_line > 3:
+                lines.append("  ...")
+            container = f"{symbol['container']}." if symbol.get("container") else ""
+            signature = str(symbol.get("signature") or symbol["name"]).strip()
+            lines.append(f"  L{line_no}: {container}{signature}")
+            last_line = line_no
+    return lines
+
+
+def _symbol_kind_bonus(kind: str) -> float:
+    if kind == "class":
+        return 3.0
+    if kind == "function":
+        return 2.0
+    if kind == "method":
+        return 1.0
+    return 0.0
+
+
+def _repo_map_focus_from_session(session) -> dict[str, list[str]]:
+    text = _recent_user_text(session)
+    files = sorted(set(REPO_MAP_FILE_RE.findall(text)))[:50]
+    identifiers = []
+    seen = set()
+    for name in REPO_MAP_IDENTIFIER_RE.findall(text):
+        if not _repo_identifier_ok(name) or name in seen:
+            continue
+        seen.add(name)
+        identifiers.append(name)
+        if len(identifiers) >= 80:
+            break
+    return {
+        "files": files,
+        "identifiers": identifiers,
+    }
+
+
+def _recent_user_text(session) -> str:
+    if session is None:
+        return ""
+    messages = list(getattr(session, "messages", []) or [])[-12:]
+    chunks: list[str] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") != "user":
+            continue
+        chunks.append(_message_content_text(message.get("content")))
+    return "\n".join(chunks)
+
+
+def _message_content_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    return str(content or "")
+
+
+def _repo_path_is_focused(path: str, focus_files: set[str]) -> bool:
+    if not focus_files:
+        return False
+    normalized = path.strip("/")
+    return any(normalized == item.strip("/") or normalized.endswith("/" + item.strip("/")) for item in focus_files)
 
 
 def _repo_file_paths(root: Path, target: Path, normalized_path: str) -> tuple[list[Path], str]:
@@ -1849,6 +2466,7 @@ BASE_HANDLERS = {
         kw.get("max_depth"),
         kw.get("include_lines", True),
         kw.get("offset", 0),
+        max_symbols=kw.get("max_symbols"),
         _session=kw.get("_session"),
     ),
     "code_outline": lambda **kw: run_code_outline(
