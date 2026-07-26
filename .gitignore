@@ -50,6 +50,7 @@ scratch/
 job-search-cases/
 *.pdf
 *.zip
+*.tex
 
 # Misc local artifacts
 /coding_tasks.json

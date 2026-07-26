@@ -41,7 +41,7 @@
 % Summary & Objectives
 %======================================================================
 \begin{abstract}
-求职方向：AI Agent / 大模型应用开发 / RAG 工程化实习；一周内到岗，每周 5 天，至少 3 个月。哈尔滨工业大学计算机技术硕士在读，预计 2028 年 3 月毕业。长期独立开发 TaleClaw Agent Runtime，重点解决大模型应用在真实任务中的上下文失控、工具调用不可控、检索证据不足和执行过程难复盘问题；已在其上构建 Coding Agent、代码安全 RAG、Web 实时运行视图和评测矩阵。
+求职方向：AI Agent / 大模型应用开发 / RAG 工程化实习；一周内到岗，每周 5 天，至少 3 个月。哈尔滨工业大学计算机技术硕士在读，预计 2028 年 3 月毕业。长期独立开发 TaleClaw Agent Runtime，重点解决真实任务中的上下文压缩、工具调用链路、任务状态续做、检索证据注入和执行复盘问题；已在其上构建 Coding Agent、代码安全 RAG、Web 实时活动流和评测矩阵。
 \end{abstract}
 
 %======================================================================
@@ -49,7 +49,7 @@
 %======================================================================
 \begin{itemize}
 \item \textbf{工程能力}: Python 后端开发、pytest 测试、Git / Linux / Docker；具备 Java / Spring Boot 基础。
-\item \textbf{Agent 系统}: 熟悉工具调用治理、会话隔离、上下文预算、任务记忆、运行 trace 和失败复盘。
+\item \textbf{Agent 系统}: 熟悉工具调用链路、会话隔离、上下文预算、任务状态记忆、运行 trace 和失败复盘。
 \item \textbf{RAG 与评测}: 能从数据切分、检索路由、证据注入到离线评测闭环完成 RAG 工程化落地。
 \end{itemize}
 
@@ -78,30 +78,21 @@
 \sectionTitle{项目经历}{\faCode}
 %======================================================================
 \begin{itemize}
-\item \textbf{TaleClaw Agent Runtime（可控工具、上下文管理与可观测执行平台）} 
+\item \textbf{TaleClaw Agent Runtime / 多层编排 Coding Agent（面向真实任务的 Agent 执行平台）}
 \begin{itemize}
-\item 面对 AI Agent 在多入口接入后会话、工具和运行记录分散的问题，为了支撑 Web、CLI、Telegram 等入口复用同一套执行能力，独立实现统一 Runtime，覆盖会话管理、模型路由、工具执行、插件扩展、记忆和运行报告，形成约 36K 行核心代码和 300+ 个项目内测试用例。
-\item 面对工具调用规则容易堆进 prompt、运行过程难以稳定扩展的问题，将一次执行拆分为上下文构建、模型调用、工具执行、结果写回和收尾报告等阶段，并在关键节点接入工具权限、工作区路径校验和 hook 机制，使工具治理从“模型自觉遵守”转为运行时约束。
-\item 面对长任务失败后难以复盘的问题，为每次运行记录 trace、metrics、report 和 workspace diff，将上下文构建、模型调用、工具调用、失败原因、token 与耗时沉淀为结构化证据，支持定位“哪一步失败、为什么失败、上下文是否被压缩”。
-\item 面对长对话中旧工具结果被裁剪后模型反复重读的问题，将上下文管理升级为分 section 预算、模型调用前 token guard 和可恢复工具结果摘要；旧结果保留引用，必要时可按 id 精确取回，从而降低长任务中“已读证据丢失”的风险。
+\item \textbf{项目概述}: 独立实现统一 Agent Runtime，支撑 Web、CLI、Telegram 等入口复用会话管理、模型路由、工具执行、插件扩展、记忆和运行报告；在其上构建面向真实代码仓库的 Coding Agent，支持“读仓库 $\rightarrow$ 改实现 $\rightarrow$ 跑验证 $\rightarrow$ 输出报告”的闭环，形成约 44K 行主体应用代码、59K 行核心源码和 110 个测试/评测文件。
+\item \textbf{工具调用治理}: 面对工具、插件调用规则容易堆进 prompt、运行过程难以稳定扩展、工具边界难以规范管理的问题，将一次执行拆分为上下文构建、模型调用、工具执行、结果写回和收尾报告等阶段，并在关键节点接入工具权限、工作区路径校验和 hook 机制，使工具治理从“模型自觉遵守”转为运行时约束。
+\item \textbf{可观测链路}: 面对长任务失败后难以复盘的问题，为每次运行记录 trace、metrics、context metrics、report 和 workspace diff，将上下文构建、模型调用、工具调用、失败原因、token、耗时与压缩状态沉淀为结构化证据，支持定位“哪一步失败、为什么失败、上下文是否被压缩”。
+\item \textbf{任务会话与多智能体编排}: 为每个 coding 请求创建独立 task session；主 Agent 负责规划与汇总，subagent 作为有任务边界的一次性执行体，teammate 负责持续化协作解决复杂问题；通过交流协议、失败处理、retry hint 和任务收窄规则并行推进任务，使失败能被消费而不是被反复重演。
+\item \textbf{Coding 上下文特化重构}: 在通用分 section 预算、模型调用前 token 超限检测、类型化工具结果压缩和 tool result store 的基础上，面向代码仓库任务将送入模型的上下文拆为系统前缀、任务状态和最近消息三部分；其中任务状态由工具结果、子任务返回、上下文压缩和中断事件驱动状态转移，使后续 run 能基于 checkpoint 进行中断恢复。
 \end{itemize}
 
-\item \textbf{Coding Agent（面向真实仓库的理解、修改、验证与长任务上下文管理）} 
+\item \textbf{代码安全 RAG（面向代码审查与修复建议的证据检索系统）}
 \begin{itemize}
-    \item 面对真实仓库任务中 Agent 容易重复读文件、误派过宽子任务的问题，基于失败 trace 复盘主因，为每个 coding 请求创建独立 task session，绑定 workspace 并记录 diff，使代码修改过程与普通聊天上下文隔离，最终只同步结果、证据和任务日志。
-    \item 面对子 Agent 超限和无效 fan-out 的问题，将主 Agent 定位为规划与汇总者，子 Agent 限定为有边界的定位/提取执行体，并通过失败原因、retry hint、scope 校验和任务收窄规则约束重试，让失败能被消费而不是被反复重演。
-    \item 面对长 active turn 中工具结果被压缩后模型遗忘的问题，将 working memory 从“结论摘要”升级为任务状态，记录已完成线索、待办队列、已观察调用、不可重复动作和证据索引；当上下文超预算时，把旧工具链吸收到 coding-context-state，只保留近期原文。
-    \item 面对中断或步数耗尽后任务需要从零开始的问题，在自然边界写入 checkpoint，保存已完成线索、待处理线索、失败原因和证据，使后续 run 能从待办继续，并在最终回答中合并已完成结论。
-    \item 面对 Agent 改动缺少客观对比的问题，建立 30 个本地 smoke task、coding agent matrix 和 SWE-bench Verified 批量运行脚本，对比上下文预算、working memory、step budget 等开关；同时在 Web 端接入实时活动流，展示 step、工具调用、subagent、token 和文件变更，方便调试和演示。
-
-\end{itemize}
-
-\item \textbf{代码安全 RAG（面向代码审查与修复建议的证据检索系统）} 
-\begin{itemize}
-    \item 面对 Coding Agent 在安全问题上容易只依赖模型常识的问题，基于约 6GB 安全资料构建本地安全知识库，为代码审查和修复建议提供可追溯的漏洞依据和参考证据。
-    \item 面对固定窗口切片会破坏漏洞公告和规则语义的问题，分别为安全公告、Semgrep 规则和 Markdown 文档设计结构化切片方式，并保留 CVE、CWE、severity、package、rule id、language 等元数据，使检索结果能回到明确来源。
-    \item 面对 query rewrite 可能改写漂移、错误触发 RAG 的问题，重构检索路由为“先召回、再按证据置信度决策”的流程：高置信度直用，中置信度轻量扩展，低置信度再进行 LLM rewrite 或多查询分解，并对强标识符问题保留原文候选。
-    \item 面对 RAG 优化缺少数据依据的问题，建立 250 条用户问题的 matrix / ablation 评测，按问题类型观察 p@1、MRR、latency 等指标；同时将检索决策、命中证据和注入内容写入 trace，用于区分问题来自召回、排序还是路由。
+    \item \textbf{知识库构建}: 面对 Coding Agent 在安全问题上容易只依赖模型常识的问题，基于约 6GB 安全资料构建本地安全知识库，为代码审查和修复建议提供可追溯的漏洞依据和参考证据。
+    \item \textbf{结构化切片}: 面对固定窗口切片会破坏漏洞公告和规则语义的问题，分别为安全公告、Semgrep 规则和 Markdown 文档设计结构化切片方式，并保留 CVE、CWE、severity、package、rule id、language 等元数据，使检索结果能回到明确来源。
+    \item \textbf{检索路由}: 面对 query rewrite 可能改写漂移、错误触发 RAG 的问题，重构检索路由为“先召回、再按证据置信度决策”的流程：高置信度直用，中置信度轻量扩展，低置信度再进行 LLM rewrite 或多查询分解，并对强标识符问题保留原文候选。
+    \item \textbf{评测闭环}: 面对 RAG 优化缺少数据依据的问题，建立 250 条用户问题的 matrix / ablation 评测，按问题类型观察 p@1、MRR、latency 等指标；同时将检索决策、命中证据和注入内容写入 trace，用于区分问题来自召回、排序还是路由。
 \end{itemize}
 
 \end{itemize}
