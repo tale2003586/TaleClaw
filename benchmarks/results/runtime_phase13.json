@@ -1,0 +1,143 @@
+{
+  "metadata": {
+    "python": "3.14.6",
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "timer": "perf_counter_ns",
+    "network": false,
+    "tokens": {
+      "chat_estimated": 730,
+      "coding_estimated": 2347
+    },
+    "component_counts": {
+      "chat_candidate_chain": 9,
+      "coding_candidate_chain": 13
+    },
+    "limitations": [
+      "Full build_runtime is excluded because it resolves configured providers, stores, and optional RAG.",
+      "Task-session timing covers TaskSessionFactory; full Coding lifecycle is covered by the closure test.",
+      "Disk trace timing includes local filesystem and temporary directory overhead.",
+      "Vector Memory/RAG timings isolate runtime integration contracts with deterministic local indexes; they are not Qdrant/model throughput measurements."
+    ]
+  },
+  "results": [
+    {
+      "scenario": "pipeline_construction",
+      "iterations": 50,
+      "median_ms": 0.037375,
+      "p95_ms": 0.03925,
+      "note": "Current Runtime + AgentRunner fixture; excludes model pool and external stores."
+    },
+    {
+      "scenario": "chat_no_tool_runtime",
+      "iterations": 50,
+      "median_ms": 0.712833,
+      "p95_ms": 0.842,
+      "note": "Fake model; includes context construction and model-external runtime."
+    },
+    {
+      "scenario": "runtime_facade_no_tool",
+      "iterations": 50,
+      "median_ms": 0.705271,
+      "p95_ms": 0.734,
+      "note": "Runtime.run + RunContext + RunResult over the existing no-tool Runtime."
+    },
+    {
+      "scenario": "chat_one_tool_runtime",
+      "iterations": 50,
+      "median_ms": 1.335104,
+      "p95_ms": 1.358416,
+      "note": "One fake tool call followed by final response."
+    },
+    {
+      "scenario": "chat_three_tool_runtime",
+      "iterations": 50,
+      "median_ms": 2.827791,
+      "p95_ms": 2.848417,
+      "note": "Three sequential fake tool calls."
+    },
+    {
+      "scenario": "tool_executor_wrapper",
+      "iterations": 50,
+      "median_ms": 0.001542,
+      "p95_ms": 0.001666,
+      "note": "ToolExecutor only; no shell, network, or persistence."
+    },
+    {
+      "scenario": "chat_context_build",
+      "iterations": 50,
+      "median_ms": 0.182834,
+      "p95_ms": 0.187167,
+      "note": ""
+    },
+    {
+      "scenario": "coding_context_build",
+      "iterations": 50,
+      "median_ms": 0.223938,
+      "p95_ms": 0.231417,
+      "note": ""
+    },
+    {
+      "scenario": "chat_context_build_with_memory",
+      "iterations": 50,
+      "median_ms": 0.181438,
+      "p95_ms": 0.183083,
+      "note": "Local in-memory text only; no vector retrieval."
+    },
+    {
+      "scenario": "chat_trace_enabled",
+      "iterations": 50,
+      "median_ms": 0.807208,
+      "p95_ms": 1.074792,
+      "note": "Null trace sink; measures event construction/callback overhead, not disk I/O."
+    },
+    {
+      "scenario": "chat_trace_disk_write",
+      "iterations": 50,
+      "median_ms": 4.679208,
+      "p95_ms": 5.035833,
+      "note": "Real TraceStore JSONL/report writes with index disabled; includes temporary directory lifecycle."
+    },
+    {
+      "scenario": "chat_streaming",
+      "iterations": 50,
+      "median_ms": 0.70525,
+      "p95_ms": 0.744917,
+      "note": "Two deterministic text chunks and no transport I/O."
+    },
+    {
+      "scenario": "cancellation_before_model",
+      "iterations": 50,
+      "median_ms": 0.19052,
+      "p95_ms": 0.207333,
+      "note": ""
+    },
+    {
+      "scenario": "coding_application_factory",
+      "iterations": 50,
+      "median_ms": 0.535271,
+      "p95_ms": 0.610875,
+      "note": "In-memory Session manager; includes temporary directory setup and cleanup."
+    },
+    {
+      "scenario": "subagent_create_and_return",
+      "iterations": 50,
+      "median_ms": 1.846854,
+      "p95_ms": 2.092333,
+      "note": "Independent Session and filtered tools with one fake final model response."
+    },
+    {
+      "scenario": "vector_memory_search",
+      "iterations": 50,
+      "median_ms": 0.007875,
+      "p95_ms": 0.008167,
+      "note": "Deterministic in-process MemoryVectorIndex test double; four records, no Qdrant/network."
+    },
+    {
+      "scenario": "security_rag_search",
+      "iterations": 50,
+      "median_ms": 0.002458,
+      "p95_ms": 0.00275,
+      "note": "Deterministic local RAG index test double; three documents, no embedding model/network."
+    }
+  ]
+}

@@ -2,15 +2,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sessions.session import Session
+from runtime.sessions.session import Session
 from tools import handlers
 from tools.tool_registry import build_lead_tool_registry, build_teammate_tool_registry
 
 
-def _session_for(root: Path, *, mode: str = "coding", kind: str = "task_session") -> Session:
+def _session_for(root: Path, *, mode: str = "coding", kind: str = "coding_application") -> Session:
     return Session(
         id=f"{kind}:rg",
-        current_mode=mode,
+        active_agent=mode,
         metadata={
             "kind": kind,
             "workspace_root": str(root),
@@ -51,7 +51,7 @@ class RgToolTests(unittest.TestCase):
     def test_rg_is_visible_for_coding_and_teammate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            coding = _session_for(workspace, mode="coding", kind="task_session")
+            coding = _session_for(workspace, mode="coding", kind="coding_application")
             teammate = _session_for(workspace, mode="teammate", kind="teammate")
 
             lead_registry = build_lead_tool_registry()

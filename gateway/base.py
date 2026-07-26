@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from bus.events import OutboundMessage
+from runtime.messaging.events import OutboundMessage
 
 
 class ChannelAdapter(ABC):

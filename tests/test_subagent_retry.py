@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import unittest
 
 from agents.subagent.parallel import run_parallel_tasks
-from runtime.failure_reasons import SubagentFailureReason
+from runtime.execution.failure_reasons import SubagentFailureReason
 
 
 class FlakyInternalRunner:

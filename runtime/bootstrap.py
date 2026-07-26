@@ -1,18 +1,26 @@
 import os
 
-from bus.user_bus import MessageBus
-from coding_runtime.teammate import TEAM
+from runtime.messaging.user_bus import MessageBus
+from applications.coding.orchestration.teammate import TEAM
 from config import MODEL_HEALTHCHECK_PURPOSES, SUBAGENT_MAX_REASONING_STEPS, WORKDIR
 from models.model_pool import build_model_pool_from_env
 from runtime.agent_loop import AgentLoop
-from runtime.context import ContextBuilder
+from runtime.context import ContextBuilder, ContextMemoryService, PromptAssetsService
+from runtime.context.budget import ContextBudgeter
+from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
+from runtime.context.retrieval import ContextRetrievalService
+from runtime.working_memory import render_working_memory_block
+from skill_runtime import SKILL_LOADER
+from memory.vector_runtime import history_vector_scope_for_session
+from applications.coding.context_state import build_coding_context_view
 from runtime.agent_spec import AgentSpec
 from models.model_task_runner import ModelTaskRunner
-from runtime.pipeline import Pipeline
-from runtime.reflection import ReflectionAgent
+from runtime.runtime import Runtime
+from runtime.execution.reflection import ReflectionAgent
+from runtime.execution.loop_policies import standard_execution_policies
 from runtime.app_runtime import AppRuntime
 from runtime.env_loader import load_dotenv_file
-from runtime.background_memory import BackgroundMemoryLifecycle
+from memory.background_lifecycle import BackgroundMemoryLifecycle
 from runtime.trace.trace_store import TraceStore
 from tools.hooks import (
     FileWriteScopeHook,
@@ -23,10 +31,10 @@ from tools.hooks import (
 from tools.executor import ToolExecutor
 from tools.handlers import cleanup_expired_sandboxes, configure_subagent_runner
 from tools.tool_registry import build_lead_tool_registry
-from runtime.routing.router import ModeRouter
-from modes.hybrid_classifier import HybridModeClassifier
-from sessions import SessionManager
-from agents.coding.runner import TaskSessionRunner
+from runtime.routing.agent_router import AgentRouter
+from runtime.routing.hybrid_classifier import HybridModeClassifier
+from runtime.sessions import SessionManager
+from applications.coding.runner import CodingApplication
 from agents.subagent.runner import TaskSubagentRunner
 from memory.archive_store import MemoryArchiveStore
 from memory.history_summary import HistorySummarizer
@@ -39,6 +47,8 @@ from memory.vector_runtime import (
     history_vector_scope_for_session,
 )
 from plugins import PluginManager
+from runtime.cancellation import CancellationRegistry
+from runtime.services import RuntimeServices
 from plugins.shell_safety import ShellSafetyPlugin
 from plugins.status_commands import StatusCommandsPlugin
 from plugins.web_search import WebSearchPlugin
@@ -97,10 +107,11 @@ def build_runtime() -> AppRuntime:
     bus = MessageBus()
     sessions = SessionManager()
     trace_store = TraceStore()
+    cancellation_registry = CancellationRegistry()
     tools = build_lead_tool_registry(TEAM)
 
     provider = model_pool.routed_provider("chat")
-    router = ModeRouter(
+    router = AgentRouter(
         hybrid_classifier=HybridModeClassifier(
             provider=model_pool.routed_provider("hybrid"),
             model=model_pool.model_for("hybrid"),
@@ -145,16 +156,29 @@ def build_runtime() -> AppRuntime:
             security_retrieval_router = None
             security_route_classifier = None
             security_knowledge_index = None
+    context_budgeter = ContextBudgeter.from_env()
     context_builder = ContextBuilder(
-        memory_store=memory_store,
-        history_vector_index=history_vector_index,
-        history_scope_resolver=history_vector_scope_for_session,
-        retrieval_top_k=_env_int("HISTORY_RETRIEVAL_TOP_K", 6),
-        retrieval_min_score=_env_float("HISTORY_RETRIEVAL_MIN_SCORE", 0.35),
-        security_retrieval_router=security_retrieval_router,
-        security_route_classifier=security_route_classifier,
-        security_knowledge_index=security_knowledge_index,
-        security_auto_context_enabled=security_auto_context_enabled,
+        budgeter=context_budgeter,
+        prompt_assets_service=PromptAssetsService(
+            budgeter=context_budgeter,
+            skill_loader=SKILL_LOADER,
+        ),
+        memory_service=ContextMemoryService(
+            memory_store=memory_store,
+            working_memory_renderer=render_working_memory_block,
+        ),
+        retrieval_service=ContextRetrievalService(
+            history_vector_index=history_vector_index,
+            history_scope_resolver=history_vector_scope_for_session,
+            retrieval_top_k=_env_int("HISTORY_RETRIEVAL_TOP_K", 6),
+            retrieval_min_score=_env_float("HISTORY_RETRIEVAL_MIN_SCORE", 0.35),
+            security_retrieval_router=security_retrieval_router,
+            security_route_classifier=security_route_classifier,
+            security_knowledge_index=security_knowledge_index,
+            security_auto_context_enabled=security_auto_context_enabled,
+        ),
+        coding_context_view_builder=build_coding_context_view,
+        context_providers=DEFAULT_CONTEXT_PROVIDERS,
     )
     model_task_runner = ModelTaskRunner(
         model_pool=model_pool,
@@ -240,7 +264,7 @@ def build_runtime() -> AppRuntime:
             reflection_interval=_env_int("REFLECTION_INTERVAL", 5),
         )
 
-    pipeline = Pipeline(
+    pipeline = Runtime(
         tools=tools,
         provider=provider,
         model=model,
@@ -250,6 +274,7 @@ def build_runtime() -> AppRuntime:
         memory_lifecycle=memory_lifecycle,
         tool_executor=executor,
         reflection_agent=reflection_agent,
+        execution_policy_factory=standard_execution_policies,
     )
     TEAM.configure(
         model_pool=model_pool,
@@ -259,7 +284,7 @@ def build_runtime() -> AppRuntime:
         max_reasoning_steps=50,
     )
 
-    task_session_runner = TaskSessionRunner(
+    coding_application = CodingApplication(
         sessions=sessions,
         base_pipeline=pipeline,
         global_memory=memory_store,
@@ -279,14 +304,29 @@ def build_runtime() -> AppRuntime:
         pipeline,
         router,
         plugin_manager,
-        task_session_runner,
-        subagent_runner,
-        trace_store,
+        coding_application=coding_application,
+        subagent_runner=subagent_runner,
+        trace_store=trace_store,
+        cancellation_registry=cancellation_registry,
     )
 
+    services = RuntimeServices(
+        model_pool=model_pool,
+        model_task_runner=model_task_runner,
+        tool_registry=tools,
+        tool_executor=executor,
+        plugin_manager=plugin_manager,
+        memory_store=memory_store,
+        context_builder=context_builder,
+        session_manager=sessions,
+        trace_store=trace_store,
+        cancellation_registry=cancellation_registry,
+        message_bus=bus,
+    )
     return AppRuntime(
         bus=bus,
         loop=loop,
+        services=services,
     )
 
 

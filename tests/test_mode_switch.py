@@ -1,12 +1,12 @@
 import asyncio
 import unittest
 
-from bus.events import InboundMessage
-from bus.user_bus import MessageBus
+from runtime.messaging.events import InboundMessage
+from runtime.messaging.user_bus import MessageBus
 from runtime.agent_loop import AgentLoop
-from runtime.routing.router import ModeRouter
-from sessions.session import Session
-from web.server import _is_internal_task_session
+from runtime.routing.agent_router import AgentRouter
+from runtime.sessions.session import Session
+from web.server import _is_internal_coding_application
 
 
 class RecordingSessions:
@@ -54,8 +54,8 @@ class ModeSwitchTests(unittest.TestCase):
             bus,
             sessions,
             RejectingPipeline(),
-            ModeRouter(),
-            task_session_runner=task_runner,
+            AgentRouter(),
+            coding_application=task_runner,
         )
 
         async def run() -> str:
@@ -72,7 +72,7 @@ class ModeSwitchTests(unittest.TestCase):
         reply = asyncio.run(run())
 
         self.assertEqual("已进入编程模式。", reply)
-        self.assertEqual("coding", session.current_mode)
+        self.assertEqual("coding", session.active_agent)
         self.assertEqual([], task_runner.calls)
         self.assertEqual(["user", "assistant"], [item["role"] for item in session.messages])
         self.assertEqual("/coding", session.messages[0]["content"])
@@ -80,7 +80,7 @@ class ModeSwitchTests(unittest.TestCase):
         self.assertIs(session, sessions.saved[-1])
 
     def test_coding_request_runs_isolated_task_from_same_parent_chat(self) -> None:
-        session = Session(id="web:default", current_mode="coding")
+        session = Session(id="web:default", active_agent="coding")
         sessions = RecordingSessions(session)
         task_runner = RecordingTaskRunner()
         bus = MessageBus()
@@ -88,8 +88,8 @@ class ModeSwitchTests(unittest.TestCase):
             bus,
             sessions,
             RejectingPipeline(),
-            ModeRouter(),
-            task_session_runner=task_runner,
+            AgentRouter(),
+            coding_application=task_runner,
         )
 
         async def run() -> str:
@@ -111,7 +111,7 @@ class ModeSwitchTests(unittest.TestCase):
         self.assertEqual(["user", "assistant"], [item["role"] for item in session.messages])
 
     def test_coding_request_passes_workspace_metadata_to_task_runner(self) -> None:
-        session = Session(id="web:default", current_mode="coding")
+        session = Session(id="web:default", active_agent="coding")
         sessions = RecordingSessions(session)
         task_runner = RecordingTaskRunner()
         bus = MessageBus()
@@ -119,8 +119,8 @@ class ModeSwitchTests(unittest.TestCase):
             bus,
             sessions,
             RejectingPipeline(),
-            ModeRouter(),
-            task_session_runner=task_runner,
+            AgentRouter(),
+            coding_application=task_runner,
         )
 
         async def run() -> None:
@@ -138,16 +138,16 @@ class ModeSwitchTests(unittest.TestCase):
 
         self.assertEqual("/tmp/project-a", task_runner.calls[0][3])
 
-    def test_internal_task_sessions_are_not_regular_web_chats(self) -> None:
-        self.assertTrue(_is_internal_task_session({
+    def test_internal_coding_applications_are_not_regular_web_chats(self) -> None:
+        self.assertTrue(_is_internal_coding_application({
             "id": "task:coding-12345678",
             "metadata": {},
         }))
-        self.assertTrue(_is_internal_task_session({
+        self.assertTrue(_is_internal_coding_application({
             "id": "legacy-session",
-            "metadata": {"kind": "task_session"},
+            "metadata": {"kind": "coding_application"},
         }))
-        self.assertFalse(_is_internal_task_session({
+        self.assertFalse(_is_internal_coding_application({
             "id": "web:default",
             "metadata": {},
         }))

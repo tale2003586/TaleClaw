@@ -30,19 +30,21 @@ from agents.subagent.trace import (
     trace_subagent_started,
 )
 from config import SUBAGENT_MAX_REASONING_STEPS, WORKING_MEMORY_CHECKPOINT_ENABLED
-from modes.base import ModeProfile
 from runtime.context import ContextBuilder
-from runtime.failure_reasons import (
+from runtime.execution.failure_reasons import (
     REASONING_LOOP_STOP_REASON_KEY,
     StopReason,
 )
-from runtime.pipeline import Pipeline, get_last_assistant_text
+from runtime.runtime import get_last_assistant_text
+from runtime.agent_spec import AgentSpec, SpawnPolicy, ToolSet
+from runtime.runtime import RunContext, Runtime
+from runtime.execution.child_run import ChildRun
 from runtime.working_memory import (
     inherit_working_memory,
     load_working_memory,
     save_working_memory,
 )
-from sessions import Session
+from runtime.sessions import Session
 from tools.tool_registry import ToolRegistry
 
 STEP_LIMIT_SUMMARY_MAX_TOKENS = 1600
@@ -54,7 +56,7 @@ class TaskSubagentRunner:
     def __init__(
         self,
         *,
-        base_pipeline: Pipeline,
+        base_pipeline: Runtime,
         max_reasoning_steps: int | None = None,
     ) -> None:
         self.base_pipeline = base_pipeline
@@ -110,6 +112,7 @@ class TaskSubagentRunner:
             description=description,
             subagent_span_id=span_id,
         )
+        child_run = ChildRun.create(parent_run_state)
 
         try:
             trace_subagent_started(
@@ -121,13 +124,19 @@ class TaskSubagentRunner:
                 agent_type=agent_type,
                 description=description,
             )
+            agent_spec = profile
             summary = pipeline.run(
-                session,
-                profile,
-                run_state=trace_run_state,
-                trace_store=trace_store,
-                trace_parent_span_id=span_id,
-            )
+                agent_spec,
+                prompt,
+                RunContext(
+                    session=session,
+                    profile=profile,
+                    run_state=trace_run_state,
+                    trace_store=trace_store,
+                    trace_parent_span_id=span_id,
+                    state=child_run.execution_state(),
+                ),
+            ).output
             stop_reason = _stop_reason(session)
             truncated = stop_reason == StopReason.REASONING_STEP_LIMIT.value
             summary_text = summary or get_last_assistant_text(session.messages)
@@ -227,17 +236,14 @@ class TaskSubagentRunner:
             )
             return result
 
-    def _sub_pipeline(self, agent_type: str) -> Pipeline:
+    def _sub_pipeline(self, agent_type: str) -> Runtime:
         base_runner = self.base_pipeline.agent_runner
-        return Pipeline(
+        return Runtime(
             tools=self._filtered_tools(agent_type),
             provider=base_runner.provider,
             model=base_runner.model,
             tool_executor=base_runner.tool_executor,
-            context_builder=ContextBuilder(
-                memory_store=None,
-                security_auto_context_enabled=False,
-            ),
+            context_builder=ContextBuilder(),
             memory_lifecycle=None,
             model_pool=base_runner.model_pool,
             reflection_agent=base_runner.reflection_agent,
@@ -248,9 +254,9 @@ class TaskSubagentRunner:
     def _summarize_after_step_limit(
         self,
         *,
-        pipeline: Pipeline,
+        pipeline: Runtime,
         session: Session,
-        profile: ModeProfile,
+        profile: AgentSpec,
     ) -> str:
         session.add_message(
             "user",
@@ -307,7 +313,7 @@ class TaskSubagentRunner:
                 tool.schema,
                 tool.handler,
                 risk=tool.risk,
-                enabled_modes=set(tool.enabled_modes) if tool.enabled_modes else None,
+                allowed_agents=set(tool.allowed_agents) if tool.allowed_agents else None,
                 source=f"subagent:{agent_type}",
                 always_on=tool.always_on,
                 session_scoped=tool.session_scoped,
@@ -315,11 +321,14 @@ class TaskSubagentRunner:
             )
         return registry
 
-    def _profile(self, agent_type: str) -> ModeProfile:
-        return ModeProfile(
+    def _profile(self, agent_type: str) -> AgentSpec:
+        return AgentSpec(
             name=f"subagent:{agent_type}",
-            tool_mode="coding",
-            system_prompt=SUBTASK_SYSTEM_PROMPTS[agent_type],
+            role="subagent",
+            instructions=SUBTASK_SYSTEM_PROMPTS[agent_type],
+            tool_set=ToolSet(mode="coding"),
+            spawn_policy=SpawnPolicy(enabled=False),
+            metadata={"agent_type": agent_type},
         )
 
     def _new_session(
@@ -352,7 +361,7 @@ class TaskSubagentRunner:
                     metadata[key] = parent_metadata[key]
         session = Session(
             id=f"subtask:{agent_type}:{uuid.uuid4().hex[:8]}",
-            current_mode="coding",
+            active_agent="coding",
             metadata=metadata,
         )
         if WORKING_MEMORY_CHECKPOINT_ENABLED and parent_session is not None:

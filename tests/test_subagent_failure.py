@@ -1,7 +1,7 @@
 import unittest
 
 from agents.subagent.failure import classify_subagent_failure
-from runtime.failure_reasons import SubagentFailureReason
+from runtime.execution.failure_reasons import SubagentFailureReason
 
 
 class SubagentFailureClassificationTests(unittest.TestCase):

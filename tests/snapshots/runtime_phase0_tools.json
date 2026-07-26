@@ -1,0 +1,48 @@
+{
+  "authorization": {
+    "chat_cannot_write": "Tool 'coding_write' is not allowed in bot mode.",
+    "deferred_requires_unlock": "Tool 'deferred_coding' is not visible in this turn. Call tool_search with query='select:deferred_coding' first.",
+    "user_cannot_admin_write": "Tool 'coding_write' is not allowed in coding mode."
+  },
+  "catalog": [
+    {
+      "always_on": true,
+      "description": "chat_read description",
+      "allowed_agents": [
+        "bot"
+      ],
+      "name": "chat_read",
+      "risk": "normal",
+      "source": "local"
+    },
+    {
+      "always_on": true,
+      "description": "coding_write description",
+      "allowed_agents": [
+        "coding"
+      ],
+      "name": "coding_write",
+      "risk": "normal",
+      "source": "local"
+    },
+    {
+      "always_on": false,
+      "description": "deferred_coding description",
+      "allowed_agents": [
+        "coding"
+      ],
+      "name": "deferred_coding",
+      "risk": "normal",
+      "source": "local"
+    }
+  ],
+  "visible": {
+    "chat_user": [
+      "chat_read"
+    ],
+    "coding_admin": [
+      "coding_write"
+    ],
+    "coding_user": []
+  }
+}

@@ -3,9 +3,9 @@ import unittest
 from types import SimpleNamespace
 
 from models.model_pool import ModelPool, ModelProfile, build_model_pool_from_env
-from runtime.pipeline import Pipeline
+from runtime.runtime import Runtime
 from models.provider import LLMResponse, OpenAICompatibleProvider
-from sessions.session import Session
+from runtime.sessions.session import Session
 from tools.executor import ToolExecutor
 
 
@@ -329,14 +329,14 @@ class RoutedModelProviderTests(unittest.TestCase):
         self.assertEqual(0, pool._providers["backup"].calls)
 
 
-class PipelineModelRoutingTests(unittest.TestCase):
+class RuntimeModelRoutingTests(unittest.TestCase):
     def test_pipeline_uses_coding_route_for_coding_profile(self) -> None:
         model_pool = FakeModelPool()
         pipeline = _pipeline_with_pool(model_pool)
-        session = Session(id="task:test", current_mode="coding")
+        session = Session(id="task:test", active_agent="coding")
         session.add_message("user", "edit code")
 
-        reply = pipeline.run(session, SimpleNamespace(tool_mode="coding"))
+        reply = pipeline.run_turn(session, SimpleNamespace(tool_mode="coding"))
 
         self.assertEqual("reply from coding", reply)
         self.assertEqual("coding-model", model_pool.providers["coding"].calls[0]["model"])
@@ -414,8 +414,8 @@ class FakeModelPool:
         return f"{purpose}-model"
 
 
-def _pipeline_with_pool(model_pool) -> Pipeline:
-    return Pipeline(
+def _pipeline_with_pool(model_pool) -> Runtime:
+    return Runtime(
         tools=FakeTools(),
         provider=RecordingProvider("default"),
         model="default-model",

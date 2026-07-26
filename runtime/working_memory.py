@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any
 
-from runtime.tool_signature import tool_call_signature, tool_result_hash
+from runtime.tooling.signature import tool_call_signature, tool_result_hash
 
 
 WORKING_MEMORY_METADATA_KEY = "working_memory"

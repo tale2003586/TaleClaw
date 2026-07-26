@@ -84,6 +84,23 @@ def row_get(row: Any, key: str | int, default: Any = None) -> Any:
         return default
 
 
+def table_columns(conn: Any, table_name: str) -> set[str]:
+    """Return column names for a table in the connection's current schema."""
+    rows = conn.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = %s
+        """,
+        (str(table_name),),
+    ).fetchall()
+    return {
+        str(row_get(row, "column_name", row_get(row, 0, "")))
+        for row in rows
+    }
+
+
 def is_integrity_error(exc: Exception) -> bool:
     return exc.__class__.__name__ == "UniqueViolation"
 

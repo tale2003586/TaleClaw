@@ -9,7 +9,7 @@ from datetime import datetime
 
 from runtime.trace.events import RUN_STARTED, TraceEvent
 from config import WORKDIR
-from runtime.failure_reasons import INCOMPLETE_STEP_LIMIT_PREFIX
+from runtime.execution.failure_reasons import INCOMPLETE_STEP_LIMIT_PREFIX
 from runtime.trace.context_metrics import (
     aggregate_context_metrics,
     context_metric_record_from_event,
@@ -21,13 +21,19 @@ from runtime.trace.trace_subscribers import TraceSubscribers
 
 
 class TraceStore:
-    def __init__(self, root: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        root: str | Path | None = None,
+        *,
+        index_enabled: bool | None = None,
+    ) -> None:
         self.root = Path(root) if root is not None else WORKDIR / ".runs"
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        use_index = trace_index_enabled() if index_enabled is None else index_enabled
         self.index_store = (
             TraceIndexStore(default_root=self.root)
-            if trace_index_enabled()
+            if use_index
             else None
         )
         self._event_subscribers = TraceSubscribers(self._lock)

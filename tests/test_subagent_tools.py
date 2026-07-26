@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 from agents.subagent.orchestration_state import ORCHESTRATION_STATE_KEY
 from agents.subagent.runner import TaskSubagentRunner
-from modes.coding import CODING_PROFILE
-from runtime.pipeline import Pipeline
-from sessions.session import Session
+from agents.definitions import CODING_AGENT_SPEC
+from runtime.runtime import Runtime
+from runtime.sessions.session import Session
 from tools.executor import ToolExecutor
 from tools.handlers import configure_subagent_runner, make_lead_handlers
 from tools.schema import function_tool
@@ -98,13 +98,13 @@ def _registry() -> ToolRegistry:
         registry.register(
             function_tool(name, f"{name} tool", {}, []),
             lambda **kwargs: "ok",
-            enabled_modes={"coding"},
+            allowed_agents={"coding"},
         )
     return registry
 
 
-def _pipeline(registry: ToolRegistry) -> Pipeline:
-    return Pipeline(
+def _pipeline(registry: ToolRegistry) -> Runtime:
+    return Runtime(
         tools=registry,
         provider=DummyProvider(),
         model="test-model",
@@ -137,7 +137,7 @@ class SubagentToolTests(unittest.TestCase):
         registry = build_lead_tool_registry(FakeTeam())
         session = Session(
             id="task:parent",
-            current_mode="coding",
+            active_agent="coding",
             metadata={"user_role": "admin"},
         )
 
@@ -152,7 +152,7 @@ class SubagentToolTests(unittest.TestCase):
         self.assertIn("parallel_tasks", visible)
         self.assertIn("task", visible)
         self.assertIn("parallel_tasks", registry.tool_catalog_text(session, "coding"))
-        self.assertIn("Build a deterministic file map first with repo_map", CODING_PROFILE.system_prompt)
+        self.assertIn("Build a deterministic file map first with repo_map", CODING_AGENT_SPEC.system_prompt)
 
     def test_task_handler_invokes_configured_runner(self) -> None:
         fake_runner = FakeRunner()

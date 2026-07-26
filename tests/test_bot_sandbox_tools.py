@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sessions.session import Session
+from runtime.sessions.session import Session
 from tools import handlers
 from tools.tool_registry import build_lead_tool_registry
 
@@ -13,7 +13,7 @@ from tools.tool_registry import build_lead_tool_registry
 class BotSandboxToolTests(unittest.TestCase):
     def test_bot_mode_sees_sandbox_tools_but_not_workspace_write_tools(self) -> None:
         registry = build_lead_tool_registry()
-        session = Session(id="web:default", current_mode="bot")
+        session = Session(id="web:default", active_agent="bot")
 
         visible = registry.visible_names_for_turn(session, "bot")
 
@@ -28,8 +28,8 @@ class BotSandboxToolTests(unittest.TestCase):
     def test_regular_sessions_receive_isolated_sandbox_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            first = Session(id="web:first", current_mode="bot")
-            second = Session(id="web:second", current_mode="bot")
+            first = Session(id="web:first", active_agent="bot")
+            second = Session(id="web:second", active_agent="bot")
 
             with patch.object(handlers, "WORKDIR", workspace):
                 first_result = handlers.run_sandbox_write("draft.md", "first", _session=first)
@@ -43,14 +43,14 @@ class BotSandboxToolTests(unittest.TestCase):
             self.assertEqual("first", (first_scope / "draft.md").read_text(encoding="utf-8"))
             self.assertEqual("second", (second_scope / "draft.md").read_text(encoding="utf-8"))
 
-    def test_task_session_uses_readable_task_id_scope(self) -> None:
+    def test_coding_application_uses_readable_task_id_scope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             session = Session(
                 id="task:coding-12345678",
-                current_mode="coding",
+                active_agent="coding",
                 metadata={
-                    "kind": "task_session",
+                    "kind": "coding_application",
                     "task_id": "coding-12345678",
                 },
             )
@@ -61,7 +61,7 @@ class BotSandboxToolTests(unittest.TestCase):
 
             self.assertEqual("created", json.loads(result)["status"])
             self.assertEqual(
-                workspace / ".task_sandbox" / "tasks" / "coding-12345678",
+                (workspace / ".task_sandbox" / "tasks" / "coding-12345678").resolve(),
                 scope,
             )
             self.assertEqual("draft", (scope / "notes" / "draft.md").read_text())
@@ -69,7 +69,7 @@ class BotSandboxToolTests(unittest.TestCase):
     def test_sandbox_write_requires_explicit_overwrite_and_rejects_escape(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            session = Session(id="web:drafts", current_mode="bot")
+            session = Session(id="web:drafts", active_agent="bot")
 
             with patch.object(handlers, "WORKDIR", workspace):
                 created = handlers.run_sandbox_write("draft.md", "one", _session=session)
@@ -93,7 +93,7 @@ class BotSandboxToolTests(unittest.TestCase):
     def test_publish_copies_final_artifact_and_records_audit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            session = Session(id="web:publish", current_mode="bot")
+            session = Session(id="web:publish", active_agent="bot")
 
             with patch.object(handlers, "WORKDIR", workspace):
                 handlers.run_sandbox_write("drafts/report.md", "# final", _session=session)

@@ -188,7 +188,7 @@ class MemoryLifecycle:
                     source_ref=source_ref,
                     metadata={
                         "session_id": getattr(session, "id", ""),
-                        "mode": getattr(session, "current_mode", ""),
+                        "mode": getattr(session, "active_agent", ""),
                         "message_count": len(turn_messages),
                         "messages": turn_messages,
                         "assistant_summary": assistant_summary,
@@ -395,7 +395,7 @@ class MemoryLifecycle:
     ) -> dict:
         return {
             "session_id": session.id,
-            "mode": session.current_mode,
+            "mode": session.active_agent,
             "user_text": user_text,
             "assistant_summary": assistant_summary,
             "source_ref": source_ref,

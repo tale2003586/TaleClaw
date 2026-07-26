@@ -9,8 +9,8 @@ from memory.lifecycle import MemoryLifecycle
 from memory.processor import MemoryProcessingDevice
 from memory.store import MemoryStore
 from memory.vector_index import MemoryHit
-from sessions.session import Session
-from postgres_utils import temporary_postgres_schema
+from runtime.sessions.session import Session
+from tests.postgres_utils import temporary_postgres_schema
 
 
 class RecordingVectorIndex:

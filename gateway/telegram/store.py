@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from runtime.db import connect, resolve_database_config, row_get, sql
+from runtime.db import connect, resolve_database_config, row_get, sql, table_columns
 
 
 class TelegramGatewayStore:
@@ -77,17 +77,7 @@ class TelegramGatewayStore:
             self._conn.commit()
 
     def _ensure_column(self, table: str, column: str, definition: str) -> None:
-        rows = self._conn.execute(
-            """
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_schema = current_schema()
-              AND table_name = %s
-            """,
-            (table,),
-        ).fetchall()
-        columns = {str(row_get(row, "column_name", "")) for row in rows}
-        if column not in columns:
+        if column not in table_columns(self._conn, table):
             self._conn.execute(
                 f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
             )

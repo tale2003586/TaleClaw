@@ -2,8 +2,8 @@ import unittest
 from types import SimpleNamespace
 
 from models.provider import LLMResponse
-from runtime.reasoning_loop import ReasoningLoop
-from sessions.session import Session
+from runtime.execution.reasoning_loop import ReasoningLoop
+from runtime.sessions.session import Session
 
 
 class TinyContextProvider:

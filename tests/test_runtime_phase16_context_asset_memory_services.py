@@ -1,0 +1,77 @@
+from __future__ import annotations
+
+import inspect
+from pathlib import Path
+from types import SimpleNamespace
+
+from runtime.context import (
+    ContextBuilder,
+    ContextMemoryService,
+    PromptAssetsService,
+)
+from runtime.context.budget import ContextBudgeter
+from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
+from runtime.sessions.session import Session
+
+
+class _MemoryStore:
+    def recall(self, request: str) -> str:
+        return f"memory for {request}"
+
+
+def test_context_builder_delegates_prompt_assets_and_memory_rendering():
+    source = inspect.getsource(ContextBuilder)
+
+    assert "_read_instruction_file" not in source
+    assert "_instruction_files" not in source
+    assert "_skill_catalog_signature" not in source
+    assert "read_all()" not in source
+    assert ".recall(" not in source
+
+
+def test_explicit_prompt_assets_service_preserves_instruction_rendering(
+    tmp_path: Path,
+):
+    agent_dir = tmp_path / ".agent"
+    agent_dir.mkdir()
+    (agent_dir / "assistant.md").write_text("service instruction", encoding="utf-8")
+    budgeter = ContextBudgeter.from_env()
+    service = PromptAssetsService(
+        budgeter=budgeter,
+        instruction_root=tmp_path,
+    )
+    builder = ContextBuilder(
+        budgeter=budgeter,
+        prompt_assets_service=service,
+    )
+
+    context = builder.build(
+        session=Session(id="phase16:assets"),
+        profile=SimpleNamespace(system_prompt="base", tool_mode="bot"),
+    )
+
+    assert "service instruction" in context.messages[0]["content"]
+
+
+def test_explicit_memory_service_preserves_durable_and_working_memory():
+    service = ContextMemoryService(
+        memory_store=_MemoryStore(),
+        working_memory_renderer=lambda session: "<working>checkpoint</working>",
+    )
+    builder = ContextBuilder(
+        context_providers=DEFAULT_CONTEXT_PROVIDERS,
+        memory_service=service,
+    )
+    session = Session(id="phase16:memory")
+    session.add_message("user", "current request")
+
+    context = builder.build(
+        session=session,
+        profile=SimpleNamespace(system_prompt="base", tool_mode="bot"),
+    )
+
+    rendered = "\n".join(str(message.get("content", "")) for message in context.messages)
+    assert "<memory>\nmemory for current request\n</memory>" in rendered
+    assert service.build_working_memory_block(session) == (
+        "<working>checkpoint</working>"
+    )

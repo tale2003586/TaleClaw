@@ -43,7 +43,7 @@ class WebSearchPlugin(Plugin):
                 ),
                 handler=self.search,
                 risk="low",
-                enabled_modes={"bot", "coding"},
+                allowed_agents={"bot", "coding"},
                 always_on=True,
                 source="plugin:web_search",
             )

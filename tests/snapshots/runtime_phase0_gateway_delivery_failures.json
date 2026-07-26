@@ -1,0 +1,28 @@
+{
+  "telegram": {
+    "channel": "telegram",
+    "first_failure": {
+      "attempts": 1,
+      "status": "pending",
+      "last_error": "TimeoutError: deterministic delivery timeout"
+    },
+    "terminal_failure": {
+      "attempts": 2,
+      "status": "failed",
+      "last_error": "TimeoutError: deterministic delivery timeout"
+    }
+  },
+  "feishu": {
+    "channel": "feishu",
+    "first_failure": {
+      "attempts": 1,
+      "status": "pending",
+      "last_error": "TimeoutError: deterministic delivery timeout"
+    },
+    "terminal_failure": {
+      "attempts": 2,
+      "status": "failed",
+      "last_error": "TimeoutError: deterministic delivery timeout"
+    }
+  }
+}

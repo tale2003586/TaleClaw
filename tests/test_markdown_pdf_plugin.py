@@ -28,7 +28,7 @@ class MarkdownPdfPluginTests(unittest.TestCase):
             registration = self._plugin(Path(tmp)).tools()[0]
 
         self.assertEqual("markdown_to_pdf", registration.schema["function"]["name"])
-        self.assertEqual({"bot", "coding"}, registration.enabled_modes)
+        self.assertEqual({"bot", "coding"}, registration.allowed_agents)
         self.assertTrue(registration.always_on)
         self.assertEqual("normal", registration.risk)
 

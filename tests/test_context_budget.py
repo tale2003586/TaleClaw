@@ -2,9 +2,9 @@ import unittest
 import tempfile
 from unittest.mock import patch
 
-from runtime.context_budget import ContextBudgeter, SectionBudgetRule
-from runtime.context_history import budget_active_turn
-from runtime.tool_result_store import retrieve_tool_result
+from runtime.context.budget import ContextBudgeter, SectionBudgetRule
+from runtime.context.history import budget_active_turn
+from runtime.tooling.result_store import retrieve_tool_result
 from tools.executor import ToolExecutionRequest, ToolExecutionResult
 from tools.hooks import ToolResultStoreHook
 

@@ -2,8 +2,8 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from bus.events import InboundMessage
-from bus.user_bus import MessageBus
+from runtime.messaging.events import InboundMessage
+from runtime.messaging.user_bus import MessageBus
 from runtime.agent_loop import AgentLoop
 
 
@@ -11,6 +11,7 @@ from runtime.agent_loop import AgentLoop
 class AppRuntime:
     bus: MessageBus
     loop: AgentLoop
+    services: Any = None
     _dispatch_task: asyncio.Task | None = field(default=None, init=False)
 
     def start(self) -> None:

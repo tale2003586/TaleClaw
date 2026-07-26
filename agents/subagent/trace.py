@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sessions import Session
+from runtime.sessions import Session
 from runtime.trace.run_state import RunState
 from runtime.trace.trace_store import event_preview
 

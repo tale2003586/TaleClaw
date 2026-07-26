@@ -53,7 +53,7 @@ class PluginManager:
                 tool.schema,
                 tool.handler,
                 risk=tool.risk,
-                enabled_modes=tool.enabled_modes,
+                allowed_agents=tool.allowed_agents,
                 source=tool.source,
                 always_on=tool.always_on,
                 session_scoped=tool.session_scoped,

@@ -1,15 +1,14 @@
 import inspect
-import threading
 from typing import Callable
 
-from bus.user_bus import OutboundMessage, MessageBus
+from runtime.messaging.user_bus import OutboundMessage, MessageBus
 from config import WORKING_MEMORY_CHECKPOINT_ENABLED
-from runtime.pipeline import Pipeline
+from runtime.runtime import RunContext, Runtime
 from runtime.trace.events import RUN_COMPLETED, RUN_FAILED
 from runtime.trace.run_state import RunState
 from runtime.trace.trace_store import event_preview
-from runtime.routing.router import ModeRouter
-from runtime.coding_handoff import (
+from runtime.routing.agent_router import AgentRouter
+from applications.coding.handoff import (
     CODING_TASK_SUMMARY_METADATA_KEY,
     PENDING_CODING_TASK_SUMMARY_METADATA_KEY,
 )
@@ -17,7 +16,8 @@ from runtime.working_memory import (
     is_resume_request,
     prepare_working_memory_for_turn,
 )
-from sessions import SessionManager
+from runtime.sessions import SessionManager
+from runtime.cancellation import CancellationRegistry
 
 
 class AgentLoop:
@@ -25,23 +25,24 @@ class AgentLoop:
         self,
         bus: MessageBus,
         sessions: SessionManager,
-        pipeline: Pipeline,
-        router: ModeRouter,
+        pipeline: Runtime,
+        router: AgentRouter,
         plugin_manager=None,
-        task_session_runner=None,
         subagent_runner=None,
         trace_store=None,
+        coding_application=None,
+        cancellation_registry: CancellationRegistry | None = None,
     ) -> None:
         self.bus = bus
         self.sessions = sessions
         self.pipeline = pipeline
+        self.runtime = pipeline
         self.router = router
         self.plugin_manager = plugin_manager
-        self.task_session_runner = task_session_runner
+        self.coding_application = coding_application
         self.subagent_runner = subagent_runner
         self.trace_store = trace_store
-        self._cancel_events: dict[str, threading.Event] = {}
-        self._cancel_lock = threading.Lock()
+        self.cancellation_registry = cancellation_registry or CancellationRegistry()
 
     async def run_once(self, on_text: Callable[[str], None] | None = None) -> None:
         inbound = await self.bus.consume_inbound()
@@ -76,17 +77,10 @@ class AgentLoop:
             self._end_cancel_scope(session.id)
 
     def request_cancel(self, session_id: str) -> bool:
-        with self._cancel_lock:
-            event = self._cancel_events.get(str(session_id))
-            if event is None:
-                return False
-            event.set()
-            return True
+        return self.cancellation_registry.request(self._turn_scope(session_id))
 
     def cancel_requested(self, session_id: str) -> bool:
-        with self._cancel_lock:
-            event = self._cancel_events.get(str(session_id))
-        return bool(event is not None and event.is_set())
+        return self.cancellation_registry.requested(self._turn_scope(session_id))
 
     def _receive(self, session, inbound) -> RunState:
         self._apply_inbound_identity(session, inbound)
@@ -99,7 +93,7 @@ class AgentLoop:
         if not plugin_result.abort:
             return False
         run_state.set_route(
-            mode=session.current_mode,
+            mode=session.active_agent,
             execution_path="plugin_abort",
             intent="plugin_abort",
         )
@@ -124,7 +118,7 @@ class AgentLoop:
     def _route(self, session, inbound, run_state):
         route = self.router.route(session, inbound.content)
         run_state.set_route(
-            mode=session.current_mode,
+            mode=session.active_agent,
             execution_path=route.execution,
             intent=route.intent,
             profile=route.profile.name,
@@ -153,7 +147,7 @@ class AgentLoop:
             reply,
             metadata={
                 "kind": "mode_switch",
-                "mode": session.current_mode,
+                "mode": session.active_agent,
                 "run_id": run_state.run_id,
             },
         )
@@ -193,14 +187,19 @@ class AgentLoop:
                 resume_requested=is_resume_request(inbound.content),
                 task_id=session.id,
             )
-        if self.task_session_runner is not None and route.profile.tool_mode == "coding":
+        if self.coding_application is not None and route.profile.tool_mode == "coding":
             task_kwargs = {
                 "parent_session": session,
                 "user_text": inbound.content,
                 "profile": route.profile,
             }
             if _accepts_keyword(
-                self.task_session_runner.run_coding_task,
+                self.coding_application.run_coding_task,
+                "agent_spec",
+            ):
+                task_kwargs["agent_spec"] = getattr(route, "agent_spec", None)
+            if _accepts_keyword(
+                self.coding_application.run_coding_task,
                 "cancel_requested",
             ):
                 task_kwargs["cancel_requested"] = cancel_requested
@@ -212,7 +211,7 @@ class AgentLoop:
                     "run_state": run_state,
                     "trace_store": self.trace_store,
                 })
-            reply = self.task_session_runner.run_coding_task(**task_kwargs)
+            reply = self.coding_application.run_coding_task(**task_kwargs)
             assistant_metadata = {"run_id": run_state.run_id}
             task_summary = session.metadata.pop(
                 PENDING_CODING_TASK_SUMMARY_METADATA_KEY,
@@ -228,14 +227,25 @@ class AgentLoop:
             )
             self._emit_text(on_text, reply)
             return reply
-        run_kwargs = {
-            "on_text": on_text,
-            "run_state": run_state,
-            "trace_store": self.trace_store,
-        }
-        if _accepts_keyword(self.pipeline.run, "cancel_requested"):
-            run_kwargs["cancel_requested"] = cancel_requested
-        return self.pipeline.run(session, route.profile, **run_kwargs)
+        agent_spec = getattr(route, "agent_spec", None)
+        if agent_spec is None:
+            from runtime.agent_spec import AgentSpec
+
+            agent_spec = AgentSpec.from_profile(route.profile)
+        if self.runtime is None:
+            raise RuntimeError("AgentLoop has no Runtime for pipeline execution.")
+        return self.runtime.run(
+            agent_spec,
+            inbound.content,
+            RunContext(
+                session=session,
+                profile=route.profile,
+                on_text=on_text,
+                cancel_requested=cancel_requested,
+                run_state=run_state,
+                trace_store=self.trace_store,
+            ),
+        ).output
 
     def _postprocess(self, session, inbound, reply) -> None:
         if self.plugin_manager is not None:
@@ -285,7 +295,7 @@ class AgentLoop:
             chat_id=inbound.chat_id,
             user_id=session.metadata.get("user_id") or metadata.get("user_id"),
             user_role=session.metadata.get("user_role") or metadata.get("user_role"),
-            mode=session.current_mode,
+            mode=session.active_agent,
             execution_path="routing",
             metadata={
                 "sender": inbound.sender,
@@ -361,7 +371,7 @@ class AgentLoop:
     ) -> dict:
         return {
             "session_id": session.id,
-            "mode": session.current_mode,
+            "mode": session.active_agent,
             "message_count": len(session.messages),
             "last_route": (session.metadata or {}).get("last_route"),
             "metadata": run_state.metadata,
@@ -378,17 +388,16 @@ class AgentLoop:
             self.trace_store.append_event(run_state, event_name, payload)
 
     def _begin_cancel_scope(self, session_id: str) -> None:
-        with self._cancel_lock:
-            event = self._cancel_events.get(str(session_id))
-            if event is None:
-                event = threading.Event()
-                self._cancel_events[str(session_id)] = event
-            else:
-                event.clear()
+        scope = self._turn_scope(session_id)
+        self.cancellation_registry.release(scope)
+        self.cancellation_registry.register(scope)
 
     def _end_cancel_scope(self, session_id: str) -> None:
-        with self._cancel_lock:
-            self._cancel_events.pop(str(session_id), None)
+        self.cancellation_registry.release(self._turn_scope(session_id))
+
+    @staticmethod
+    def _turn_scope(session_id: str) -> str:
+        return f"turn:{session_id}"
 
     def _after_run_plugins(
         self,

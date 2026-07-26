@@ -91,7 +91,7 @@ class SweBenchAdapterTests(unittest.TestCase):
 
         self.assertIn("swebench.harness.run_evaluation", command)
         self.assertIn("--predictions_path", command)
-        self.assertIn("/tmp/predictions.jsonl", command)
+        self.assertIn(str(Path("/tmp/predictions.jsonl").resolve()), command)
         self.assertIn("--instance_ids", command)
         self.assertIn("sympy__sympy-20590", command)
 

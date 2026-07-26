@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sessions.session import Session
+from runtime.sessions.session import Session
 from tools import handlers
 from tools.tool_registry import build_lead_tool_registry
 
@@ -12,7 +12,7 @@ from tools.tool_registry import build_lead_tool_registry
 class BotStorageToolTests(unittest.TestCase):
     def test_bot_mode_sees_scoped_storage_tools_but_not_workspace_write_tools(self) -> None:
         registry = build_lead_tool_registry()
-        session = Session(id="web:default", current_mode="bot")
+        session = Session(id="web:default", active_agent="bot")
 
         visible = registry.visible_names_for_turn(session, "bot")
 
@@ -27,7 +27,7 @@ class BotStorageToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             registry = build_lead_tool_registry()
-            session = Session(id="web:report-chat", current_mode="bot")
+            session = Session(id="web:report-chat", active_agent="bot")
 
             with patch.object(handlers, "WORKDIR", workspace):
                 result = registry.execute(

@@ -15,7 +15,7 @@ DEFAULT_EXCLUDED_DIRS = {
     ".ruff_cache",
     ".runs",
     ".sessions",
-    ".task_sessions",
+    ".coding_applications",
     ".tasks",
     ".team",
     ".transcripts",

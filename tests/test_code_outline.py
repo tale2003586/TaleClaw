@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from sessions.session import Session
+from runtime.sessions.session import Session
 from tools import handlers
 from tools.tool_registry import build_lead_tool_registry
 
@@ -78,7 +78,7 @@ class CodeOutlineToolTests(unittest.TestCase):
 
     def test_code_outline_is_visible_for_coding_lead(self) -> None:
         registry = build_lead_tool_registry()
-        session = Session(id="task:outline-visible", current_mode="coding")
+        session = Session(id="task:outline-visible", active_agent="coding")
 
         visible = registry.visible_names_for_turn(session, "coding")
 

@@ -10,15 +10,16 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from agents.coding.runner import TaskSessionRunner
+from applications.coding.runner import CodingApplication
 from memory.store import MemoryStore
-from modes.coding import CODING_PROFILE
-from runtime.context import ContextBuilder
-from runtime.pipeline import Pipeline
+from agents.definitions import CODING_AGENT_SPEC
+from runtime.context import ContextBuilder, ContextMemoryService
+from applications.coding.context_state import build_coding_context_view
+from runtime.runtime import Runtime
 from runtime.trace.run_state import RunState
 from runtime.trace.trace_store import TraceStore
 from runtime.workspace import WorkspaceResolver
-from sessions.session import Session, SessionManager
+from runtime.sessions.session import Session, SessionManager
 from tools.executor import ToolExecutor
 from tools.hooks import (
     FileWriteScopeHook,
@@ -283,7 +284,7 @@ def run_swebench_instance(
     model = model_name or model_pool.model_for("coding")
     trace_store = TraceStore(eval_dir / "runs")
     sessions = SessionManager()
-    pipeline = Pipeline(
+    pipeline = Runtime(
         tools=build_lead_tool_registry(),
         provider=provider,
         model=model,
@@ -296,11 +297,16 @@ def run_swebench_instance(
             ToolTraceHook(),
         ]),
         context_builder=ContextBuilder(
-            memory_store=MemoryStore(eval_dir / "memory" / instance.instance_id / "task")
+            memory_service=ContextMemoryService(
+                memory_store=MemoryStore(
+                    eval_dir / "memory" / instance.instance_id / "task",
+                ),
+            ),
+            coding_context_view_builder=build_coding_context_view,
         ),
         max_reasoning_steps=max(1, int(max_reasoning_steps)),
     )
-    runner = TaskSessionRunner(
+    runner = CodingApplication(
         sessions=sessions,
         base_pipeline=pipeline,
         global_memory=MemoryStore(eval_dir / "memory" / instance.instance_id / "global"),
@@ -312,7 +318,7 @@ def run_swebench_instance(
 
     parent = Session(
         id=f"web:swebench:{eval_id}:{instance.instance_id}",
-        current_mode="coding",
+        active_agent="coding",
         metadata={
             "user_id": "swebench",
             "user_role": "admin",
@@ -327,7 +333,7 @@ def run_swebench_instance(
         user_id="swebench",
         user_role="admin",
         mode="coding",
-        execution_path="task_session",
+        execution_path="coding_application",
         metadata={
             "swebench_instance_id": instance.instance_id,
             "eval_id": eval_id,
@@ -343,7 +349,7 @@ def run_swebench_instance(
         reply = runner.run_coding_task(
             parent_session=parent,
             user_text=build_swebench_prompt(instance),
-            profile=CODING_PROFILE,
+            profile=CODING_AGENT_SPEC,
             workspace_root=str(workspace),
             run_state=run_state,
             trace_store=trace_store,

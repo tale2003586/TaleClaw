@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from runtime.trace.failure import FailureClassification, classify_failure
-from runtime.failure_reasons import SUBAGENT_TERMINAL_REASONS
+from runtime.execution.failure_reasons import SUBAGENT_TERMINAL_REASONS
 
 
 EVIDENCE_GATHERING_TOOLS = {

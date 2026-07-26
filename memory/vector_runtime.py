@@ -39,7 +39,7 @@ def build_history_vector_index_from_env() -> MemoryVectorIndex:
 
 def history_vector_scope_for_session(session) -> str:
     metadata = getattr(session, "metadata", {}) or {}
-    if metadata.get("kind") == "task_session":
+    if metadata.get("kind") == "coding_application":
         task_id = metadata.get("task_id") or getattr(session, "id", "unknown")
         return f"task:{task_id}"
     return f"user:{user_id_for_session(session)}"

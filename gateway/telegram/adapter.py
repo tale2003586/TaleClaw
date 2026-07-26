@@ -5,7 +5,7 @@ import logging
 import os
 from typing import Any
 
-from bus.events import OutboundMessage
+from runtime.messaging.events import OutboundMessage
 from gateway.base import ChannelAdapter
 from gateway.telegram.client import TelegramBotApiClient
 from gateway.telegram.identity import TelegramIdentity, TelegramIdentityResolver

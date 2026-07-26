@@ -6,8 +6,8 @@ from pathlib import Path
 from agents.subagent.runner import TaskSubagentRunner
 from models.provider import LLMResponse, ToolCall
 from runtime.context import ContextBundle
-from runtime.failure_reasons import SubagentFailureReason
-from runtime.pipeline import Pipeline
+from runtime.execution.failure_reasons import SubagentFailureReason
+from runtime.runtime import Runtime
 from runtime.trace.run_state import RunState
 from runtime.trace.trace_store import TraceStore
 from runtime.working_memory import (
@@ -17,7 +17,7 @@ from runtime.working_memory import (
     prepare_working_memory_for_turn,
     render_working_memory_block,
 )
-from sessions import Session
+from runtime.sessions import Session
 from tools.executor import ToolExecutor
 from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry
@@ -287,13 +287,13 @@ def _registry(read_file_handler=None) -> ToolRegistry:
         registry.register(
             function_tool(name, f"{name} tool", {}, []),
             handler,
-            enabled_modes={"coding"},
+            allowed_agents={"coding"},
         )
     return registry
 
 
-def _pipeline(provider=None, registry=None) -> Pipeline:
-    return Pipeline(
+def _pipeline(provider=None, registry=None) -> Runtime:
+    return Runtime(
         tools=registry or _registry(),
         provider=provider or FinalAnswerProvider(),
         model="fake-model",
@@ -336,7 +336,7 @@ class SubagentRunnerTests(unittest.TestCase):
             self.assertNotIn("spawn_teammate", tools)
 
     def test_subagent_session_inherits_parent_working_memory_snapshot(self) -> None:
-        parent = Session(id="parent-session", current_mode="coding")
+        parent = Session(id="parent-session", active_agent="coding")
         prepare_working_memory_for_turn(
             parent,
             objective="inspect runtime",
@@ -357,14 +357,14 @@ class SubagentRunnerTests(unittest.TestCase):
                 "summary": "pipeline facts",
                 "status": "completed",
                 "findings": [{
-                    "claim": "Pipeline owns tool loop",
+                    "claim": "Runtime owns tool loop",
                     "path": "runtime/pipeline.py",
                     "lines": "1-40",
                 }],
                 "evidence": [{
                     "path": "runtime/pipeline.py",
                     "lines": "1-40",
-                    "quote_or_signal": "class Pipeline",
+                    "quote_or_signal": "class Runtime",
                 }],
                 "covered_scope": ["runtime/pipeline.py"],
             }],

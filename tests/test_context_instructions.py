@@ -4,9 +4,43 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from runtime.context import ContextBuilder
+from runtime.context import (
+    ContextBuilder as RuntimeContextBuilder,
+    ContextMemoryService,
+    PromptAssetsService,
+)
+from runtime.context.assets import DEFAULT_INSTRUCTION_LIMIT
+from runtime.context.budget import ContextBudgeter
+from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
+from runtime.context.retrieval import ContextRetrievalService
 from memory.vector_index import MemoryHit
-from sessions.session import Session
+from runtime.sessions.session import Session
+
+
+def ContextBuilder(
+    memory_store=None,
+    *,
+    instruction_root=None,
+    instruction_limit=DEFAULT_INSTRUCTION_LIMIT,
+    skill_loader=None,
+    working_memory_renderer=None,
+    **kwargs,
+):
+    budgeter = kwargs.pop("budgeter", None) or ContextBudgeter.from_env()
+    return RuntimeContextBuilder(
+        budgeter=budgeter,
+        prompt_assets_service=PromptAssetsService(
+            budgeter=budgeter,
+            instruction_root=instruction_root,
+            instruction_limit=instruction_limit,
+            skill_loader=skill_loader,
+        ),
+        memory_service=ContextMemoryService(
+            memory_store=memory_store,
+            working_memory_renderer=working_memory_renderer,
+        ),
+        **kwargs,
+    )
 
 
 class MemoryStore:
@@ -184,6 +218,7 @@ class ContextInstructionTests(unittest.TestCase):
                 clear=False,
             ):
                 context = ContextBuilder(
+                    context_providers=DEFAULT_CONTEXT_PROVIDERS,
                     memory_store=MemoryStore("memory-item-" * 80),
                     instruction_root=root,
                 ).build(
@@ -237,6 +272,7 @@ class ContextInstructionTests(unittest.TestCase):
         session.add_message("user", "this is the actual current request")
 
         context = ContextBuilder(
+            context_providers=DEFAULT_CONTEXT_PROVIDERS,
             memory_store=MemoryStore("remembered preference"),
         ).build(
             session=session,
@@ -461,7 +497,7 @@ class ContextInstructionTests(unittest.TestCase):
         )
 
     def test_session_coding_mode_transfers_history_budget_to_active_turn(self) -> None:
-        session = Session(id="task:test", current_mode="coding")
+        session = Session(id="task:test", active_agent="coding")
         session.add_message("user", "old coding discussion should not render")
         active_turn_start = len(session.messages)
         session.add_message("user", "fix the current coding task")
@@ -568,8 +604,11 @@ class ContextInstructionTests(unittest.TestCase):
         session.add_message("user", "解释 trace 字段")
 
         context = ContextBuilder(
-            history_vector_index=FakeVectorIndex(),
-            history_scope_resolver=lambda session: "user:alice",
+            context_providers=DEFAULT_CONTEXT_PROVIDERS,
+            retrieval_service=ContextRetrievalService(
+                history_vector_index=FakeVectorIndex(),
+                history_scope_resolver=lambda session: "user:alice",
+            ),
         ).build(
             session=session,
             profile=SimpleNamespace(

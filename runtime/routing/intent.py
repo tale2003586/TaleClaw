@@ -6,7 +6,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class IntentCandidate:
     intent: str
-    execution: str = "pipeline_bot"
+    execution: str = "runtime"
     confidence: float = 1.0
     reason: str = ""
     command: str | None = None
@@ -43,28 +43,28 @@ class IntentClassifier:
         if self._looks_like_strong_coding_request(text):
             return IntentCandidate(
                 intent="coding",
-                execution="task_session",
+                execution="coding_application",
                 confidence=0.78,
                 reason="Request strongly indicates code or project file work.",
             )
         if self._looks_like_storage_request(text):
             return IntentCandidate(
                 intent="storage_file",
-                execution="pipeline_bot",
+                execution="runtime",
                 confidence=0.82,
                 reason="Request refers to storage file listing, preview, or download.",
             )
         if self._looks_like_memory_request(text):
             return IntentCandidate(
                 intent="memory_query",
-                execution="pipeline_bot",
+                execution="runtime",
                 confidence=0.74,
                 reason="Request asks about remembered or historical context.",
             )
         if self._looks_like_coding_request(text):
             return IntentCandidate(
                 intent="coding",
-                execution="task_session",
+                execution="coding_application",
                 confidence=0.62,
                 reason="Request contains coding or project-operation indicators.",
             )

@@ -1,12 +1,214 @@
 import unittest
 from datetime import datetime, timezone
 
-from sessions.session import Session, SessionManager
-from sessions.session_store import SessionStore
-from postgres_utils import temporary_postgres_schema
+from runtime.sessions.session import Session, SessionManager
+from runtime.sessions.session_store import SessionStore
+from tests.postgres_utils import temporary_postgres_schema
 
 
 class SessionStoreIncrementalTests(unittest.TestCase):
+    def test_initialization_completes_legacy_agent_identity_migration(self) -> None:
+        with temporary_postgres_schema("session_store_legacy") as dsn:
+            import psycopg
+
+            with psycopg.connect(dsn) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE sessions (
+                        id             TEXT PRIMARY KEY,
+                        current_mode   TEXT NOT NULL,
+                        created_at     TEXT NOT NULL,
+                        updated_at     TEXT NOT NULL,
+                        last_compacted TEXT,
+                        metadata       TEXT NOT NULL DEFAULT '{}'
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE messages (
+                        session_id   TEXT NOT NULL,
+                        seq          INTEGER NOT NULL,
+                        role         TEXT NOT NULL,
+                        timestamp    TEXT,
+                        message_json TEXT NOT NULL,
+                        PRIMARY KEY (session_id, seq),
+                        FOREIGN KEY (session_id) REFERENCES sessions(id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO sessions (
+                        id, current_mode, created_at, updated_at, metadata
+                    )
+                    VALUES (
+                        'web:legacy', 'coding', '2026-01-01', '2026-01-01', '{}'
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO messages (
+                        session_id, seq, role, timestamp, message_json
+                    )
+                    VALUES (
+                        'web:legacy', 0, 'user', '2026-01-01',
+                        '{"role":"user","content":"preserved"}'
+                    )
+                    """
+                )
+
+            store = SessionStore(dsn)
+            loaded = store.load_session("web:legacy")
+            self.assertEqual("coding", loaded["active_agent"])
+
+            new_session = Session(id="web:new", active_agent="hybrid")
+            store.save_session(new_session)
+            store.close()
+
+            reopened = SessionStore(dsn)
+            self.assertEqual(
+                "preserved",
+                reopened.load_session("web:legacy")["messages"][0]["content"],
+            )
+            reopened.close()
+
+            with psycopg.connect(dsn) as conn:
+                columns = {
+                    row[0]
+                    for row in conn.execute(
+                        """
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'sessions'
+                        """
+                    ).fetchall()
+                }
+            self.assertIn("active_agent", columns)
+            self.assertNotIn("current_mode", columns)
+
+    def test_half_migrated_session_prefers_existing_active_agent(self) -> None:
+        with temporary_postgres_schema("session_store_half_migrated") as dsn:
+            import psycopg
+
+            with psycopg.connect(dsn) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE sessions (
+                        id             TEXT PRIMARY KEY,
+                        current_mode   TEXT NOT NULL,
+                        active_agent   TEXT,
+                        created_at     TEXT NOT NULL,
+                        updated_at     TEXT NOT NULL,
+                        last_compacted TEXT,
+                        metadata       TEXT NOT NULL DEFAULT '{}'
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO sessions (
+                        id, current_mode, active_agent, created_at, updated_at
+                    )
+                    VALUES
+                        ('web:target-wins', 'coding', 'bot', '2026-01-01', '2026-01-01'),
+                        ('web:legacy-fills', 'coding', NULL, '2026-01-01', '2026-01-01'),
+                        ('web:default-fills', '', '', '2026-01-01', '2026-01-01')
+                    """
+                )
+
+            store = SessionStore(dsn)
+            try:
+                self.assertEqual(
+                    "bot",
+                    store.load_session("web:target-wins")["active_agent"],
+                )
+                self.assertEqual(
+                    "coding",
+                    store.load_session("web:legacy-fills")["active_agent"],
+                )
+                self.assertEqual(
+                    "hybrid",
+                    store.load_session("web:default-fills")["active_agent"],
+                )
+            finally:
+                store.close()
+
+            reopened = SessionStore(dsn)
+            reopened.close()
+
+            with psycopg.connect(dsn) as conn:
+                columns = {
+                    row[0]
+                    for row in conn.execute(
+                        """
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'sessions'
+                        """
+                    ).fetchall()
+                }
+            self.assertIn("active_agent", columns)
+            self.assertNotIn("current_mode", columns)
+
+    def test_failed_legacy_migration_rolls_back_all_schema_changes(self) -> None:
+        with temporary_postgres_schema("session_store_rollback") as dsn:
+            import psycopg
+
+            with psycopg.connect(dsn) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE sessions (
+                        id             TEXT PRIMARY KEY,
+                        current_mode   TEXT NOT NULL,
+                        created_at     TEXT NOT NULL,
+                        updated_at     TEXT NOT NULL,
+                        last_compacted TEXT,
+                        metadata       TEXT NOT NULL DEFAULT '{}'
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO sessions (
+                        id, current_mode, created_at, updated_at
+                    )
+                    VALUES ('web:legacy', 'coding', '2026-01-01', '2026-01-01')
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE VIEW legacy_session_modes AS
+                    SELECT id, current_mode FROM sessions
+                    """
+                )
+
+            with self.assertRaises(Exception):
+                SessionStore(dsn)
+
+            with psycopg.connect(dsn) as conn:
+                columns = {
+                    row[0]
+                    for row in conn.execute(
+                        """
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = current_schema()
+                          AND table_name = 'sessions'
+                        """
+                    ).fetchall()
+                }
+                row = conn.execute(
+                    "SELECT current_mode FROM sessions WHERE id = 'web:legacy'"
+                ).fetchone()
+
+            self.assertIn("current_mode", columns)
+            self.assertNotIn("active_agent", columns)
+            self.assertEqual("coding", row[0])
+
     def test_save_session_inserts_only_changed_suffix(self) -> None:
         with temporary_postgres_schema("session_store") as dsn:
             store = SessionStore(dsn)

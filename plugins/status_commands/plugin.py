@@ -15,7 +15,7 @@ class StatusCommandsPlugin(Plugin):
                 ),
                 handler=self.runtime_status,
                 risk="low",
-                enabled_modes={"bot", "coding"},
+                allowed_agents={"bot", "coding"},
                 always_on=True,
                 session_scoped=True,
                 source="plugin:status_commands",
@@ -63,7 +63,7 @@ class StatusCommandsPlugin(Plugin):
         lines.append("")
         lines.append(f"Sessions: {len(session_rows)}")
         for row in session_rows[:5]:
-            lines.append(f"- {row['id']} ({row['current_mode']}) updated {row['updated_at']}")
+            lines.append(f"- {row['id']} ({row['active_agent']}) updated {row['updated_at']}")
         return "\n".join(lines)
 
 

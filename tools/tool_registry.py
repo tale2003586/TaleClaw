@@ -48,14 +48,14 @@ class ToolSpec:
     schema: dict
     handler: Callable[..., str]
     risk: str = "normal"
-    enabled_modes: set[str] | None = None
+    allowed_agents: set[str] | None = None
     source: str = "local"
     always_on: bool = False
     session_scoped: bool = False
     admin_only: bool = False
 
     def enabled_for(self, mode: str, session=None) -> bool:
-        if self.enabled_modes is not None and mode not in self.enabled_modes:
+        if self.allowed_agents is not None and mode not in self.allowed_agents:
             return False
         if self.admin_only and session is not None:
             metadata = getattr(session, "metadata", {}) or {}
@@ -74,7 +74,7 @@ class ToolRegistry:
         handler: Callable[..., str],
         *,
         risk: str = "normal",
-        enabled_modes: set[str] | None = None,
+        allowed_agents: set[str] | None = None,
         source: str = "local",
         always_on: bool = False,
         session_scoped: bool = False,
@@ -86,7 +86,7 @@ class ToolRegistry:
             schema=schema,
             handler=handler,
             risk=risk,
-            enabled_modes=enabled_modes,
+            allowed_agents=allowed_agents,
             source=source,
             always_on=always_on,
             session_scoped=session_scoped,
@@ -106,9 +106,9 @@ class ToolRegistry:
                 "description": tool.schema["function"].get("description", ""),
                 "risk": tool.risk,
                 "source": tool.source,
-                "enabled_modes": (
-                    sorted(tool.enabled_modes)
-                    if tool.enabled_modes is not None
+                "allowed_agents": (
+                    sorted(tool.allowed_agents)
+                    if tool.allowed_agents is not None
                     else None
                 ),
                 "always_on": tool.always_on,
@@ -301,7 +301,7 @@ from .handlers import make_lead_handlers, make_teammate_handlers
 def build_lead_tool_registry(team=None) -> ToolRegistry:
     registry = ToolRegistry()
     if team is None:
-        from coding_runtime.teammate import TEAM
+        from applications.coding.orchestration.teammate import TEAM
 
         team = TEAM
     handlers = make_lead_handlers(team)
@@ -316,7 +316,7 @@ def build_lead_tool_registry(team=None) -> ToolRegistry:
             schema,
             handler or (lambda **kw: "tool_search is handled by ToolRegistry."),
             risk=_risk_for_tool(name),
-            enabled_modes=_modes_for_tool(name),
+            allowed_agents=_modes_for_tool(name),
             source="lead",
         )
 
@@ -336,7 +336,7 @@ def build_teammate_tool_registry(name: str) -> ToolRegistry:
             schema,
             handler or (lambda **kw: "tool_search is handled by ToolRegistry."),
             risk=_risk_for_tool(tool_name),
-            enabled_modes=_modes_for_tool(tool_name),
+            allowed_agents=_modes_for_tool(tool_name),
             source=f"teammate:{name}",
         )
 

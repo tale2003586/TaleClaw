@@ -10,21 +10,23 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
-from agents.coding.runner import TaskSessionRunner
+from applications.coding.runner import CodingApplication
 from evaluation.metrics import failure_category, summarize_rows
+from evaluation.session_manager import EvaluationSessionManager
 from evaluation.task_schema import BenchmarkTask, load_benchmark
 from evaluation.verifiers import verify_task
 from memory.store import MemoryStore
 from models.provider import LLMResponse, ToolCall
-from modes.coding import CODING_PROFILE
+from agents.definitions import CODING_AGENT_SPEC
 from plugins import PluginManager
 from plugins.eval_report import EvalReportPlugin
-from runtime.context import ContextBuilder
-from runtime.pipeline import Pipeline
+from runtime.context import ContextBuilder, ContextMemoryService
+from applications.coding.context_state import build_coding_context_view
+from runtime.runtime import Runtime
 from runtime.trace.run_state import RunState
 from runtime.trace.trace_store import TraceStore
 from runtime.workspace import WorkspaceResolver
-from sessions.session import Session, SessionManager
+from runtime.sessions.session import Session, SessionManager
 from tools.executor import ToolExecutor
 from tools.handlers import cleanup_expired_sandboxes
 from tools.hooks import (
@@ -198,11 +200,12 @@ class CodingBenchmarkHarness:
     def run_task(self, task: BenchmarkTask, *, eval_dir: Path, workspaces_root: Path) -> dict[str, Any]:
         workspace = self._fresh_workspace(task, workspaces_root)
         _init_git_repo(workspace)
-        trace_store = TraceStore(eval_dir / "runs")
-        sessions = SessionManager()
+        scripted = self.runner_mode == "scripted"
+        trace_store = TraceStore(eval_dir / "runs", index_enabled=not scripted)
+        sessions = EvaluationSessionManager() if scripted else SessionManager()
         provider, model = self._provider_for_task(task)
         effective_step_budget = self._effective_step_budget(task)
-        pipeline = Pipeline(
+        pipeline = Runtime(
             tools=_tool_registry_for(task.allowed_tools),
             provider=provider,
             model=model,
@@ -214,10 +217,17 @@ class CodingBenchmarkHarness:
                 ToolResultStoreHook(),
                 ToolTraceHook(),
             ]),
-            context_builder=ContextBuilder(memory_store=MemoryStore(eval_dir / "memory" / task.id / "task")),
+            context_builder=ContextBuilder(
+                memory_service=ContextMemoryService(
+                    memory_store=MemoryStore(
+                        eval_dir / "memory" / task.id / "task",
+                    ),
+                ),
+                coding_context_view_builder=build_coding_context_view,
+            ),
             max_reasoning_steps=effective_step_budget,
         )
-        runner = TaskSessionRunner(
+        runner = CodingApplication(
             sessions=sessions,
             base_pipeline=pipeline,
             global_memory=MemoryStore(eval_dir / "memory" / task.id / "global"),
@@ -229,7 +239,7 @@ class CodingBenchmarkHarness:
 
         parent = Session(
             id=f"web:benchmark:{eval_dir.name}:{task.id}",
-            current_mode="coding",
+            active_agent="coding",
             metadata={
                 "user_id": "benchmark",
                 "user_role": "admin",
@@ -244,7 +254,7 @@ class CodingBenchmarkHarness:
             user_id="benchmark",
             user_role="admin",
             mode="coding",
-            execution_path="task_session",
+            execution_path="coding_application",
             metadata={"benchmark_task_id": task.id, "eval_id": eval_dir.name},
         )
         trace_store.start_run(run_state)
@@ -255,7 +265,7 @@ class CodingBenchmarkHarness:
             reply = runner.run_coding_task(
                 parent_session=parent,
                 user_text=task.prompt,
-                profile=CODING_PROFILE,
+                profile=CODING_AGENT_SPEC,
                 workspace_root=str(workspace),
                 run_state=run_state,
                 trace_store=trace_store,

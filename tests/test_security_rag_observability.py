@@ -10,6 +10,8 @@ from knowledge.security_rag import KnowledgeHit
 from knowledge.tracing import RagTraceStore, make_rag_trace
 from plugins.security_rag.plugin import SecurityRagPlugin
 from runtime.context import ContextBuilder
+from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
+from runtime.context.retrieval import ContextRetrievalService
 from runtime.trace.summary import build_trace_summary_payload
 from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry
@@ -175,8 +177,11 @@ class SecurityRagObservabilityTests(unittest.TestCase):
         )
 
         ContextBuilder(
-            security_retrieval_router=FakeRouter(),
-            security_knowledge_index=FakeRuntimeIndex(),
+            context_providers=DEFAULT_CONTEXT_PROVIDERS,
+            retrieval_service=ContextRetrievalService(
+                security_retrieval_router=FakeRouter(),
+                security_knowledge_index=FakeRuntimeIndex(),
+            ),
         ).build(
             session=session,
             profile=SimpleNamespace(system_prompt="base", tool_mode="coding"),
@@ -244,7 +249,7 @@ class SecurityRagObservabilityTests(unittest.TestCase):
         registry.register(
             function_tool("trace_probe", "Trace probe.", {}, []),
             handler,
-            enabled_modes={"coding"},
+            allowed_agents={"coding"},
             always_on=True,
         )
 
