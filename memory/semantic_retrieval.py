@@ -8,6 +8,11 @@ from typing import Callable
 from memory.commands import MemoryContext
 from memory.dedup import normalize_memory_text
 from memory.domain import MemoryItem
+from runtime.trace.memory_injection import (
+    MemoryInjectionCandidateTrace,
+    build_memory_injection_trace,
+    content_digest,
+)
 
 
 @dataclass(frozen=True)
@@ -33,12 +38,14 @@ class SemanticMemoryRetrievalService:
         top_k: int = 8,
         trace: Callable[..., None] | None = None,
         clock: Callable[[], datetime] | None = None,
+        injection_trace_enabled: bool = False,
     ) -> None:
         self.repository = repository
         self.index = index
         self.top_k = max(1, int(top_k))
         self.trace = trace
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.injection_trace_enabled = bool(injection_trace_enabled)
         self.trace_events: list[dict] = []
 
     def drain_trace_events(self) -> list[dict]:
@@ -58,6 +65,7 @@ class SemanticMemoryRetrievalService:
         owners = context.allowed_owners()
         drops: dict[str, int] = {}
         degraded = False
+        filtered_decisions: list[MemoryInjectionCandidateTrace] = []
         try:
             indexed = self.index.search(query, owners, limit * 3)
         except Exception:
@@ -95,6 +103,13 @@ class SemanticMemoryRetrievalService:
                     reason = "duplicate"
                 if reason:
                     drops[reason] = drops.get(reason, 0) + 1
+                    filtered_decisions.append(_candidate_trace(
+                        item,
+                        memory_id=hit.memory_id,
+                        relevance=float(getattr(hit, "score", 0.0) or 0.0),
+                        selected=False,
+                        reason=reason,
+                    ))
                     continue
                 seen.add(item.id)
                 relevance = max(0.0, min(1.0, float(hit.score)))
@@ -105,7 +120,20 @@ class SemanticMemoryRetrievalService:
                 ))
         scored.sort(key=lambda value: (value.score, value.item.updated_at), reverse=True)
         result = SemanticMemoryResult(tuple(scored[:limit]), degraded, drops)
-        self._emit(query, context, result)
+        selected_decisions = [
+            _candidate_trace(
+                hit.item,
+                relevance=hit.relevance,
+                selected=True,
+                reason=(
+                    "scope_limited_lexical_fallback"
+                    if degraded
+                    else "active_current_scope_match"
+                ),
+            )
+            for hit in result.hits
+        ]
+        self._emit(query, context, result, [*selected_decisions, *filtered_decisions])
         return result
 
     def render(self, result: SemanticMemoryResult) -> str:
@@ -121,7 +149,13 @@ class SemanticMemoryRetrievalService:
         lines.append("</semantic_memory>")
         return "\n".join(lines)
 
-    def _emit(self, query: str, context: MemoryContext, result: SemanticMemoryResult) -> None:
+    def _emit(
+        self,
+        query: str,
+        context: MemoryContext,
+        result: SemanticMemoryResult,
+        candidate_decisions: list[MemoryInjectionCandidateTrace],
+    ) -> None:
         payload = {
             "query_digest": normalize_memory_text(query)[:80],
             "session_id": context.session_id,
@@ -132,12 +166,59 @@ class SemanticMemoryRetrievalService:
             "scores": [hit.score for hit in result.hits],
         }
         self.trace_events.append({"event": "memory.semantic.retrieved", "payload": payload})
+        events = [("memory.semantic.retrieved", payload)]
+        if self.injection_trace_enabled:
+            explanation = build_memory_injection_trace(
+                query=query,
+                degraded=result.degraded,
+                drop_reasons=result.drop_reasons,
+                candidates=candidate_decisions,
+            ).to_dict()
+            self.trace_events.append({
+                "event": "memory.injection.explained",
+                "payload": explanation,
+            })
+            events.append(("memory.injection.explained", explanation))
         if self.trace is None:
             return
-        try:
-            self.trace("memory.semantic.retrieved", payload)
-        except TypeError:
-            self.trace({"event": "memory.semantic.retrieved", "payload": payload})
+        for event_name, event_payload in events:
+            try:
+                self.trace(event_name, event_payload)
+            except TypeError:
+                try:
+                    self.trace({"event": event_name, "payload": event_payload})
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+
+def _candidate_trace(
+    item: MemoryItem | None,
+    *,
+    memory_id: str = "",
+    relevance: float,
+    selected: bool,
+    reason: str,
+) -> MemoryInjectionCandidateTrace:
+    content = item.content if item is not None else ""
+    return MemoryInjectionCandidateTrace(
+        memory_id=item.id if item is not None else str(memory_id),
+        source="postgres" if item is not None else "semantic_index",
+        scope=(
+            f"{item.owner_scope.value}:{item.owner_id}"
+            if item is not None
+            else "unknown"
+        ),
+        retrieval_score=max(0.0, min(1.0, float(relevance))),
+        confidence=item.confidence if item is not None else 0.0,
+        selected=selected,
+        decision_reason=reason,
+        injected_representation="full_content" if selected else "none",
+        token_estimate=max(0, len(content) // 4) if selected else 0,
+        policy_tags=("active", "scope_match") if selected else (reason,),
+        content_digest=content_digest(content) if content else "",
+    )
 
 
 def _rank(item: MemoryItem, relevance: float, now: datetime) -> float:

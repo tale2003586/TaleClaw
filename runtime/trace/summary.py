@@ -324,6 +324,9 @@ def render_trace_summary_markdown(summary: dict[str, Any]) -> str:
         f"- Stale/Cross-scope Rate: {_value(memory.get('stale_hit_rate'))} / {_value(memory.get('cross_scope_leak_rate'))}",
         f"- Index Failure Rate: {_value(memory.get('index_failure_rate'))}",
         f"- Memory Context Token Ratio: {_value(memory.get('context_token_ratio'))}",
+        f"- Injection Traces: {_value(memory.get('injection_traces'))}",
+        f"- Injected/Filtered: {_value(memory.get('injected_count'))} / {_value(memory.get('filtered_count'))}",
+        f"- Last Pressure Level: `{_value(memory.get('last_pressure_level'))}`",
         "",
         "## 关键时间线",
         "",
@@ -553,6 +556,8 @@ def _memory_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     invalid_drops = stale_drops = scope_drops = unused_drops = 0
     index_completed = index_failed = 0
     context_token_ratios = []
+    injection_traces = injected_count = filtered_count = 0
+    last_pressure_level = ""
     for event in events:
         name = event.get("event")
         payload = event.get("payload") or {}
@@ -610,6 +615,13 @@ def _memory_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
                 unused_drops += 1
             if payload.get("context_token_ratio") is not None:
                 context_token_ratios.append(_float(payload.get("context_token_ratio")))
+        elif name == "memory.injection.explained":
+            injection_traces += 1
+            injected_count += _int(payload.get("selected_count"))
+            filtered_count += _int(payload.get("filtered_count"))
+            last_pressure_level = str(
+                payload.get("pressure_level") or last_pressure_level
+            )
     candidate_total = candidate_upserts
     retrieval_candidates = semantic_hits + invalid_drops + stale_drops + scope_drops + unused_drops
     index_total = index_completed + index_failed
@@ -650,6 +662,10 @@ def _memory_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
             sum(context_token_ratios) / len(context_token_ratios)
             if context_token_ratios else 0.0
         ),
+        "injection_traces": injection_traces,
+        "injected_count": injected_count,
+        "filtered_count": filtered_count,
+        "last_pressure_level": last_pressure_level,
     }
 
 

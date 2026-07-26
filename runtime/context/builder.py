@@ -30,6 +30,7 @@ from config import (
     WORKING_MEMORY_RESUME_ENABLED,
     CONTEXT_PRESSURE_OBSERVATION_ENABLED,
     CONTEXT_PRESSURE_WINDOW_TOKENS,
+    MEMORY_INJECTION_TRACE_ENABLED,
 )
 
 
@@ -79,6 +80,7 @@ class ContextBuilder:
         prompt_assets_service=None,
         memory_service=None,
         pressure_observation_enabled: bool | None = None,
+        injection_trace_enabled: bool | None = None,
     ) -> None:
         self.budgeter = (
             budgeter
@@ -94,6 +96,11 @@ class ContextBuilder:
             CONTEXT_PRESSURE_OBSERVATION_ENABLED
             if pressure_observation_enabled is None
             else bool(pressure_observation_enabled)
+        )
+        self.injection_trace_enabled = (
+            MEMORY_INJECTION_TRACE_ENABLED
+            if injection_trace_enabled is None
+            else bool(injection_trace_enabled)
         )
         self.coding_context_view_builder = coding_context_view_builder
         providers = tuple(context_providers or MINIMAL_CONTEXT_PROVIDERS)
@@ -350,6 +357,7 @@ class ContextBuilder:
                 parent_span_id=trace_parent_span_id,
                 reasoning_step=reasoning_step,
             )
+            self._annotate_memory_injection_trace(session, bundle.report)
             return bundle
 
         context_frame = self._build_context_frame(
@@ -450,7 +458,25 @@ class ContextBuilder:
             parent_span_id=trace_parent_span_id,
             reasoning_step=reasoning_step,
         )
+        self._annotate_memory_injection_trace(session, report)
         return ContextBundle(messages=messages, report=report)
+
+    def _annotate_memory_injection_trace(self, session, report) -> None:
+        if not self.injection_trace_enabled or report is None:
+            return
+        metadata = getattr(session, "metadata", None)
+        if not isinstance(metadata, dict):
+            return
+        pressure = (report.metadata.get("context_pressure") or {}).get(
+            "level",
+            "unknown",
+        )
+        for event in metadata.get("memory_trace_events", []) or []:
+            if not isinstance(event, dict) or event.get("event") != "memory.injection.explained":
+                continue
+            payload = event.get("payload")
+            if isinstance(payload, dict):
+                payload["pressure_level"] = pressure
 
     def _observe_context_pressure(
         self,

@@ -80,6 +80,10 @@ MEMORY_PENDING_ENRICHMENT_ENABLED = _env_bool(
     "MEMORY_PENDING_ENRICHMENT_ENABLED",
     False,
 )
+MEMORY_INJECTION_TRACE_ENABLED = _env_bool(
+    "MEMORY_INJECTION_TRACE_ENABLED",
+    False,
+)
 WORKDIR = Path.cwd() 
 WORKSPACE_ROOTS = [
     Path(item).expanduser().resolve()

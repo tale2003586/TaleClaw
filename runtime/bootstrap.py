@@ -159,6 +159,10 @@ def build_runtime() -> AppRuntime:
             semantic_memory_repository,
             semantic_memory_index,
             top_k=_env_int("SEMANTIC_MEMORY_RETRIEVAL_TOP_K", 8),
+            injection_trace_enabled=_env_bool(
+                "MEMORY_INJECTION_TRACE_ENABLED",
+                False,
+            ),
         )
         semantic_memory_index_synchronizer = MemoryIndexSynchronizer(
             semantic_memory_repository,
@@ -245,6 +249,14 @@ def build_runtime() -> AppRuntime:
         ),
         coding_context_view_builder=build_coding_context_view,
         context_providers=DEFAULT_CONTEXT_PROVIDERS,
+        pressure_observation_enabled=_env_bool(
+            "CONTEXT_PRESSURE_OBSERVATION_ENABLED",
+            False,
+        ),
+        injection_trace_enabled=_env_bool(
+            "MEMORY_INJECTION_TRACE_ENABLED",
+            False,
+        ),
     )
     model_task_runner = ModelTaskRunner(
         model_pool=model_pool,
