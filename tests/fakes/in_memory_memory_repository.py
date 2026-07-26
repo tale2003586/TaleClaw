@@ -58,6 +58,9 @@ class InMemoryMemoryRepository:
             if item.owner in allowed and item.is_retrievable(now)
         ]
 
+    def list_all_active(self, now: datetime) -> list[MemoryItem]:
+        return [item for item in self.items.values() if item.is_retrievable(now)]
+
     def find_exact(
         self,
         owner: OwnerKey,

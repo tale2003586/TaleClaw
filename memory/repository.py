@@ -65,6 +65,8 @@ class MemoryRepository(Protocol):
         now: datetime,
     ) -> list[MemoryItem]: ...
 
+    def list_all_active(self, now: datetime) -> list[MemoryItem]: ...
+
     def find_exact(
         self,
         owner: OwnerKey,

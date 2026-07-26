@@ -235,6 +235,20 @@ class PostgresMemoryRepository:
             ).fetchone()
         return _item_from_row(row) if row else None
 
+    def list_all_active(self, now: datetime) -> list[MemoryItem]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM memory_items
+                WHERE status = 'active'
+                  AND valid_from <= %s
+                  AND (valid_until IS NULL OR valid_until > %s)
+                ORDER BY owner_scope, owner_id, kind, updated_at DESC, id
+                """,
+                (now, now),
+            ).fetchall()
+        return [_item_from_row(row) for row in rows]
+
     def transition(self, command: MemoryTransition) -> MemoryItem:
         with closing(self._connect()) as conn:
             try:
