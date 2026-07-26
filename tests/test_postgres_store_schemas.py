@@ -1,6 +1,7 @@
 import unittest
 
 from memory.archive_store import MemoryArchiveStore
+from memory.postgres_repository import PostgresMemoryRepository
 from tests.postgres_utils import temporary_postgres_schema
 from runtime.db import connect, resolve_database_config, table_columns
 from runtime.tooling.result_store import PostgresToolResultStore
@@ -30,6 +31,44 @@ def _indexes(dsn: str, table: str) -> set[str]:
 
 
 class PostgresStoreSchemaContractTests(unittest.TestCase):
+    def test_semantic_memory_schema_is_complete_and_idempotent(self) -> None:
+        with temporary_postgres_schema("semantic_memory_contract") as dsn:
+            PostgresMemoryRepository(dsn)
+            PostgresMemoryRepository(dsn)
+
+            self.assertEqual(
+                {
+                    "id", "owner_scope", "owner_id", "kind", "content",
+                    "normalized_content", "status", "confidence", "salience",
+                    "valid_from", "valid_until", "last_confirmed_at",
+                    "supersedes_id", "version", "created_at", "updated_at",
+                    "metadata",
+                },
+                _columns(dsn, "memory_items"),
+            )
+            self.assertEqual(
+                {
+                    "id", "memory_id", "source_type", "source_ref",
+                    "session_id", "task_id", "workspace_id", "project_id",
+                    "excerpt", "metadata", "created_at",
+                },
+                _columns(dsn, "memory_evidence"),
+            )
+            self.assertEqual(
+                {
+                    "id", "memory_id", "memory_version", "operation", "status",
+                    "attempt_count", "next_attempt_at", "last_error", "created_at",
+                    "updated_at",
+                },
+                _columns(dsn, "memory_index_outbox"),
+            )
+            self.assertTrue(
+                {"idx_memory_items_owner_status", "idx_memory_items_exact"}.issubset(
+                    _indexes(dsn, "memory_items")
+                )
+            )
+            self.assertIn("idx_memory_outbox_ready", _indexes(dsn, "memory_index_outbox"))
+
     def test_web_auth_schema_is_complete_and_idempotent(self) -> None:
         with temporary_postgres_schema("web_auth_contract") as dsn:
             WebAuthStore(dsn)
