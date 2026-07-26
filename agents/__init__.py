@@ -1,3 +1,4 @@
 from .definitions import BOT_AGENT_SPEC, CODING_AGENT_SPEC
+from .minecraft import MINECRAFT_AGENT_SPEC
 
-__all__ = ["BOT_AGENT_SPEC", "CODING_AGENT_SPEC"]
+__all__ = ["BOT_AGENT_SPEC", "CODING_AGENT_SPEC", "MINECRAFT_AGENT_SPEC"]

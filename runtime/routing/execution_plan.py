@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from agents.definitions import BOT_AGENT_SPEC
 from agents.definitions import CODING_AGENT_SPEC
+from agents.minecraft import MINECRAFT_AGENT_SPEC
 from runtime.agent_spec import AgentSpec
 from .intent import IntentCandidate
 
@@ -33,6 +34,13 @@ class ExecutionPlanner:
             else session.active_agent
         )
         command = getattr(candidate, "command", None)
+        if command == "minecraft":
+            return ExecutionPlan(
+                agent_spec=MINECRAFT_AGENT_SPEC,
+                intent="minecraft",
+                execution="runtime",
+                reason="Explicit Minecraft application request.",
+            )
         if command == "coding":
             if not self.coding_allowed(session):
                 session.set_mode("bot")

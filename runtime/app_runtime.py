@@ -12,6 +12,7 @@ class AppRuntime:
     bus: MessageBus
     loop: AgentLoop
     services: Any = None
+    minecraft_application: Any = None
     _dispatch_task: asyncio.Task | None = field(default=None, init=False)
 
     def start(self) -> None:
@@ -25,6 +26,8 @@ class AppRuntime:
         self.bus.stop()
         if self._dispatch_task is not None:
             await self._dispatch_task
+        if self.minecraft_application is not None:
+            self.minecraft_application.close()
 
     async def submit_user_message(
         self,
@@ -68,3 +71,8 @@ class AppRuntime:
 
     def request_cancel(self, session_id: str) -> bool:
         return self.loop.request_cancel(session_id)
+
+    def request_task_cancel(self, task_id: str) -> bool:
+        if self.minecraft_application is None:
+            return False
+        return bool(self.minecraft_application.cancel_task(task_id))

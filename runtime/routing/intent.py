@@ -18,6 +18,24 @@ class IntentClassifier:
     def classify(self, user_text: str, session=None) -> IntentCandidate | None:
         text = user_text.strip().lower()
 
+        if text.startswith("/minecraft "):
+            return IntentCandidate(
+                intent="minecraft",
+                execution="runtime",
+                confidence=1.0,
+                reason="Explicit Minecraft application command.",
+                command="minecraft",
+            )
+        metadata = getattr(session, "metadata", {}) or {}
+        if metadata.get("application_mode") == "minecraft":
+            return IntentCandidate(
+                intent="minecraft",
+                execution="runtime",
+                confidence=1.0,
+                reason="Explicit Minecraft application mode metadata.",
+                command="minecraft",
+            )
+
         if text in {"/coding", "进入编程模式", "编程模式"}:
             return IntentCandidate(
                 intent="mode_switch",

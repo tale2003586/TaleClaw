@@ -283,7 +283,7 @@ class AgentLoop:
             and inbound_user_id != session_user_id
         ):
             raise ValueError("Inbound user identity does not match the existing session.")
-        for key in ("user_id", "user_role"):
+        for key in ("user_id", "user_role", "application_mode"):
             if key in metadata:
                 session.metadata[key] = metadata[key]
 

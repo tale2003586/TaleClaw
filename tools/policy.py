@@ -11,6 +11,12 @@ ALWAYS_ON_TOOLS = {
 }
 
 PRELOADED_TOOLS_BY_MODE = {
+    "minecraft": {
+        "minecraft_start_task",
+        "minecraft_get_status",
+        "minecraft_cancel_task",
+        "minecraft_get_bot_status",
+    },
     "bot": {
         "load_skill",
         "storage_list_files",

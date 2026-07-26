@@ -225,6 +225,94 @@ def build_runtime() -> AppRuntime:
             max_workers=_env_int("MEMORY_LIFECYCLE_BACKGROUND_WORKERS", 1),
         )
 
+    minecraft_application = None
+    minecraft_plugin = None
+    if _env_bool("MINECRAFT_AGENT_ENABLED", False):
+        from applications.minecraft.application import MinecraftApplication
+        from applications.minecraft.bridge_client import HttpBridgeClient
+        from applications.minecraft.catalog import CATALOG
+        from applications.minecraft.context import MinecraftPlannerContextBuilder
+        from applications.minecraft.local_evaluator import LocalEvaluator
+        from applications.minecraft.memory_adapter import MinecraftMemoryAdapter
+        from applications.minecraft.model_gateway import MinecraftModelGateway
+        from applications.minecraft.plan_validator import PlanValidator
+        from applications.minecraft.planner import MinecraftPlanner
+        from applications.minecraft.reasoning_gate import ReasoningGate
+        from applications.minecraft.safety_controller import SafetyController
+        from applications.minecraft.service import MinecraftTaskService
+        from applications.minecraft.session_adapter import MinecraftSessionAdapter
+        from applications.minecraft.stores.memory import InMemoryMinecraftTaskStore
+        from applications.minecraft.stores.postgres import PostgresMinecraftTaskStore
+        from applications.minecraft.worker import MinecraftWorker
+        from plugins.minecraft import MinecraftPlugin
+
+        minecraft_store_dsn = str(
+            os.getenv("MINECRAFT_DATABASE_URL")
+            or os.getenv("DATABASE_URL")
+            or ""
+        ).strip()
+        minecraft_store = (
+            PostgresMinecraftTaskStore(minecraft_store_dsn)
+            if minecraft_store_dsn
+            and _env_bool("MINECRAFT_PERSISTENCE_ENABLED", True)
+            else InMemoryMinecraftTaskStore()
+        )
+        minecraft_bridge = HttpBridgeClient(
+            base_url=os.getenv(
+                "MINECRAFT_BRIDGE_URL",
+                "http://127.0.0.1:8765",
+            ),
+            token=os.getenv("MINECRAFT_BRIDGE_TOKEN", ""),
+            trust_remote=_env_bool("MINECRAFT_BRIDGE_TRUST_REMOTE", False),
+            poll_interval=_env_float("MINECRAFT_BRIDGE_POLL_INTERVAL", 0.25),
+            timeout_seconds=_env_float("MINECRAFT_BRIDGE_TIMEOUT", 10),
+        )
+        minecraft_gateway = MinecraftModelGateway(
+            runner=model_task_runner,
+            timeout_seconds=_env_float("MINECRAFT_MODEL_TIMEOUT", 30),
+        )
+        minecraft_context = MinecraftPlannerContextBuilder(
+            budgeter=context_budgeter,
+            memory=MinecraftMemoryAdapter(memory_store),
+            max_chars=_env_int("MINECRAFT_CONTEXT_MAX_CHARS", 12000),
+        )
+        minecraft_planner = MinecraftPlanner(
+            gateway=minecraft_gateway,
+            context_builder=minecraft_context,
+            validator=PlanValidator(catalog=CATALOG),
+            catalog=CATALOG,
+        )
+        minecraft_worker = MinecraftWorker(
+            store=minecraft_store,
+            bridge=minecraft_bridge,
+            cancellations=cancellation_registry,
+            planner=minecraft_planner,
+            evaluator=LocalEvaluator(),
+            reasoning_gate=ReasoningGate(
+                model_call_budget=_env_int("MINECRAFT_MODEL_CALL_BUDGET", 20),
+                cooldown_seconds=_env_float(
+                    "MINECRAFT_MODEL_COOLDOWN_SECONDS", 1
+                ),
+            ),
+            catalog=CATALOG,
+            safety_controller=SafetyController(),
+            lease_ttl_seconds=_env_float("MINECRAFT_LEASE_TTL_SECONDS", 30),
+        )
+        minecraft_service = MinecraftTaskService(
+            store=minecraft_store,
+            bridge=minecraft_bridge,
+            cancellations=cancellation_registry,
+            worker=minecraft_worker,
+        )
+        minecraft_application = MinecraftApplication(service=minecraft_service)
+        if _env_bool("MINECRAFT_RESUME_ON_START", True):
+            minecraft_application.resume_recoverable()
+        minecraft_plugin = MinecraftPlugin(
+            minecraft_application,
+            session_adapter=MinecraftSessionAdapter(sessions),
+            bot_id=os.getenv("MINECRAFT_BOT_USERNAME", "TaleClawBot"),
+        )
+
     plugins = [
         ShellSafetyPlugin(),
         StatusCommandsPlugin(),
@@ -232,6 +320,8 @@ def build_runtime() -> AppRuntime:
         MarkdownPdfPlugin(),
         RunReportPlugin(),
     ]
+    if minecraft_plugin is not None:
+        plugins.append(minecraft_plugin)
     if _security_rag_plugin_enabled():
         from plugins.security_rag import SecurityRagPlugin
 
@@ -327,6 +417,7 @@ def build_runtime() -> AppRuntime:
         bus=bus,
         loop=loop,
         services=services,
+        minecraft_application=minecraft_application,
     )
 
 
