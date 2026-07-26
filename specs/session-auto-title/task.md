@@ -13,7 +13,8 @@
 
 ## T1：实现首组问答提取与标题规范化
 
-**文件：** `web/session_titles.py`  
+**文件：** `web/session_titles.py`
+
 **依赖：** 无
 
 **步骤：**
@@ -27,7 +28,8 @@
 
 ## T2：实现异步标题生成服务
 
-**文件：** `web/session_titles.py`  
+**文件：** `web/session_titles.py`
+
 **依赖：** T1
 
 **步骤：**
@@ -43,7 +45,8 @@
 
 ## T3：接入 Web post-turn 生命周期
 
-**文件：** `web/server.py`  
+**文件：** `web/server.py`
+
 **依赖：** T2
 
 **步骤：**
@@ -57,7 +60,8 @@
 
 ## T4：向 Web API 投影标题
 
-**文件：** `web/server.py`  
+**文件：** `web/server.py`
+
 **依赖：** T1、T3
 
 **步骤：**
@@ -70,7 +74,8 @@
 
 ## T5：更新 Web 标题展示
 
-**文件：** `web/static/app.js`  
+**文件：** `web/static/app.js`
+
 **依赖：** T4
 
 **步骤：**
@@ -85,7 +90,8 @@
 
 ## T6：补充配置说明
 
-**文件：** `.env.example`  
+**文件：** `.env.example`
+
 **依赖：** T2
 
 **步骤：**
@@ -97,7 +103,8 @@
 
 ## T7：完成定向测试
 
-**文件：** `tests/test_web_session_titles.py`、`tests/test_web_streaming.py`  
+**文件：** `tests/test_web_session_titles.py`、`tests/test_web_streaming.py`
+
 **依赖：** T1–T6
 
 **步骤：**
@@ -113,7 +120,8 @@
 
 ## T8：执行完整验收并提交
 
-**文件：** 全部变更  
+**文件：** 全部变更
+
 **依赖：** T7
 
 **步骤：**
