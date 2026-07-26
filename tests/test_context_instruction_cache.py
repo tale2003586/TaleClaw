@@ -4,8 +4,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from runtime.context import ContextBuilder
-from sessions.session import Session
+from runtime.context import ContextBuilder, PromptAssetsService
+from runtime.context.budget import ContextBudgeter
+from runtime.sessions.session import Session
 
 
 class ContextInstructionCacheTests(unittest.TestCase):
@@ -16,7 +17,14 @@ class ContextInstructionCacheTests(unittest.TestCase):
             (root / ".agent").mkdir()
             instruction = root / ".agent" / "assistant.md"
             instruction.write_text("cached assistant rules", encoding="utf-8")
-            builder = ContextBuilder(instruction_root=root)
+            budgeter = ContextBudgeter.from_env()
+            builder = ContextBuilder(
+                budgeter=budgeter,
+                prompt_assets_service=PromptAssetsService(
+                    budgeter=budgeter,
+                    instruction_root=root,
+                ),
+            )
             profile = SimpleNamespace(system_prompt="base", tool_mode="bot")
 
             first = builder.build(session=Session(id="web:test"), profile=profile)
@@ -34,7 +42,14 @@ class ContextInstructionCacheTests(unittest.TestCase):
             (root / ".agent").mkdir()
             instruction = root / ".agent" / "assistant.md"
             instruction.write_text("stable prefix rules", encoding="utf-8")
-            builder = ContextBuilder(instruction_root=root)
+            budgeter = ContextBudgeter.from_env()
+            builder = ContextBuilder(
+                budgeter=budgeter,
+                prompt_assets_service=PromptAssetsService(
+                    budgeter=budgeter,
+                    instruction_root=root,
+                ),
+            )
             profile = SimpleNamespace(system_prompt="base", tool_mode="bot")
 
             prefix = builder.build_prefix(profile)
@@ -61,7 +76,14 @@ class ContextInstructionCacheTests(unittest.TestCase):
             (root / ".agent").mkdir()
             instruction = root / ".agent" / "assistant.md"
             instruction.write_text("first rules", encoding="utf-8")
-            builder = ContextBuilder(instruction_root=root)
+            budgeter = ContextBudgeter.from_env()
+            builder = ContextBuilder(
+                budgeter=budgeter,
+                prompt_assets_service=PromptAssetsService(
+                    budgeter=budgeter,
+                    instruction_root=root,
+                ),
+            )
             profile = SimpleNamespace(system_prompt="base", tool_mode="bot")
 
             first = builder.build_prefix(profile)

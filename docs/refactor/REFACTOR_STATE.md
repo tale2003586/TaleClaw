@@ -1,0 +1,360 @@
+```yaml
+baseline_commit: bb4e845571428069a78a05526e71da8e41ddbcb7
+branch: refactor/agent-runtime-phase0-7
+current_phase: 17
+phase_status: completed
+phase_start_commit: 6c1c7da
+latest_commit: 9cf1d1c
+
+gates:
+  behavior: passed
+  tests: passed
+  compatibility: passed
+  performance: passed
+  security: passed
+  documentation: passed
+
+commands_run:
+  - pytest Phase 17 explicit Context services and migrated call sites (40 passed, 1 skipped)
+  - pytest Phase 17 Evaluation regressions (11 passed)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite (439 passed, 39 skipped)
+  - pytest Phase 17 security/workspace/tool suite (61 passed, 1 skipped)
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase17.json
+  - python -m compileall -q runtime applications agents tests benchmarks
+  - rg legacy ContextBuilder Prompt Assets/Memory parameters
+  - pytest Phase 16 Context asset/memory services and adjacent suites (48 passed)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite (437 passed, 39 skipped)
+  - pytest Phase 16 security/workspace/tool suite (61 passed, 1 skipped)
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase16.json
+  - python benchmarks/runtime_phase0.py --iterations 200 repeat benchmark
+  - python -m compileall -q runtime/context
+  - pytest Phase 15 Context service boundary and adjacent suites (54 passed)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite (434 passed, 39 skipped)
+  - pytest Phase 15 security/workspace/tool suite (77 passed, 1 skipped)
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase15.json
+  - rg legacy ContextBuilder Retrieval/Security parameters
+  - pytest Phase 14 retrieval service and adjacent suites (65 passed, 1 skipped)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite (432 passed, 39 skipped)
+  - pytest Phase 14 security/workspace/tool suite (77 passed, 1 skipped)
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase14.json
+  - ContextBuilder dependency and method audit
+  - pytest Phase 13 Context kernel and adjacent suites (44 passed, 1 skipped)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite (429 passed, 39 skipped)
+  - pytest Phase 13 security/workspace/tool suite (77 passed, 1 skipped)
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase13.json
+  - minimal runtime.context import audit
+  - python -m compileall -q runtime applications agents tests benchmarks
+  - python -m pip check
+  - git diff --check
+  - pytest Phase 12 optional policies and adjacent suites (33 passed)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite (425 passed, 39 skipped)
+  - pytest Phase 12 security/workspace/tool suite (64 passed, 1 skipped)
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase12.json
+  - minimal AgentRunner import audit (no Working Memory, concrete policies, applications, plugins or RAG loaded)
+  - pytest Phase 11 execution collaborator and adjacent suites (46 passed, 2 skipped)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite (422 passed, 39 skipped)
+  - pytest Phase 11 security/workspace/tool suite (64 passed, 1 skipped)
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase11.json
+  - git status --short
+  - rg runtime/execution direct imports and collaborators
+  - pytest Phase 10 kernel boundaries and adjacent Runtime suites (38 passed)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite (419 passed, 39 skipped)
+  - pytest Phase 10 security/workspace/tool suite (64 passed, 1 skipped)
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase10.json
+  - python -m pip check
+  - python -m compileall -q runtime applications agents tests
+  - find runtime source inventory excluding __pycache__
+  - wc -l runtime modules
+  - rg runtime internal and external import graph
+  - rg public definitions by runtime top-level module
+  - pytest Phase 9 Context/Execution/Tooling targeted suites (74 passed)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite (416 passed, 39 skipped)
+  - pytest Phase 9 security/workspace/tool suite (64 passed, 1 skipped)
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase9.json
+  - python -m pip check
+  - python -m compileall -q runtime applications agents tests
+  - pip install --no-deps --no-build-isolation -e .
+  - package import smoke
+  - rg old Runtime module paths and Core-to-Coding Context imports
+  - git diff --check
+  - pytest Phase 0 targeted suites
+  - pytest complete suite
+  - python benchmarks/runtime_phase0.py --iterations 50
+  - python -m pip check
+  - git diff --check
+  - pytest Phase 8 package migration suites (39 passed, 3 skipped)
+  - pytest Coding Context/Handoff suites (12 passed)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite (416 passed, 39 skipped)
+  - pytest final security/tool/workspace suite (47 passed, 1 skipped)
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase8.json
+  - pip install --no-deps --no-build-isolation -e .
+  - setuptools egg_info
+  - package import smoke
+  - pytest Phase 5 Context provider/policy and adjacent suites (43 passed)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite (411 passed, 39 skipped)
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase5.json
+  - pytest Phase 6 application/child-run/compatibility suites (39 passed)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite (415 passed, 39 skipped)
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase6.json
+  - pytest Phase 7 CodingApplication compatibility deletion (27 passed, 1 skipped)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite (414 passed, 39 skipped)
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase7_partial.json
+  - TRACE_INDEX_ENABLED=0 pytest complete suite after final convergence (416 passed, 39 skipped)
+  - pytest final security/tool/workspace suite (47 passed, 1 skipped)
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase7.json
+  - rg legacy runtime/mode/session/tool/execution identifiers (no production matches)
+  - rg remaining ModeProfile, Pipeline, ModeRouter, current_mode and enabled_modes dependencies
+  - pytest Phase 7 Session identity migration (18 passed, 4 skipped)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite after approved migration (416 passed, 39 skipped)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite after ModeProfile deletion (416 passed, 39 skipped)
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase7_partial.json
+  - TRACE_INDEX_ENABLED=0 python -m pytest -q
+  - git commit -m "phase0: establish runtime behavior and performance baseline"
+  - pytest Phase 1 AgentSpec/routing/model/reflection tests
+  - pytest Phase 0 snapshot and security groups
+  - TRACE_INDEX_ENABLED=0 pytest complete suite
+  - pytest Phase 2 Runtime/Chat/Coding/Subagent targeted tests
+  - rg direct pipeline.run calls under runtime and agents
+  - pytest Phase 3 policy/loop/working-memory/reflection tests
+  - pytest Phase 4 targeted and adjacent phase tests (27 passed)
+  - pytest Core Runtime (72 passed)
+  - pytest Chat and Streaming (36 passed, 22 skipped)
+  - pytest Coding (20 passed)
+  - pytest Tool (58 passed)
+  - pytest Session and Memory (35 passed, 7 skipped)
+  - TRACE_INDEX_ENABLED=0 pytest Subagent (40 passed)
+  - TRACE_INDEX_ENABLED=0 pytest complete suite (409 passed, 39 skipped)
+  - python -m pip check
+  - python -m compileall -q runtime agents modes tests
+  - python benchmarks/runtime_phase0.py --iterations 50 --output benchmarks/results/runtime_phase4.json
+  - git diff --check
+files_changed:
+  - runtime/context/builder.py
+  - runtime/bootstrap.py
+  - applications/coding/runner.py
+  - agents/subagent/runner.py
+  - evaluation/harness.py
+  - evaluation/swebench_adapter.py
+  - tests/test_runtime_phase17_explicit_context_services.py
+  - Context construction call sites under tests and benchmarks
+  - benchmarks/results/runtime_phase17.json
+  - docs/architecture/runtime-phase17-explicit-context-services.md
+  - docs/architecture/runtime-phase17-execution-report.md
+  - runtime/context/assets.py
+  - runtime/context/memory.py
+  - runtime/context/builder.py
+  - runtime/context/providers.py
+  - runtime/context/__init__.py
+  - tests/test_runtime_phase16_context_asset_memory_services.py
+  - benchmarks/results/runtime_phase16.json
+  - docs/architecture/runtime-phase16-context-asset-memory-services.md
+  - docs/architecture/runtime-phase16-execution-report.md
+  - runtime/context/builder.py
+  - agents/subagent/runner.py
+  - tests/test_runtime_phase15_context_service_boundary.py
+  - tests and benchmarks migrated away from legacy Context parameters
+  - benchmarks/results/runtime_phase15.json
+  - docs/architecture/runtime-phase15-context-service-boundary.md
+  - docs/architecture/runtime-phase15-execution-report.md
+  - runtime/context/retrieval.py
+  - runtime/context/builder.py
+  - runtime/context/providers.py
+  - runtime/bootstrap.py
+  - tests/test_runtime_phase14_retrieval_service.py
+  - benchmarks/results/runtime_phase14.json
+  - docs/architecture/runtime-phase14-retrieval-service.md
+  - docs/architecture/runtime-phase14-execution-report.md
+  - runtime/context/builder.py
+  - runtime/context/providers.py
+  - runtime/bootstrap.py
+  - applications/coding/runner.py
+  - tests/test_runtime_phase13_context_kernel.py
+  - tests explicitly exercising full optional Context capabilities
+  - benchmarks/runtime_phase0.py
+  - benchmarks/results/runtime_phase13.json
+  - docs/architecture/runtime-phase13-context-kernel.md
+  - docs/architecture/runtime-phase13-execution-report.md
+  - runtime/execution/policy_set.py
+  - runtime/execution/loop_policies.py
+  - runtime/execution/agent_runner.py
+  - runtime/execution/reasoning_loop.py
+  - runtime/runtime.py
+  - runtime/bootstrap.py
+  - applications/coding/runner.py
+  - applications/coding/orchestration/teammate.py
+  - tests/test_runtime_phase12_optional_policies.py
+  - tests explicitly exercising optional execution policies
+  - benchmarks/results/runtime_phase12.json
+  - docs/architecture/runtime-phase12-optional-policies.md
+  - docs/architecture/runtime-phase12-execution-report.md
+  - runtime/execution/message_sanitizer.py
+  - runtime/execution/model_invocation.py
+  - runtime/execution/tool_batch.py
+  - runtime/execution/reasoning_loop.py
+  - tests/test_runtime_phase11_execution_collaborators.py
+  - benchmarks/results/runtime_phase11.json
+  - docs/architecture/runtime-phase11-execution-collaborators.md
+  - docs/architecture/runtime-phase11-execution-report.md
+  - runtime/ports.py
+  - runtime/runtime.py
+  - runtime/execution/agent_runner.py
+  - runtime/execution/reasoning_loop.py
+  - runtime/execution/loop_policies.py
+  - tests/test_runtime_phase10_kernel_boundaries.py
+  - benchmarks/results/runtime_phase10.json
+  - docs/architecture/runtime-phase10-kernel-boundary.md
+  - docs/architecture/runtime-phase10-execution-report.md
+  - docs/refactor/phase10-human-review.md
+  - docs/architecture/runtime-context-directory-assessment.md
+  - docs/architecture/runtime-phase9-structure-assessment.md
+  - docs/architecture/runtime-phase9-execution-report.md
+  - docs/refactor/phase9-human-review.md
+  - runtime/context/*
+  - runtime/execution/*
+  - runtime/tooling/*
+  - runtime/bootstrap.py
+  - runtime/runtime.py
+  - runtime/agent_loop.py
+  - Runtime import consumers under agents, applications, evaluation, tests and tools
+  - benchmarks/results/runtime_phase9.json
+  - README.md
+  - docs/overview/PROJECT_STRUCTURE.md
+  - docs/overview/CODEBASE_SUMMARY.md
+  - Phase 0 tests/fakes/snapshots/benchmarks
+  - docs/architecture/runtime-phase0-*.md
+  - docs/agent-runtime-refactor-summary.md
+  - docs/refactor/REFACTOR_PLAN.md
+  - docs/refactor/REFACTOR_STATE.md
+  - runtime/agent_spec.py
+  - modes/bot.py
+  - modes/coding.py
+  - runtime/routing/*
+  - runtime/pipeline.py
+  - tests/test_runtime_phase1_agent_spec.py
+  - runtime/runtime.py
+  - runtime/agent_loop.py
+  - agents/coding/runner.py
+  - agents/subagent/runner.py
+  - tests/test_runtime_phase2_facade.py
+  - runtime/loop_policies.py
+  - runtime/agent_runner.py
+  - runtime/reasoning_loop.py
+  - tests/test_runtime_phase3_loop_policies.py
+  - runtime/runtime.py
+  - runtime/pipeline.py
+  - runtime/agent_runner.py
+  - runtime/reasoning_loop.py
+  - runtime/loop_policies.py
+  - tests/test_runtime_phase2_facade.py
+  - tests/test_runtime_phase4_run_context.py
+  - benchmarks/results/runtime_phase4.json
+  - docs/architecture/runtime-phase4-explicit-run-context.md
+  - docs/architecture/runtime-phase4-execution-report.md
+  - docs/refactor/phase4-human-review.md
+  - runtime/context_providers.py
+  - runtime/context.py
+  - runtime/pipeline.py
+  - tests/test_runtime_phase5_context_providers.py
+  - benchmarks/results/runtime_phase5.json
+  - docs/architecture/runtime-phase5-context-policies.md
+  - docs/architecture/runtime-phase5-execution-report.md
+  - agents/coding/runner.py
+  - agents/subagent/runner.py
+  - runtime/agent_loop.py
+  - runtime/bootstrap.py
+  - runtime/runtime.py
+  - runtime/child_run.py
+  - runtime/extensions.py
+  - tests/test_runtime_phase6_applications.py
+  - benchmarks/results/runtime_phase6.json
+  - docs/architecture/runtime-phase6-application-boundaries.md
+  - docs/architecture/runtime-phase6-execution-report.md
+  - agents/coding/runner.py
+  - runtime/agent_loop.py
+  - modes/bot.py
+  - modes/coding.py
+  - evaluation/harness.py
+  - evaluation/swebench_adapter.py
+  - scripts/run_vscode_agent_task.py
+  - tests using CodingApplication
+  - benchmarks/results/runtime_phase7_partial.json
+  - docs/architecture/runtime-phase7-blocked-report.md
+  - docs/architecture/runtime-phase7-execution-report.md
+  - sessions/session.py
+  - runtime/routing/execution_plan.py
+  - tests/test_runtime_phase7_compatibility_migration.py
+  - modes/base.py (deleted)
+  - modes/bot.py
+  - modes/coding.py
+  - runtime/agent_spec.py
+  - runtime/agent_runner.py
+  - runtime/routing/execution_plan.py
+  - runtime/routing/router.py
+  - coding_runtime/teammate.py
+  - agents/definitions.py
+  - runtime/runtime.py
+  - runtime/routing/agent_router.py
+  - runtime/routing/hybrid_classifier.py
+  - sessions/session_store.py
+  - tests/snapshots/runtime_phase0_tools.json
+  - tests/snapshots/runtime_phase0_coding_lifecycle_events.json
+  - benchmarks/results/runtime_phase7.json
+  - docs/refactor/phase7-human-review.md
+  - modes/* (deleted)
+  - runtime/pipeline.py (deleted)
+  - runtime/routing/router.py (deleted)
+  - applications/coding/*
+  - applications/coding/orchestration/*
+  - runtime/messaging/*
+  - runtime/sessions/*
+  - memory/background_lifecycle.py
+  - pyproject.toml
+  - taleclaw.egg-info/*
+  - README.md
+  - docs/overview/PROJECT_STRUCTURE.md
+  - docs/overview/CODEBASE_SUMMARY.md
+  - benchmarks/results/runtime_phase8.json
+  - docs/architecture/runtime-phase8-directory-convergence.md
+  - docs/architecture/runtime-phase8-execution-report.md
+  - docs/refactor/phase8-human-review.md
+snapshots_changed:
+  - Added initial Phase 0 prompt, tool, trace, coding lifecycle and gateway snapshots.
+  - Phase 7 renamed tool authorization snapshot field to allowed_agents.
+  - Phase 7 renamed Coding lifecycle events to coding_application_started/completed.
+performance_changes:
+  - Phase 17 Runtime facade is 0.716 ms and Subagent is 1.676 ms; no material regression.
+  - Phase 17 Chat/Coding context medians are 0.189/0.224 ms; token estimates remain Chat 730 and Coding 2347.
+  - Phase 16 Runtime facade is 0.713 ms and Subagent is 1.643 ms; no regression.
+  - Phase 16 Chat/Coding context medians are 0.181/0.222 ms; token estimates remain Chat 730 and Coding 2347.
+  - Phase 16 repeated 200-iteration Runtime facade measurement is 0.707 ms.
+  - Phase 15 Runtime facade is 0.709 ms and Subagent is 1.643 ms; no regression.
+  - Phase 15 Chat/Coding context medians are 0.181/0.222 ms; token estimates remain Chat 730 and Coding 2347.
+  - Phase 14 Runtime facade is 0.705 ms and Subagent is 1.683 ms; no regression.
+  - Phase 14 Chat/Coding context medians are 0.184/0.241 ms; token estimates remain Chat 730 and Coding 2347.
+  - Phase 13 Runtime facade is 0.705 ms and Subagent is 1.847 ms; no regression.
+  - Phase 13 Chat/Coding context medians are 0.183/0.224 ms; token estimates remain Chat 730 and Coding 2347.
+  - Phase 12 Runtime facade is 0.713 ms and Subagent is 2.435 ms; no regression.
+  - Phase 12 Chat/Coding context medians are 0.189/0.230 ms; token estimates remain Chat 730 and Coding 2347.
+  - Phase 11 Runtime facade is 0.735 ms and Subagent is 2.601 ms; no material regression.
+  - Phase 11 Chat/Coding context medians are 0.183/0.228 ms; token estimates remain Chat 730 and Coding 2347.
+  - Phase 10 Runtime facade is 0.734 ms and Subagent is 2.494 ms; no material regression.
+  - Phase 10 Chat/Coding context medians are 0.185/0.225 ms; token estimates remain Chat 730 and Coding 2347.
+  - Phase 9 Runtime facade is 0.715 ms and Subagent is 2.502 ms; small benchmark noise versus Phase 8 and no material regression.
+  - Phase 9 Chat/Coding context medians are 0.186/0.228 ms; token estimates remain Chat 730 and Coding 2347.
+  - Phase 4 Runtime facade median is 0.718 ms versus Phase 3 0.704 ms; no material regression.
+  - Context token estimates remain Chat 730 and Coding 2347.
+  - Phase 5 direct Chat/Coding context medians are 0.185/0.223 ms; no material regression.
+  - Phase 6 Runtime facade is 0.732 ms and Subagent is 2.580 ms; no material regression.
+  - Phase 7 partial Runtime facade is 0.725 ms; no material regression.
+  - Phase 7 final Runtime facade is 0.710 ms and Subagent is 2.630 ms; no material regression.
+  - Phase 8 Runtime facade is 0.697 ms and Subagent is 2.441 ms; no regression.
+known_issues:
+  - Security RAG rendering remains a lazy internal ContextBuilder collaborator and is a candidate for the next extraction phase.
+  - AGENTS.md is absent.
+  - No repository lint, format-check or type-check configuration exists.
+  - Full PostgreSQL integration profile requires DATABASE_URL.
+  - Existing macOS /var versus /private/var path assertions are environment-sensitive.
+blocking_issues: []
+next_action: Audit the remaining ContextBuilder coding-state, history-budget and report composition responsibilities before defining another extraction phase.
+requires_human_review: false
+```

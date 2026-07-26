@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from config import WORKDIR
-from runtime.tool_signature import tool_call_signature, tool_result_hash
+from runtime.tooling.signature import tool_call_signature, tool_result_hash
 from tools.executor import HookOutcome, ToolExecutionRequest, ToolExecutionResult, ToolHook
 
 
@@ -321,7 +321,7 @@ class ToolResultStoreHook(ToolHook):
         if output.startswith("[tool-cache] already read at step "):
             return None
         try:
-            from runtime.tool_result_store import (
+            from runtime.tooling.result_store import (
                 TOOL_RESULT_STORE_REF_KEY,
                 store_tool_result,
             )

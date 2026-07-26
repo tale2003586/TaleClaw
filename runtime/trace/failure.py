@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any
 
-from runtime.failure_reasons import (
+from runtime.execution.failure_reasons import (
     StopReason,
     is_budget_stop_reason,
     is_loop_guard_stop_reason,

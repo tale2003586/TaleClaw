@@ -4,9 +4,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from coding_runtime.teammate import TeammateContextBuilder, TeammateManager
+from applications.coding.orchestration.teammate import TeammateContextBuilder, TeammateManager
 from models.provider import LLMResponse, ToolCall
-from sessions import Session
+from runtime.sessions import Session
 from tools.executor import ToolExecutor
 from tools.tool_registry import build_teammate_tool_registry
 
@@ -28,7 +28,7 @@ class TeammateToolRegistryTests(unittest.TestCase):
         registry = build_teammate_tool_registry("alice")
         session = Session(
             id="teammate:alice",
-            current_mode="teammate",
+            active_agent="teammate",
             metadata={"kind": "teammate", "user_role": "admin"},
         )
 

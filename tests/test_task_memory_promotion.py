@@ -6,18 +6,18 @@ from types import SimpleNamespace
 
 from models.provider import LLMResponse, OpenAICompatibleProvider
 from memory.store import MemoryStore
-from sessions.session import Session, SessionManager
-from postgres_utils import temporary_postgres_schema
-from agents.coding.artifacts import TaskArtifactWriter
-from agents.coding.conclusions import (
+from runtime.sessions.session import Session, SessionManager
+from tests.postgres_utils import temporary_postgres_schema
+from applications.coding.artifacts import TaskArtifactWriter
+from applications.coding.conclusions import (
     ConclusionCandidate,
     ConclusionExtraction,
     TaskConclusionExtractor,
 )
-from agents.coding.memory_lifecycle import TaskMemoryLifecycle
-from agents.coding.promotion import PromotionResult, TaskMemoryPromoter
-from agents.coding.runner import TaskSessionRunner
-from agents.coding.session import TaskSessionFactory, TaskSessionRecord
+from applications.coding.memory_lifecycle import TaskMemoryLifecycle
+from applications.coding.promotion import PromotionResult, TaskMemoryPromoter
+from applications.coding.runner import CodingApplication
+from applications.coding.session import TaskSessionFactory, TaskSessionRecord
 
 
 class RecordingProvider:
@@ -74,12 +74,12 @@ class TaskMemoryPromotionTests(unittest.TestCase):
                 tool_executor=object(),
                 max_tokens=8000,
             )
-            runner = TaskSessionRunner(
+            runner = CodingApplication(
                 sessions=sessions,
                 base_pipeline=base_pipeline,
                 global_memory=MemoryStore(root / "memory"),
             )
-            runner.factory = TaskSessionFactory(sessions, root=root / ".task_sessions")
+            runner.factory = TaskSessionFactory(sessions, root=root / ".coding_applications")
             try:
                 reply = runner.run_coding_task(
                     parent_session=Session(id="web:default"),
@@ -89,7 +89,7 @@ class TaskMemoryPromotionTests(unittest.TestCase):
             finally:
                 sessions.close()
 
-            task_dirs = list((root / ".task_sessions").iterdir())
+            task_dirs = list((root / ".coding_applications").iterdir())
             self.assertEqual(1, len(task_dirs))
             self.assertTrue((task_dirs[0] / "TASK_LOG.md").exists())
             self.assertTrue((task_dirs[0] / "CONCLUSIONS.json").exists())
@@ -99,7 +99,7 @@ class TaskMemoryPromotionTests(unittest.TestCase):
     def test_task_lifecycle_keeps_wrapped_prompt_out_of_pending(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             memory = MemoryStore(Path(tmp) / "memory")
-            session = Session(id="task:coding-12345678", current_mode="coding")
+            session = Session(id="task:coding-12345678", active_agent="coding")
             session.add_message(
                 "user",
                 "<task-session>\n我希望这里使用 pytest\n</task-session>",
@@ -183,7 +183,7 @@ class TaskMemoryPromotionTests(unittest.TestCase):
             memory_root = task_root / "memory"
             session = Session(
                 id="task:coding-12345678",
-                current_mode="coding",
+                active_agent="coding",
                 metadata={"status": "completed"},
             )
             session.add_message("user", "Fix the bug")

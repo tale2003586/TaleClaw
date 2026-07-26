@@ -3,18 +3,18 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from agents.coding.runner import TaskSessionRunner
-from agents.coding.session import TaskSessionFactory
+from applications.coding.runner import CodingApplication
+from applications.coding.session import TaskSessionFactory
 from memory.store import MemoryStore
 from models.provider import LLMResponse
 from runtime.agent_loop import AgentLoop
-from runtime.coding_handoff import (
+from applications.coding.handoff import (
     CODING_HANDOFF_METADATA_KEY,
     CODING_TASK_SUMMARY_METADATA_KEY,
     PENDING_CODING_TASK_SUMMARY_METADATA_KEY,
     build_coding_session_handoff,
 )
-from sessions.session import Session
+from runtime.sessions.session import Session
 
 
 class CodingSessionHandoffTests(unittest.TestCase):
@@ -77,7 +77,7 @@ class CodingSessionHandoffTests(unittest.TestCase):
             handoff.recent_turns[0].assistant_summary,
         )
 
-    def test_task_session_runner_injects_handoff_into_coding_prompt(self) -> None:
+    def test_coding_application_injects_handoff_into_coding_prompt(self) -> None:
         class InMemorySessions:
             def __init__(self) -> None:
                 self.sessions = {}
@@ -119,7 +119,7 @@ class CodingSessionHandoffTests(unittest.TestCase):
             root = Path(tmp)
             sessions = InMemorySessions()
             provider = RunnerProvider()
-            runner = TaskSessionRunner(
+            runner = CodingApplication(
                 sessions=sessions,
                 base_pipeline=SimpleNamespace(
                     tools=RunnerTools(),
@@ -131,9 +131,9 @@ class CodingSessionHandoffTests(unittest.TestCase):
                 global_memory=MemoryStore(root / "memory"),
                 workspace_root=root,
             )
-            runner.factory = TaskSessionFactory(sessions, root=root / ".task_sessions")
+            runner.factory = TaskSessionFactory(sessions, root=root / ".coding_applications")
 
-            parent = Session(id="web:default", current_mode="coding")
+            parent = Session(id="web:default", active_agent="coding")
             parent.add_message("user", "What is the checkpoint idea?")
             parent.add_message("assistant", "A checkpoint records resumable task state.")
             parent.add_message("user", "把它接入 coding 任务")
@@ -148,7 +148,7 @@ class CodingSessionHandoffTests(unittest.TestCase):
                 str(message.get("content") or "")
                 for message in provider.calls[0]["messages"]
             )
-            task_session = next(
+            coding_application = next(
                 session
                 for session_id, session in sessions.sessions.items()
                 if session_id.startswith("task:")
@@ -157,11 +157,11 @@ class CodingSessionHandoffTests(unittest.TestCase):
             self.assertIn("<conversation-history-handoff>", first_prompt)
             self.assertIn("What is the checkpoint idea?", first_prompt)
             self.assertIn("A checkpoint records resumable task state.", first_prompt)
-            self.assertIn(CODING_HANDOFF_METADATA_KEY, task_session.metadata)
+            self.assertIn(CODING_HANDOFF_METADATA_KEY, coding_application.metadata)
             self.assertIn(PENDING_CODING_TASK_SUMMARY_METADATA_KEY, parent.metadata)
 
     def test_agent_loop_attaches_pending_coding_summary_to_parent_reply(self) -> None:
-        class FakeTaskSessionRunner:
+        class FakeCodingApplication:
             def run_coding_task(
                 self,
                 *,
@@ -183,9 +183,9 @@ class CodingSessionHandoffTests(unittest.TestCase):
             sessions=None,
             pipeline=None,
             router=None,
-            task_session_runner=FakeTaskSessionRunner(),
+            coding_application=FakeCodingApplication(),
         )
-        session = Session(id="web:default", current_mode="coding")
+        session = Session(id="web:default", active_agent="coding")
         inbound = SimpleNamespace(content="Change the files", metadata={})
         route = SimpleNamespace(profile=SimpleNamespace(tool_mode="coding"))
         run_state = SimpleNamespace(run_id="run-1")

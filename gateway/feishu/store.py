@@ -8,7 +8,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from runtime.db import connect, is_integrity_error, resolve_database_config, row_get, sql
+from runtime.db import (
+    connect,
+    is_integrity_error,
+    resolve_database_config,
+    row_get,
+    sql,
+    table_columns,
+)
 
 
 class FeishuGatewayStore:
@@ -63,6 +70,13 @@ class FeishuGatewayStore:
                 )
                 """)
             )
+            self._ensure_column(
+                "feishu_outbox",
+                "message_type",
+                "TEXT NOT NULL DEFAULT 'text'",
+            )
+            self._ensure_column("feishu_outbox", "document_path", "TEXT")
+            self._ensure_column("feishu_outbox", "caption", "TEXT")
             self._conn.execute(
                 sql(self.config, """
                 CREATE INDEX IF NOT EXISTS idx_feishu_outbox_status
@@ -70,6 +84,12 @@ class FeishuGatewayStore:
                 """)
             )
             self._conn.commit()
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        if column not in table_columns(self._conn, table):
+            self._conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            )
 
     def mark_event_seen(self, event_id: str) -> bool:
         cleaned = str(event_id or "").strip()

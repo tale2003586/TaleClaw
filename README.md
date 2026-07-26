@@ -16,14 +16,12 @@ taleclaw 是一个用 Python 实现的 **Agent 运行时平台**。它不是单�
 ## 目录结构
 
 ```text
-runtime/      # 通用 agent 执行链路（bootstrap、agent_loop、pipeline、context、trace、routing）
+runtime/      # Agent Runtime 核心，以及 context、execution、tooling 等子系统
+applications/ # 产品应用；Coding 生命周期与编排集中在 applications/coding
 models/       # 模型 provider 与模型路由（provider、model_pool、model_task_runner）
-agents/       # 平台上的垂直 agent 应用（coding agent 等）
-modes/        # 聊天 / 混合 / coding 模式与意图分类
+agents/       # AgentSpec 定义与 Subagent 实现
 tools/        # 工具 schema、注册表、策略、执行器与处理器
 memory/       # 长期记忆、scoped store、生命周期、归档与历史摘要
-sessions/     # 会话与会话存储
-bus/          # 事件总线（user / team）
 gateway/      # Telegram / 飞书网关
 web/          # 本地 Web 控制台（标准库 HTTP server + 前端静态资源）
 plugins/      # 插件
@@ -34,7 +32,7 @@ tests/        # 测试
 docs/         # 设计文档（详见 docs/README.md）
 ```
 
-更完整的结构与运行链路说明见 [docs/overview/PROJECT_STRUCTURE.md](docs/overview/PROJECT_STRUCTURE.md) 与 [docs/overview/CODEBASE_SUMMARY.md](docs/overview/CODEBASE_SUMMARY.md)。
+完整系统架构见 [docs/architecture/SYSTEM_ARCHITECTURE.md](docs/architecture/SYSTEM_ARCHITECTURE.md)；目录与运行链路速览见 [docs/overview/PROJECT_STRUCTURE.md](docs/overview/PROJECT_STRUCTURE.md) 与 [docs/overview/CODEBASE_SUMMARY.md](docs/overview/CODEBASE_SUMMARY.md)。
 
 ## 快速开始
 

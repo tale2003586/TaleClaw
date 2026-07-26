@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from sessions.session import Session
+from runtime.sessions.session import Session
 from tools import handlers
 from tools.executor import ToolExecutionRequest, ToolExecutor
 from tools.hooks import ShellWorkspaceScopeHook
@@ -17,9 +17,9 @@ def _init_repo(root: Path) -> None:
 def _session_for(root: Path) -> Session:
     return Session(
         id="task:git",
-        current_mode="coding",
+        active_agent="coding",
         metadata={
-            "kind": "task_session",
+            "kind": "coding_application",
             "workspace_root": str(root),
             "user_role": "admin",
         },

@@ -4,9 +4,9 @@ from http import HTTPStatus
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from sessions import SessionManager, SessionStore
+from runtime.sessions import SessionManager, SessionStore
 from web.server import AgentService, RequestHandler, _web_storage_id
-from postgres_utils import temporary_postgres_schema
+from tests.postgres_utils import temporary_postgres_schema
 
 
 class SessionDeletionStoreTests(unittest.TestCase):

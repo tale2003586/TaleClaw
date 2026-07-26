@@ -5,13 +5,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from runtime.routing.router import ModeRouter
-from runtime.context import ContextBuilder
+from runtime.routing.agent_router import AgentRouter
+from runtime.context import ContextBuilder, ContextMemoryService
+from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
 from memory.lifecycle import MemoryLifecycle
 from memory.scoped_store import ScopedMemoryStore
 from plugins.markdown_pdf.plugin import MarkdownPdfPlugin
-from sessions import Session, SessionManager
-from postgres_utils import temporary_postgres_schema
+from runtime.sessions import Session, SessionManager
+from tests.postgres_utils import temporary_postgres_schema
 from tools import handlers
 from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry, build_lead_tool_registry
@@ -21,7 +22,7 @@ from web import server
 def _session(user_id: str, *, role: str = "user") -> Session:
     return Session(
         id=f"web:{user_id}:default",
-        current_mode="bot",
+        active_agent="bot",
         metadata={"user_id": user_id, "user_role": role},
     )
 
@@ -124,7 +125,10 @@ class MultiUserIsolationTests(unittest.TestCase):
             stores.for_session(bob).append("memory", "bob-only memory")
 
             profile = SimpleNamespace(system_prompt="system")
-            context = ContextBuilder(memory_store=stores).build(
+            context = ContextBuilder(
+                context_providers=DEFAULT_CONTEXT_PROVIDERS,
+                memory_service=ContextMemoryService(memory_store=stores),
+            ).build(
                 session=alice,
                 profile=profile,
             )
@@ -143,18 +147,18 @@ class MultiUserIsolationTests(unittest.TestCase):
 
     def test_regular_user_cannot_enter_coding_or_see_admin_only_tool(self) -> None:
         user_session = _session("guest")
-        route = ModeRouter().route(user_session, "/coding")
+        route = AgentRouter().route(user_session, "/coding")
 
         registry = ToolRegistry()
         registry.register(
             function_tool("server_admin", "admin operation", {}),
             lambda **kwargs: "ok",
-            enabled_modes={"bot"},
+            allowed_agents={"bot"},
             always_on=True,
             admin_only=True,
         )
 
-        self.assertEqual("bot", user_session.current_mode)
+        self.assertEqual("bot", user_session.active_agent)
         self.assertTrue(route.switched)
         self.assertNotIn("server_admin", registry.visible_names_for_turn(user_session, "bot"))
 

@@ -11,7 +11,7 @@ import subprocess
 from uuid import uuid4
 
 
-from coding_runtime.background_task import BG
+from applications.coding.orchestration.background_task import BG
 from config import (
     CODE_OUTLINE_LARGE_FILE_LINES,
     CODE_OUTLINE_MAX_CHARS,
@@ -22,8 +22,8 @@ from config import (
     WORKING_MEMORY_CHECKPOINT_ENABLED,
     WORKDIR,
 )
-from bus import AgentMessage, MessageType, render_agent_message
-from bus.team_bus import BUS
+from runtime.messaging import AgentMessage, MessageType, render_agent_message
+from runtime.messaging.team_bus import BUS
 from agents.subagent.orchestration_state import (
     OrchestrationDecision,
     guard_subagent_dispatch,
@@ -39,9 +39,9 @@ from runtime.working_memory import (
     checkpoint_subtask_results,
     checkpoint_subtasks_dispatched,
 )
-from coding_runtime.protocols import PROTOCOLS
+from applications.coding.orchestration.protocols import PROTOCOLS
 from skill_runtime import SKILL_LOADER
-from coding_runtime.task import TASKS
+from applications.coding.orchestration.task import TASKS
 from user_scope import (
     explicit_user_id_for_session,
     memory_root_for_session,
@@ -487,7 +487,7 @@ def run_retrieve_tool_result(
     _session=None,
 ) -> str:
     try:
-        from runtime.tool_result_store import retrieve_tool_result
+        from runtime.tooling.result_store import retrieve_tool_result
 
         return retrieve_tool_result(
             result_id,
@@ -1409,7 +1409,7 @@ def _sandbox_scope_root(session, *, create: bool = True) -> Path:
     cleanup_expired_sandboxes()
     metadata = getattr(session, "metadata", {}) or {}
     sandbox_root = _sandbox_root()
-    if metadata.get("kind") == "task_session":
+    if metadata.get("kind") == "coding_application":
         task_id = str(metadata.get("task_id", "")).strip()
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", task_id):
             raise ValueError("Task session has an invalid task_id for sandbox scope.")
@@ -2263,12 +2263,12 @@ TEAMMATE_HANDLER = make_teammate_handlers("")
 
 
 MEMORY = MemoryStore()
-TASK_MEMORY_ROOT = (WORKDIR / ".task_sessions").resolve()
+TASK_MEMORY_ROOT = (WORKDIR / ".coding_applications").resolve()
 
 
 def memory_store_for_session(session=None) -> MemoryStore:
     metadata = getattr(session, "metadata", {}) or {}
-    if metadata.get("kind") != "task_session":
+    if metadata.get("kind") != "coding_application":
         if explicit_user_id_for_session(session) is None:
             return MEMORY
         return MemoryStore(memory_root_for_session(WORKDIR, session))
@@ -2286,7 +2286,7 @@ def memory_store_for_session(session=None) -> MemoryStore:
     else:
         root = (TASK_MEMORY_ROOT / task_id / "memory").resolve()
     if not root.is_relative_to(TASK_MEMORY_ROOT):
-        raise ValueError("Task memory root escapes .task_sessions.")
+        raise ValueError("Task memory root escapes .coding_applications.")
     return MemoryStore(root)
 
 

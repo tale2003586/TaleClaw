@@ -5,7 +5,7 @@ from pathlib import Path
 
 from evaluation.harness import _tool_registry_for, diagnose_failure, run_coding_benchmark
 from evaluation.task_schema import load_benchmark
-from sessions.session import Session
+from runtime.sessions.session import Session
 
 
 class CodingBenchmarkTests(unittest.TestCase):
@@ -112,7 +112,7 @@ class CodingBenchmarkTests(unittest.TestCase):
 
     def test_benchmark_allowed_write_tools_are_visible_without_unlock(self) -> None:
         registry = _tool_registry_for(["list_files", "read_file", "edit_file", "git_diff"])
-        session = Session(id="task:benchmark", current_mode="coding")
+        session = Session(id="task:benchmark", active_agent="coding")
 
         visible = registry.visible_names_for_turn(session, "coding")
 

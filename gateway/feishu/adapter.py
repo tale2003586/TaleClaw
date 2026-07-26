@@ -11,7 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import urlparse
 
-from bus.events import OutboundMessage
+from runtime.messaging.events import OutboundMessage
 from gateway.base import ChannelAdapter
 from gateway.feishu.client import FeishuApiClient
 from gateway.feishu.identity import FeishuIdentity, FeishuIdentityResolver

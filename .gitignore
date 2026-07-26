@@ -1,9 +1,16 @@
 __pycache__/
 *.py[cod]
+.DS_Store
+._*
+node_modules/
+*.tar.gz
+*.egg-info/
+.pytest_cache/
 
 .sessions/
 .claude/
 .task_sessions/
+.coding_applications/
 .task_sandbox/
 .tasks/
 .team/

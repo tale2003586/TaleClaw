@@ -1,0 +1,90 @@
+{
+  "chat": {
+    "roles": [
+      "system",
+      "user"
+    ],
+    "section_order": [
+      "system_profile",
+      "mode_instructions",
+      "skill_catalog",
+      "runtime_guidance",
+      "system_prompt",
+      "conversation_history",
+      "current_request",
+      "active_turn",
+      "memory",
+      "working_memory",
+      "retrieved_history",
+      "security_knowledge",
+      "task_runtime_events",
+      "inbox",
+      "background_results",
+      "context_frame"
+    ],
+    "section_rendered": {
+      "system_profile": true,
+      "mode_instructions": true,
+      "skill_catalog": false,
+      "runtime_guidance": true,
+      "system_prompt": true,
+      "conversation_history": false,
+      "current_request": true,
+      "active_turn": true,
+      "memory": false,
+      "working_memory": false,
+      "retrieved_history": false,
+      "security_knowledge": false,
+      "task_runtime_events": false,
+      "inbox": false,
+      "background_results": false,
+      "context_frame": false
+    },
+    "estimated_tokens": 340
+  },
+  "coding": {
+    "roles": [
+      "system",
+      "user"
+    ],
+    "section_order": [
+      "system_profile",
+      "mode_instructions",
+      "project_instructions",
+      "skill_catalog",
+      "runtime_guidance",
+      "system_prompt",
+      "conversation_history",
+      "current_request",
+      "active_turn",
+      "memory",
+      "working_memory",
+      "retrieved_history",
+      "security_knowledge",
+      "task_runtime_events",
+      "inbox",
+      "background_results",
+      "context_frame"
+    ],
+    "section_rendered": {
+      "system_profile": true,
+      "mode_instructions": true,
+      "project_instructions": true,
+      "skill_catalog": false,
+      "runtime_guidance": true,
+      "system_prompt": true,
+      "conversation_history": false,
+      "current_request": true,
+      "active_turn": true,
+      "memory": false,
+      "working_memory": false,
+      "retrieved_history": false,
+      "security_knowledge": false,
+      "task_runtime_events": false,
+      "inbox": false,
+      "background_results": false,
+      "context_frame": false
+    },
+    "estimated_tokens": 487
+  }
+}

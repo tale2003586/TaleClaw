@@ -7,7 +7,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-from runtime.db import connect, execute_many, resolve_database_config, sql
+from runtime.db import connect, execute_many, resolve_database_config, sql, table_columns
 from runtime.trace.run_state import RunState, now_iso
 
 
@@ -83,6 +83,7 @@ class TraceIndexStore:
                 )
                 """)
             )
+            self._migrate_additive_columns(conn)
             conn.execute(
                 sql(self.config, """
                 CREATE INDEX IF NOT EXISTS idx_trace_runs_started
@@ -102,6 +103,62 @@ class TraceIndexStore:
                 """)
             )
             conn.commit()
+
+    def _migrate_additive_columns(self, conn) -> None:
+        """Add trace fields that can be safely derived by NULL/default backfill."""
+        self._ensure_columns(
+            conn,
+            "trace_runs",
+            {
+                "channel": "TEXT",
+                "chat_id": "TEXT",
+                "user_id": "TEXT",
+                "user_role": "TEXT",
+                "mode": "TEXT",
+                "execution_path": "TEXT",
+                "status": "TEXT",
+                "stop_reason": "TEXT",
+                "failure_category": "TEXT",
+                "failure_reason": "TEXT",
+                "workspace_root": "TEXT",
+                "workspace_requested": "TEXT",
+                "workspace_allowed_root": "TEXT",
+                "report_path": "TEXT",
+                "summary_path": "TEXT",
+                "metrics_path": "TEXT",
+                "reasoning_steps": "INTEGER NOT NULL DEFAULT 0",
+                "model_calls_count": "INTEGER NOT NULL DEFAULT 0",
+                "tool_calls_count": "INTEGER NOT NULL DEFAULT 0",
+                "tool_failures_count": "INTEGER NOT NULL DEFAULT 0",
+                "tool_denials_count": "INTEGER NOT NULL DEFAULT 0",
+                "total_tokens": "INTEGER NOT NULL DEFAULT 0",
+                "duration_ms": "REAL",
+                "last_tool": "TEXT",
+                "started_at": "TEXT",
+                "finished_at": "TEXT",
+                "metadata": "TEXT NOT NULL DEFAULT '{}'",
+            },
+        )
+        self._ensure_columns(
+            conn,
+            "trace_steps",
+            {
+                "reasoning_step": "INTEGER",
+                "status": "TEXT",
+                "detail": "TEXT",
+                "duration_ms": "REAL",
+            },
+        )
+
+    @staticmethod
+    def _ensure_columns(conn, table: str, definitions: dict[str, str]) -> None:
+        columns = table_columns(conn, table)
+        for column, definition in definitions.items():
+            if column in columns:
+                continue
+            conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            )
 
     def upsert_run(
         self,

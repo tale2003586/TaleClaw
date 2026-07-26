@@ -2,10 +2,10 @@ import asyncio
 from types import SimpleNamespace
 import unittest
 
-from bus.events import InboundMessage
-from modes.base import ModeProfile
+from runtime.messaging.events import InboundMessage
+from tests.fakes import make_agent_spec
 from runtime.agent_loop import AgentLoop
-from sessions import Session
+from runtime.sessions import Session
 
 
 class FakeBus:
@@ -75,7 +75,7 @@ class FakePluginManager:
 class FakeRouter:
     def __init__(self, *, switched=False) -> None:
         self.switched = switched
-        self.profile = ModeProfile(
+        self.profile = make_agent_spec(
             name="chat",
             system_prompt="You are helpful.",
             tool_mode="bot",
@@ -93,17 +93,22 @@ class FakeRouter:
         )
 
 
-class FakePipeline:
+class FakeRuntime:
     def __init__(self) -> None:
         self.calls = []
 
-    def run(self, session, profile, on_text=None, run_state=None, trace_store=None):
-        self.calls.append((session, profile, run_state, trace_store))
+    def run(self, agent, input, context):
+        session = context.session
+        self.calls.append((session, agent, context.run_state, context.trace_store))
         reply = "pipeline reply"
-        session.add_message("assistant", reply, metadata={"run_id": run_state.run_id})
-        if on_text:
-            on_text(reply)
-        return reply
+        session.add_message(
+            "assistant",
+            reply,
+            metadata={"run_id": context.run_state.run_id},
+        )
+        if context.on_text:
+            context.on_text(reply)
+        return SimpleNamespace(output=reply)
 
 
 class AgentLoopPhaseTests(unittest.TestCase):
@@ -120,7 +125,7 @@ class AgentLoopPhaseTests(unittest.TestCase):
         inbound = self._inbound()
         bus = FakeBus(inbound)
         sessions = FakeSessions()
-        pipeline = FakePipeline()
+        pipeline = FakeRuntime()
         plugin_manager = FakePluginManager()
         trace_store = FakeTraceStore()
         emitted = []
@@ -149,7 +154,7 @@ class AgentLoopPhaseTests(unittest.TestCase):
         inbound = self._inbound()
         bus = FakeBus(inbound)
         sessions = FakeSessions()
-        pipeline = FakePipeline()
+        pipeline = FakeRuntime()
         loop = AgentLoop(
             bus,
             sessions,
@@ -170,7 +175,7 @@ class AgentLoopPhaseTests(unittest.TestCase):
         loop = AgentLoop(
             FakeBus(),
             FakeSessions(),
-            FakePipeline(),
+            FakeRuntime(),
             FakeRouter(),
         )
 

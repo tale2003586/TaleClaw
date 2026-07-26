@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from runtime.failure_reasons import SUBAGENT_AUTO_RETRY_REASONS
+from runtime.execution.failure_reasons import SUBAGENT_AUTO_RETRY_REASONS
 
 
 MAX_AUTO_RETRIES_PER_TASK = 1

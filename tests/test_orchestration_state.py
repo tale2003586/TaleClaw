@@ -10,7 +10,7 @@ from agents.subagent.orchestration_state import (
     record_subagent_dispatch,
     record_subagent_results,
 )
-from runtime.failure_reasons import SubagentFailureReason
+from runtime.execution.failure_reasons import SubagentFailureReason
 
 
 def _session():

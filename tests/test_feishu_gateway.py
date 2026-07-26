@@ -6,11 +6,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from bus.events import OutboundMessage
+from runtime.messaging.events import OutboundMessage
 from gateway.feishu.adapter import FeishuGateway
 from gateway.feishu.identity import FeishuIdentity, FeishuIdentityResolver
 from gateway.feishu.store import FeishuGatewayStore
-from postgres_utils import temporary_postgres_schema
+from tests.postgres_utils import temporary_postgres_schema
 
 
 class FakeBus:
@@ -92,6 +92,60 @@ class FeishuIdentityResolverTests(unittest.TestCase):
 
 
 class FeishuGatewayStoreTests(unittest.TestCase):
+    def test_existing_outbox_schema_is_migrated_for_documents(self):
+        with temporary_postgres_schema("feishu_schema") as dsn:
+            import psycopg
+
+            with psycopg.connect(dsn) as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE feishu_outbox (
+                        id         BIGSERIAL PRIMARY KEY,
+                        chat_id    TEXT NOT NULL,
+                        text       TEXT NOT NULL,
+                        status     TEXT NOT NULL DEFAULT 'pending',
+                        attempts   INTEGER NOT NULL DEFAULT 0,
+                        source     TEXT,
+                        metadata   TEXT NOT NULL DEFAULT '{}',
+                        error      TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        sent_at    TEXT
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT INTO feishu_outbox (
+                        chat_id, text, status, attempts, source, metadata,
+                        created_at, updated_at
+                    )
+                    VALUES (
+                        'oc_chat', 'preserved', 'pending', 0, 'legacy', '{}',
+                        '2026-01-01', '2026-01-01'
+                    )
+                    """
+                )
+
+            store = FeishuGatewayStore(dsn)
+            try:
+                store.enqueue_document(
+                    chat_id="oc_chat",
+                    document_path="storage/reports/a.md",
+                    caption="report",
+                )
+                pending = store.list_pending_messages()
+            finally:
+                store.close()
+
+            reopened = FeishuGatewayStore(dsn)
+            reopened.close()
+
+        self.assertEqual(["text", "document"], [item["message_type"] for item in pending])
+        self.assertEqual("preserved", pending[0]["text"])
+        self.assertEqual("storage/reports/a.md", pending[1]["document_path"])
+        self.assertEqual("report", pending[1]["caption"])
+
     def test_event_dedupe_conversation_and_outbox_round_trip(self):
         with temporary_postgres_schema("feishu_store") as dsn:
             store = FeishuGatewayStore(dsn)

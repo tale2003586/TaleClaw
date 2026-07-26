@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from runtime.failure_reasons import StopReason, SubagentFailureReason
+from runtime.execution.failure_reasons import StopReason, SubagentFailureReason
 
 
 STATUS_COMPLETED = "completed"

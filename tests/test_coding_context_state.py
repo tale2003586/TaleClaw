@@ -3,9 +3,13 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from runtime.coding_context_state import CODING_CONTEXT_STATE_METADATA_KEY
+from applications.coding.context_state import (
+    CODING_CONTEXT_STATE_METADATA_KEY,
+    build_coding_context_view,
+)
 from runtime.context import ContextBuilder
-from sessions.session import Session
+from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
+from runtime.sessions.session import Session
 
 
 def _read_file_group(index: int, *, path: str, marker: str) -> list[dict]:
@@ -41,7 +45,7 @@ def _read_file_group(index: int, *, path: str, marker: str) -> list[dict]:
 
 class CodingContextStateTests(unittest.TestCase):
     def test_coding_context_state_compacts_old_tool_groups(self) -> None:
-        session = Session(id="task:coding-state", current_mode="coding")
+        session = Session(id="task:coding-state", active_agent="coding")
         session.add_message("user", "请检查这些文件并总结下一步")
         session.messages.extend(
             _read_file_group(0, path="old_a.py", marker="old-marker-a")
@@ -55,12 +59,15 @@ class CodingContextStateTests(unittest.TestCase):
 
         profile = SimpleNamespace(system_prompt="base", tool_mode="coding")
         with (
-            patch("runtime.context.CODING_CONTEXT_STATE_ENABLED", True),
-            patch("runtime.context.CODING_CONTEXT_COMPACTION_TRIGGER_TOKENS", 1000),
-            patch("runtime.context.CODING_CONTEXT_COMPACTION_TARGET_TOKENS", 500),
-            patch("runtime.context.CODING_CONTEXT_RECENT_GROUPS", 1),
+            patch("runtime.context.builder.CODING_CONTEXT_STATE_ENABLED", True),
+            patch("runtime.context.builder.CODING_CONTEXT_COMPACTION_TRIGGER_TOKENS", 1000),
+            patch("runtime.context.builder.CODING_CONTEXT_COMPACTION_TARGET_TOKENS", 500),
+            patch("runtime.context.builder.CODING_CONTEXT_RECENT_GROUPS", 1),
         ):
-            context = ContextBuilder().build(
+            context = ContextBuilder(
+                context_providers=DEFAULT_CONTEXT_PROVIDERS,
+                coding_context_view_builder=build_coding_context_view,
+            ).build(
                 session=session,
                 profile=profile,
                 active_turn_start_index=0,

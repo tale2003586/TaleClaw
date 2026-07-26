@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from web.auth_store import EnvironmentUser, WebAuthStore
 from web.server import AUTH_COOKIE_NAME, RequestHandler
-from postgres_utils import temporary_postgres_schema
+from tests.postgres_utils import temporary_postgres_schema
 
 
 class WebAuthStoreTests(unittest.TestCase):

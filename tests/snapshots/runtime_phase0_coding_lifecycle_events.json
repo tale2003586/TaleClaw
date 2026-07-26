@@ -1,0 +1,20 @@
+[
+  "run.started",
+  "workspace.resolved",
+  "coding_application_started",
+  "workspace.snapshot.captured",
+  "reasoning_step_started",
+  "reasoning.step.started",
+  "context.build.started",
+  "context.build.completed",
+  "model_requested",
+  "model.call.started",
+  "model.call.completed",
+  "model_returned",
+  "reasoning.step.completed",
+  "reasoning_loop_completed",
+  "memory.lifecycle.completed",
+  "workspace.snapshot.captured",
+  "workspace.diff.written",
+  "coding_application_completed"
+]

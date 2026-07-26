@@ -59,7 +59,7 @@ class MarkdownPdfPlugin(Plugin):
                 ),
                 handler=self.markdown_to_pdf,
                 risk="normal",
-                enabled_modes={"bot", "coding"},
+                allowed_agents={"bot", "coding"},
                 always_on=True,
                 session_scoped=True,
                 source="plugin:markdown_pdf",

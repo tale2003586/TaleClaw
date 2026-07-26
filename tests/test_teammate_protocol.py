@@ -3,9 +3,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from bus import AgentMessage, MessageType
-from coding_runtime.protocols import ProtocolManager
-from coding_runtime.teammate import TeammateManager
+from runtime.messaging import AgentMessage, MessageType
+from applications.coding.orchestration.protocols import ProtocolManager
+from applications.coding.orchestration.teammate import TeammateManager
 from tools.handlers import _spawn_teammate_with_protocol
 
 
@@ -71,7 +71,7 @@ class TeammateProtocolTests(unittest.TestCase):
         fake_bus = FakeBus()
         with tempfile.TemporaryDirectory() as tmpdir:
             manager = TeammateManager(Path(tmpdir) / ".team")
-            with patch("coding_runtime.teammate.BUS", fake_bus):
+            with patch("applications.coding.orchestration.teammate.BUS", fake_bus):
                 manager._send_error_to_lead("alice", RuntimeError("boom"))
 
         self.assertEqual(1, len(fake_bus.sent))
@@ -85,7 +85,7 @@ class TeammateProtocolTests(unittest.TestCase):
         fake_reliable = FakeReliableBus()
         manager = ProtocolManager()
 
-        with patch("coding_runtime.protocols.RELIABLE_BUS", fake_reliable):
+        with patch("applications.coding.orchestration.protocols.RELIABLE_BUS", fake_reliable):
             request_output = manager.handle_plan_request("alice", "1. Inspect\n2. Patch")
             request_id = next(iter(manager.plan_requests))
             review_output = manager.handle_plan_review(request_id, True, "go ahead")

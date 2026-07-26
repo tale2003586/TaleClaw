@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from runtime.reflection import ReflectionAgent
+from runtime.execution.reflection import ReflectionAgent
 
 
 class ReflectionRateLimitTests(unittest.TestCase):

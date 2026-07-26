@@ -1,174 +1,75 @@
 # Project Structure
 
-当前目录结构按“Agent Runtime Platform + 垂直 Agent 应用”来组织。
+TaleClaw 按 Core Runtime、Applications、Agent Definitions 和 Optional
+Extensions 组织。生产代码不再使用 Mode、Pipeline 或兼容 shim。
 
-核心原则：
-
-```text
-runtime/ 承载通用 agent 执行链路
-models/ 承载模型 provider 与模型路由
-agents/ 承载平台上的垂直 agent 应用
-tools/memory/sessions/bus/plugins 保持领域分层
-旧兼容 shim 归档到 legacy/compat/
-```
-
-## 当前主结构
+## 主结构
 
 ```text
-runtime/
-  bootstrap.py
-  app_runtime.py
-  agent_loop.py
-  pipeline.py
-  agent_runner.py
-  reasoning_loop.py
-  context.py
-  compact.py
-  reflection.py
-  agent_spec.py
-  trace/
-    run_state.py
-    trace_store.py
-  routing/
-    router.py
-    intent.py
-    execution_plan.py
-
-models/
-  provider.py
-  model_pool.py
-  model_task_runner.py
-
-agents/
+applications/
   coding/
-    runner.py
-    session.py
+    runner.py              # CodingApplication 生命周期
+    session.py             # 隔离 Coding Session
+    context_state.py
+    handoff.py
     artifacts.py
     conclusions.py
     promotion.py
     memory_lifecycle.py
+    orchestration/         # task board、teammate、background task
 
-bus/
-  events.py
-  user_bus.py
-  team_bus.py
+agents/
+  definitions.py           # Bot/Coding AgentSpec
+  subagent/                # Child Run 与 Subagent result/protocol
 
-modes/
-  base.py
-  bot.py
-  coding.py
-  hybrid_classifier.py
+runtime/
+  runtime.py               # 唯一 Runtime.run() 入口和 turn execution
+  agent_loop.py
+  context/                 # Builder、Provider、Budget、History、Report
+  execution/               # AgentRunner、ReasoningLoop、Policy、Failure
+  tooling/                 # Tool result 压缩、存储与签名
+  routing/                 # AgentRouter、ExecutionPlan、Intent
+  messaging/               # user/team message buses
+  sessions/                # Session 与 PostgreSQL SessionStore
+  trace/                   # 可选 Trace
 
-tools/
-  schema.py
-  tool_registry.py
-  policy.py
-  executor.py
-  hooks.py
-  handlers.py
-
-memory/
-  store.py
-  scoped_store.py
-  lifecycle.py
-  archive_store.py
-  history_summary.py
-
-sessions/
-  session.py
-  session_store.py
-
-plugins/
-  base.py
-  plugin_manager.py
-  markdown_pdf/
-  shell_safety/
-  status_commands/
-  web_search/
-
-gateway/
-  base.py
-  feishu/
-  telegram/
-
-web/
-  server.py
-  auth_store.py
-  static/
-
-legacy/
-  compat/
-    core/
-    tasksessions/
-    modes/
+models/                    # Provider、ModelPool、ModelTaskRunner
+tools/                     # Schema、Authorization、Executor、Hooks
+memory/                    # Memory 扩展与 Background lifecycle
+retrieval/ + knowledge/    # Security RAG
+plugins/                   # 可选产品插件
+gateway/ + web/            # 外部入口
+evaluation/                # Evaluation 与 SWE-bench adapter
+tests/                     # 行为、兼容、安全和回归测试
 ```
 
-## Runtime Platform
-
-`runtime/` 是系统主干，负责一次用户请求从入口到回复的完整执行。
+## 运行链路
 
 ```text
-MessageBus
-  -> AgentLoop
-  -> RunState / TraceStore
-  -> routing.ModeRouter
-  -> Pipeline 或 agents.coding.TaskSessionRunner
-  -> AgentRunner
-  -> ReasoningLoop
-  -> outbound reply
+Gateway / CLI / Web
+→ AppRuntime
+→ runtime.messaging
+→ AgentLoop
+→ AgentRouter
+→ Runtime.run(AgentSpec, input, RunContext)
+→ runtime.execution.AgentRunner
+→ runtime.execution.ReasoningLoop
+→ ToolExecutor / ModelProvider
 ```
 
-重要边界：
+Coding 请求进入 `applications.coding.CodingApplication`，由它管理 workspace、
+隔离 Session、handoff、artifact、结论和 Memory promotion；通用 Runtime 不承担
+这些应用职责。
 
-- `runtime/kernel.py` 集中持有运行时依赖。
-- `runtime/app_runtime.py` 管理 runtime 生命周期。
-- `runtime/trace/` 记录 `.runs/<run_id>/run_state.json`、`trace.jsonl`、`report.json`。
-- `runtime/routing/` 把用户输入拆成 intent，并规划 execution path。
-
-## Models
-
-`models/` 承载模型相关能力：
-
-- `provider.py`：OpenAI compatible / responses API 等 provider 封装。
-- `model_pool.py`：按用途路由模型，支持 fallback。
-- `model_task_runner.py`：一次性模型任务，比如总结、反思、结论提取。
-
-## Coding Agent
-
-`agents/coding/` 是 Runtime Platform 上的垂直应用。
-
-它负责把仓库级代码任务隔离到 task session 中执行：
+## 依赖方向
 
 ```text
-TaskSessionRunner
-  -> TaskSessionFactory
-  -> task-local MemoryStore
-  -> Coding Pipeline
-  -> TaskArtifactWriter
-  -> TASK_LOG.md / CONCLUSIONS.json
-  -> TaskMemoryPromoter
+gateway/web → runtime + applications
+applications → runtime + extensions
+agents → runtime contracts
+runtime → models/tools
+extensions → runtime contracts
 ```
 
-这样主会话只保留最终摘要和高价值结论，工具调用、测试输出和中间过程留在 task session 与 trace 中。
-
-## Legacy Compatibility
-
-旧路径 shim 不再放在主目录中，已经归档到：
-
-```text
-legacy/compat/core/
-legacy/compat/tasksessions/
-legacy/compat/modes/
-```
-
-新代码应优先使用新路径：
-
-```text
-runtime.*
-runtime.trace.*
-runtime.routing.*
-models.*
-agents.coding.*
-```
-
-当前仓库代码和测试不再依赖 `core.*`、`tasksessions.*`、`modes.router`、`modes.intent`、`modes.execution_plan` 这些旧路径。
+`runtime` 不依赖 Gateway；`agents` 不持有 Session 状态；Optional Extensions
+不成为 `Runtime.run()` 的强制依赖。

@@ -14,7 +14,7 @@ from agents.subagent.failure import (
 from agents.subagent.prompting import output_schema_for
 from agents.subagent.retry import annotate_retry_result, should_auto_retry
 from config import WORKING_MEMORY_CHECKPOINT_ENABLED
-from runtime.failure_reasons import StopReason
+from runtime.execution.failure_reasons import StopReason
 from runtime.working_memory import checkpoint_subtask_results
 
 

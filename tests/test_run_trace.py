@@ -6,14 +6,14 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from bus.events import InboundMessage
-from bus.user_bus import MessageBus
+from runtime.messaging.events import InboundMessage
+from runtime.messaging.user_bus import MessageBus
 from plugins import PluginManager
 from plugins.run_report import RunReportPlugin
-from runtime.background_memory import BackgroundMemoryLifecycle
+from memory.background_lifecycle import BackgroundMemoryLifecycle
 from runtime.agent_loop import AgentLoop
 from runtime.context import ContextBuilder as RealContextBuilder
-from runtime.pipeline import Pipeline
+from runtime.runtime import Runtime
 from models.provider import LLMResponse, ToolCall
 from runtime.trace.run_state import RunState
 from runtime.trace.summary import build_trace_summary_payload
@@ -22,13 +22,13 @@ from runtime.trace.workspace import capture_workspace_snapshot, diff_workspace_s
 from runtime.workspace import WorkspaceResolver
 from memory.store import MemoryStore
 from memory.lifecycle import MemoryLifecycleResult
-from runtime.routing.router import ModeRouter
-from sessions.session import Session, SessionManager
-from postgres_utils import temporary_postgres_schema
-from agents.coding.conclusions import ConclusionExtraction
-from agents.coding.promotion import PromotionResult
-from agents.coding.runner import TaskSessionRunner
-from agents.coding.session import TaskSessionFactory
+from runtime.routing.agent_router import AgentRouter
+from runtime.sessions.session import Session, SessionManager
+from tests.postgres_utils import temporary_postgres_schema
+from applications.coding.conclusions import ConclusionExtraction
+from applications.coding.promotion import PromotionResult
+from applications.coding.runner import CodingApplication
+from applications.coding.session import TaskSessionFactory
 from tools.executor import ToolExecutor
 from tools.handlers import run_read, run_write
 from tools.schema import function_tool
@@ -147,14 +147,14 @@ def _registry() -> ToolRegistry:
     registry.register(
         function_tool("echo", "Echo text.", {"text": {"type": "string"}}, ["text"]),
         lambda **kwargs: f"echo: {kwargs['text']}",
-        enabled_modes={"bot", "coding"},
+        allowed_agents={"bot", "coding"},
         always_on=True,
     )
     return registry
 
 
-def _pipeline(provider) -> Pipeline:
-    return Pipeline(
+def _pipeline(provider) -> Runtime:
+    return Runtime(
         tools=_registry(),
         provider=provider,
         model="test-model",
@@ -163,8 +163,8 @@ def _pipeline(provider) -> Pipeline:
     )
 
 
-def _pipeline_with_memory_trace(provider) -> Pipeline:
-    return Pipeline(
+def _pipeline_with_memory_trace(provider) -> Runtime:
+    return Runtime(
         tools=_registry(),
         provider=provider,
         model="test-model",
@@ -174,8 +174,8 @@ def _pipeline_with_memory_trace(provider) -> Pipeline:
     )
 
 
-def _real_context_pipeline(provider) -> Pipeline:
-    return Pipeline(
+def _real_context_pipeline(provider) -> Runtime:
+    return Runtime(
         tools=_registry(),
         provider=provider,
         model="test-model",
@@ -184,7 +184,7 @@ def _real_context_pipeline(provider) -> Pipeline:
     )
 
 
-def _workspace_pipeline(provider) -> Pipeline:
+def _workspace_pipeline(provider) -> Runtime:
     registry = ToolRegistry()
     registry.register(
         function_tool(
@@ -201,7 +201,7 @@ def _workspace_pipeline(provider) -> Pipeline:
             kwargs["content"],
             _session=kwargs.get("_session"),
         ),
-        enabled_modes={"coding"},
+        allowed_agents={"coding"},
         always_on=True,
     )
     registry.register(
@@ -219,9 +219,9 @@ def _workspace_pipeline(provider) -> Pipeline:
             kwargs.get("limit"),
             _session=kwargs.get("_session"),
         ),
-        enabled_modes={"coding"},
+        allowed_agents={"coding"},
     )
-    return Pipeline(
+    return Runtime(
         tools=registry,
         provider=provider,
         model="test-model",
@@ -644,7 +644,7 @@ class RunTraceTests(unittest.TestCase):
         self.assertEqual(3, summary["metrics"]["evidence_gathering_steps"])
 
     def test_tool_loop_context_preserves_active_turn_order(self) -> None:
-        session = Session(id="web:default", current_mode="bot")
+        session = Session(id="web:default", active_agent="bot")
         session.add_message("user", "old task " + ("x" * 300))
         session.add_message("assistant", "old answer")
         session.add_message("user", "please echo")
@@ -654,7 +654,7 @@ class RunTraceTests(unittest.TestCase):
         ])
         pipeline = _real_context_pipeline(provider)
 
-        pipeline.run(
+        pipeline.run_turn(
             session,
             SimpleNamespace(tool_mode="bot"),
         )
@@ -674,7 +674,7 @@ class RunTraceTests(unittest.TestCase):
     def test_agent_loop_writes_run_state_trace_and_report_for_tool_turn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             trace_store = TraceStore(Path(tmp) / ".runs")
-            session = Session(id="web:default", current_mode="bot")
+            session = Session(id="web:default", active_agent="bot")
             sessions = RecordingSessions(session)
             provider = ScriptedProvider([
                 _tool_response(1, arguments={"text": "hello"}),
@@ -685,7 +685,7 @@ class RunTraceTests(unittest.TestCase):
                 bus,
                 sessions,
                 _pipeline(provider),
-                ModeRouter(),
+                AgentRouter(),
                 plugin_manager=PluginManager(
                     [RunReportPlugin()],
                     workspace=Path(tmp),
@@ -722,9 +722,9 @@ class RunTraceTests(unittest.TestCase):
             self.assertEqual(1, state["tool_calls"])
             self.assertEqual("echo", state["last_tool"])
             self.assertEqual("done", state["final_answer"])
-            self.assertEqual("pipeline_bot", state["execution_path"])
+            self.assertEqual("runtime", state["execution_path"])
             self.assertEqual("local", state["user_id"])
-            self.assertEqual("pipeline_bot", report["report"]["execution_path"])
+            self.assertEqual("runtime", report["report"]["execution_path"])
             self.assertIn("run.started", event_names)
             self.assertEqual(1, event_names.count("run.started"))
             self.assertNotIn("run_started", event_names)
@@ -751,7 +751,7 @@ class RunTraceTests(unittest.TestCase):
     def test_memory_lifecycle_trace_events_are_recorded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             trace_store = TraceStore(Path(tmp) / ".runs")
-            session = Session(id="web:default", current_mode="bot")
+            session = Session(id="web:default", active_agent="bot")
             sessions = RecordingSessions(session)
             provider = ScriptedProvider([_final_response("done")])
             bus = MessageBus()
@@ -759,7 +759,7 @@ class RunTraceTests(unittest.TestCase):
                 bus,
                 sessions,
                 _pipeline_with_memory_trace(provider),
-                ModeRouter(),
+                AgentRouter(),
                 plugin_manager=PluginManager([], workspace=Path(tmp), tool_registry=_registry()),
                 trace_store=trace_store,
             )
@@ -816,19 +816,19 @@ class RunTraceTests(unittest.TestCase):
     def test_background_memory_lifecycle_does_not_block_pipeline_reply(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             trace_store = TraceStore(Path(tmp) / ".runs")
-            session = Session(id="web:default", current_mode="bot")
+            session = Session(id="web:default", active_agent="bot")
             run_state = RunState.create(
                 session_id=session.id,
                 channel="web",
                 chat_id="default",
                 mode="bot",
-                execution_path="pipeline_bot",
+                execution_path="runtime",
             )
             trace_store.start_run(run_state)
             slow_lifecycle = SlowMemoryLifecycle(delay=0.25)
             background_lifecycle = BackgroundMemoryLifecycle(slow_lifecycle)
             provider = ScriptedProvider([_final_response("done")])
-            pipeline = Pipeline(
+            pipeline = Runtime(
                 tools=_registry(),
                 provider=provider,
                 model="test-model",
@@ -839,7 +839,7 @@ class RunTraceTests(unittest.TestCase):
 
             session.add_message("user", "我希望这个项目用 pytest 写测试")
             started = time.perf_counter()
-            reply = pipeline.run(
+            reply = pipeline.run_turn(
                 session,
                 SimpleNamespace(tool_mode="bot"),
                 run_state=run_state,
@@ -857,7 +857,7 @@ class RunTraceTests(unittest.TestCase):
             self.assertIn("memory.lifecycle.scheduled", event_names)
             self.assertIn("memory.lifecycle.completed", event_names)
 
-    def test_coding_task_session_is_bound_to_parent_run(self) -> None:
+    def test_coding_coding_application_is_bound_to_parent_run(self) -> None:
         class Extractor:
             def extract(self, **kwargs):
                 return ConclusionExtraction(summary="No durable conclusions.")
@@ -867,18 +867,18 @@ class RunTraceTests(unittest.TestCase):
             sessions = SessionManager(dsn)
             provider = ScriptedProvider([_final_response("coding done")])
             base_pipeline = _pipeline(provider)
-            runner = TaskSessionRunner(
+            runner = CodingApplication(
                 sessions=sessions,
                 base_pipeline=base_pipeline,
                 global_memory=MemoryStore(root / "memory"),
                 workspace_root=root,
             )
-            runner.factory = TaskSessionFactory(sessions, root=root / ".task_sessions")
+            runner.factory = TaskSessionFactory(sessions, root=root / ".coding_applications")
             runner.conclusion_extractor = Extractor()
             trace_store = TraceStore(root / ".runs")
             parent = Session(
                 id="web:default",
-                current_mode="coding",
+                active_agent="coding",
                 metadata={"user_id": "local", "user_role": "admin"},
             )
             run_state = RunState.create(
@@ -886,7 +886,7 @@ class RunTraceTests(unittest.TestCase):
                 channel="web",
                 chat_id="default",
                 mode="coding",
-                execution_path="task_session",
+                execution_path="coding_application",
             )
             trace_store.start_run(run_state)
             try:
@@ -913,18 +913,18 @@ class RunTraceTests(unittest.TestCase):
             workspace_diff = json.loads(
                 (run_dir / "workspace_diff.json").read_text(encoding="utf-8")
             )
-            task_session_id = state["metadata"]["task_session"]["task_session_id"]
-            task_session = SessionManager(dsn)
+            coding_application_id = state["metadata"]["coding_application"]["coding_application_id"]
+            coding_application = SessionManager(dsn)
             try:
-                stored = task_session.get_or_create(task_session_id)
+                stored = coding_application.get_or_create(coding_application_id)
             finally:
-                task_session.close()
+                coding_application.close()
 
             self.assertIn("coding done", reply)
             self.assertEqual(run_state.run_id, stored.metadata["parent_run_id"])
-            self.assertEqual("completed", state["metadata"]["task_session"]["status"])
-            self.assertIn("task_session_started", event_names)
-            self.assertIn("task_session_completed", event_names)
+            self.assertEqual("completed", state["metadata"]["coding_application"]["status"])
+            self.assertIn("coding_application_started", event_names)
+            self.assertIn("coding_application_completed", event_names)
             self.assertIn("workspace.snapshot.captured", event_names)
             self.assertIn("workspace.diff.written", event_names)
             self.assertIn("model_requested", event_names)
@@ -933,7 +933,7 @@ class RunTraceTests(unittest.TestCase):
     def test_trace_records_context_sanitizer_drops(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             trace_store = TraceStore(Path(tmp) / ".runs")
-            session = Session(id="web:default", current_mode="bot")
+            session = Session(id="web:default", active_agent="bot")
             session.messages.append({"role": "assistant", "content": None})
             sessions = RecordingSessions(session)
             provider = ScriptedProvider([_final_response("clean")])
@@ -942,7 +942,7 @@ class RunTraceTests(unittest.TestCase):
                 bus,
                 sessions,
                 _pipeline(provider),
-                ModeRouter(),
+                AgentRouter(),
                 trace_store=trace_store,
             )
 
@@ -972,7 +972,7 @@ class RunTraceTests(unittest.TestCase):
     def test_context_sanitizer_converts_incomplete_tool_call_group(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             trace_store = TraceStore(Path(tmp) / ".runs")
-            session = Session(id="web:default", current_mode="bot")
+            session = Session(id="web:default", active_agent="bot")
             session.messages.append({
                 "role": "assistant",
                 "content": None,
@@ -990,7 +990,7 @@ class RunTraceTests(unittest.TestCase):
                 bus,
                 sessions,
                 _pipeline(provider),
-                ModeRouter(),
+                AgentRouter(),
                 trace_store=trace_store,
             )
 
@@ -1018,7 +1018,7 @@ class RunTraceTests(unittest.TestCase):
     def test_context_sanitizer_converts_interrupted_tool_call_group(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             trace_store = TraceStore(Path(tmp) / ".runs")
-            session = Session(id="web:default", current_mode="bot")
+            session = Session(id="web:default", active_agent="bot")
             session.add_message("user", "old")
             session.messages.append({
                 "role": "assistant",
@@ -1042,7 +1042,7 @@ class RunTraceTests(unittest.TestCase):
                 bus,
                 sessions,
                 _pipeline(provider),
-                ModeRouter(),
+                AgentRouter(),
                 trace_store=trace_store,
             )
 
@@ -1076,7 +1076,7 @@ class RunTraceTests(unittest.TestCase):
                 channel="web",
                 chat_id="default",
                 mode="bot",
-                execution_path="pipeline_bot",
+                execution_path="runtime",
             )
             trace_store.start_run(run_state)
             trace_store.append_event(run_state, "inbound_received", {
@@ -1098,7 +1098,7 @@ class RunTraceTests(unittest.TestCase):
             }, step=1)
             run_state.fail(RuntimeError("model exploded"))
             trace_store.write_run_state(run_state)
-            trace_store.write_report(run_state, {"execution_path": "pipeline_bot"})
+            trace_store.write_report(run_state, {"execution_path": "runtime"})
             plugin_manager = PluginManager(
                 [RunReportPlugin()],
                 workspace=Path(tmp),
@@ -1108,7 +1108,7 @@ class RunTraceTests(unittest.TestCase):
                 run_state=run_state,
                 session=Session(id="web:default"),
                 run_dir=trace_store.run_dir(run_state),
-                report={"execution_path": "pipeline_bot"},
+                report={"execution_path": "runtime"},
             )
 
             markdown_report = (
@@ -1180,18 +1180,18 @@ class RunTraceTests(unittest.TestCase):
                 ),
                 _final_response("created file"),
             ])
-            runner = TaskSessionRunner(
+            runner = CodingApplication(
                 sessions=sessions,
                 base_pipeline=_workspace_pipeline(provider),
                 global_memory=MemoryStore(root / "memory"),
                 workspace_root=workspace,
             )
-            runner.factory = TaskSessionFactory(sessions, root=root / ".task_sessions")
+            runner.factory = TaskSessionFactory(sessions, root=root / ".coding_applications")
             runner.conclusion_extractor = Extractor()
             trace_store = TraceStore(root / ".runs")
             parent = Session(
                 id="web:default",
-                current_mode="coding",
+                active_agent="coding",
                 metadata={"user_id": "local", "user_role": "admin"},
             )
             run_state = RunState.create(
@@ -1199,7 +1199,7 @@ class RunTraceTests(unittest.TestCase):
                 channel="web",
                 chat_id="default",
                 mode="coding",
-                execution_path="task_session",
+                execution_path="coding_application",
             )
             trace_store.start_run(run_state)
             try:

@@ -2,12 +2,13 @@ import unittest
 from types import SimpleNamespace
 
 from models.provider import LLMResponse, ToolCall
-from runtime.failure_reasons import (
+from runtime.execution.failure_reasons import (
     REASONING_LOOP_STOP_REASON_KEY,
     StopReason,
 )
-from runtime.pipeline import Pipeline
-from runtime.tool_signature import tool_call_signature
+from runtime.execution.loop_policies import standard_execution_policies
+from runtime.runtime import Runtime
+from runtime.tooling.signature import tool_call_signature
 from runtime.working_memory import (
     STATUS_COMPLETED,
     STATUS_RUNNING,
@@ -21,7 +22,7 @@ from runtime.working_memory import (
     render_working_memory_block,
     save_working_memory,
 )
-from sessions.session import Session
+from runtime.sessions.session import Session
 from tools.executor import ToolExecutionRequest, ToolExecutor
 from tools.hooks import ToolLoopGuardHook
 from tools.schema import function_tool
@@ -57,14 +58,15 @@ class ScriptedProvider:
         return response
 
 
-def _pipeline(provider: CountingProvider) -> Pipeline:
-    return Pipeline(
+def _pipeline(provider: CountingProvider) -> Runtime:
+    return Runtime(
         tools=ToolRegistry(),
         provider=provider,
         model="test-model",
         tool_executor=ToolExecutor([]),
         context_builder=ContextBuilder(),
         max_reasoning_steps=4,
+        execution_policy_factory=standard_execution_policies,
     )
 
 
@@ -138,7 +140,7 @@ class WorkingMemoryResumeTests(unittest.TestCase):
         )
 
     def test_subtask_checkpoint_moves_success_to_completed(self) -> None:
-        session = Session(id="task:test", current_mode="coding")
+        session = Session(id="task:test", active_agent="coding")
         prepare_working_memory_for_turn(
             session,
             objective="检查两个模块",
@@ -180,7 +182,7 @@ class WorkingMemoryResumeTests(unittest.TestCase):
                         {
                             "path": "runtime/pipeline.py",
                             "lines": "1-20",
-                            "quote_or_signal": "class Pipeline",
+                            "quote_or_signal": "class Runtime",
                         }
                     ],
                     "covered_scope": ["runtime/pipeline.py"],
@@ -203,10 +205,10 @@ class WorkingMemoryResumeTests(unittest.TestCase):
     def test_cancel_requested_stops_before_model_call_and_suspends_memory(self) -> None:
         provider = CountingProvider()
         pipeline = _pipeline(provider)
-        session = Session(id="task:cancel", current_mode="coding")
+        session = Session(id="task:cancel", active_agent="coding")
         session.add_message("user", "请检查四条线索")
 
-        reply = pipeline.run(
+        reply = pipeline.run_turn(
             session,
             SimpleNamespace(tool_mode="coding"),
             cancel_requested=lambda: True,
@@ -224,7 +226,7 @@ class WorkingMemoryResumeTests(unittest.TestCase):
     def test_successful_final_answer_marks_memory_completed(self) -> None:
         provider = CountingProvider()
         pipeline = _pipeline(provider)
-        session = Session(id="task:done", current_mode="coding")
+        session = Session(id="task:done", active_agent="coding")
         session.add_message("user", "继续")
         prepare_working_memory_for_turn(
             session,
@@ -233,7 +235,7 @@ class WorkingMemoryResumeTests(unittest.TestCase):
             task_id="task:done",
         )
 
-        reply = pipeline.run(session, SimpleNamespace(tool_mode="coding"))
+        reply = pipeline.run_turn(session, SimpleNamespace(tool_mode="coding"))
 
         self.assertEqual("done", reply)
         memory = load_working_memory(session)
@@ -244,22 +246,23 @@ class WorkingMemoryResumeTests(unittest.TestCase):
         registry.register(
             function_tool("read_file", "Read test file", {}, []),
             lambda **kwargs: "file contents",
-            enabled_modes={"coding"},
+            allowed_agents={"coding"},
             always_on=True,
         )
         provider = ScriptedProvider([
             _tool_response(1, "read_file", {"path": "README.md"}),
             _final_response("done"),
         ])
-        pipeline = Pipeline(
+        pipeline = Runtime(
             tools=registry,
             provider=provider,
             model="test-model",
             tool_executor=ToolExecutor([]),
             context_builder=ContextBuilder(),
             max_reasoning_steps=4,
+            execution_policy_factory=standard_execution_policies,
         )
-        session = Session(id="task:checkpoint", current_mode="coding")
+        session = Session(id="task:checkpoint", active_agent="coding")
         session.add_message("user", "inspect then answer")
         prepare_working_memory_for_turn(
             session,
@@ -268,7 +271,7 @@ class WorkingMemoryResumeTests(unittest.TestCase):
         )
 
         checkpoint_steps = []
-        reply = pipeline.run(
+        reply = pipeline.run_turn(
             session,
             SimpleNamespace(tool_mode="coding"),
             checkpoint_callback=lambda session: checkpoint_steps.append(
@@ -303,7 +306,7 @@ class WorkingMemoryResumeTests(unittest.TestCase):
         registry.register(
             function_tool("read_file", "Read test file", {}, []),
             lambda **kwargs: "def parse_config():\n    return {}\n",
-            enabled_modes={"coding"},
+            allowed_agents={"coding"},
             always_on=True,
         )
         provider = ScriptedProvider([
@@ -311,15 +314,16 @@ class WorkingMemoryResumeTests(unittest.TestCase):
             _tool_response(2, "read_file", {"path": "src/config.py", "offset": 0}),
             _final_response("done"),
         ])
-        pipeline = Pipeline(
+        pipeline = Runtime(
             tools=registry,
             provider=provider,
             model="test-model",
             tool_executor=ToolExecutor([]),
             context_builder=ContextBuilder(),
             max_reasoning_steps=5,
+            execution_policy_factory=standard_execution_policies,
         )
-        session = Session(id="task:ledger", current_mode="coding")
+        session = Session(id="task:ledger", active_agent="coding")
         session.add_message("user", "inspect config")
         prepare_working_memory_for_turn(
             session,
@@ -327,7 +331,7 @@ class WorkingMemoryResumeTests(unittest.TestCase):
             task_id="task:ledger",
         )
 
-        pipeline.run(session, SimpleNamespace(tool_mode="coding"))
+        pipeline.run_turn(session, SimpleNamespace(tool_mode="coding"))
 
         memory = load_working_memory(session)
         self.assertEqual(1, len(memory.observed_calls))
@@ -341,7 +345,7 @@ class WorkingMemoryResumeTests(unittest.TestCase):
         self.assertEqual("", rendered)
 
     def test_render_working_memory_has_next_queue_observed_and_protocol(self) -> None:
-        session = Session(id="task:render", current_mode="coding")
+        session = Session(id="task:render", active_agent="coding")
         prepare_working_memory_for_turn(
             session,
             objective="render state",

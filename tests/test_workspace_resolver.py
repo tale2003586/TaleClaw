@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from runtime.workspace import safe_workspace_path
-from sessions.session import Session
+from runtime.sessions.session import Session
 
 
 class WorkspaceResolverTests(unittest.TestCase):

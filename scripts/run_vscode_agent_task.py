@@ -134,7 +134,7 @@ async def run_task(args: argparse.Namespace, workspace: Path, started: float) ->
         metrics = read_json(run_dir / "metrics.json") if run_dir else {}
         report_payload = read_json(run_dir / "report.json") if run_dir else {}
         report = report_payload.get("report", {}) if isinstance(report_payload, dict) else {}
-        task_session = report.get("metadata", {}).get("task_session", {})
+        coding_application = report.get("metadata", {}).get("coding_application", {})
         reply = str(run_state.get("final_answer") or "\n".join(chunks).strip())
         return {
             "status": str(run_state.get("status") or "completed"),
@@ -146,8 +146,8 @@ async def run_task(args: argparse.Namespace, workspace: Path, started: float) ->
             "run_dir": str(run_dir) if run_dir else "",
             "trace_summary": str(run_dir / "trace_summary.md") if run_dir else "",
             "metrics": pick_metrics(metrics),
-            "task_session": task_session,
-            "workspace_diff": task_session.get("workspace_diff", {}),
+            "coding_application": coding_application,
+            "workspace_diff": coding_application.get("workspace_diff", {}),
             "duration_ms": int((time.monotonic() - started) * 1000),
             "features": {
                 "mode": args.mode,
@@ -188,7 +188,7 @@ def apply_runtime_overrides(runtime: Any, args: argparse.Namespace) -> None:
     agent_runner = getattr(pipeline, "agent_runner", None)
     if agent_runner is not None:
         agent_runner.max_reasoning_steps = max_steps
-    task_runner = getattr(runtime.loop, "task_session_runner", None)
+    task_runner = getattr(runtime.loop, "coding_application", None)
     base_pipeline = getattr(task_runner, "base_pipeline", None)
     base_agent_runner = getattr(base_pipeline, "agent_runner", None)
     if base_agent_runner is not None:

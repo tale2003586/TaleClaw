@@ -356,7 +356,7 @@ def _friendly_runtime_error(exc: BaseException) -> str:
 
 
 def read_sessions(user_id: str = DEFAULT_USER_ID) -> list[dict[str, Any]]:
-    from sessions.session_store import SessionStore
+    from runtime.sessions.session_store import SessionStore
 
     store = SessionStore()
     try:
@@ -366,7 +366,7 @@ def read_sessions(user_id: str = DEFAULT_USER_ID) -> list[dict[str, Any]]:
 
     sessions: list[dict[str, Any]] = []
     for row in rows:
-        if _is_internal_task_session(row):
+        if _is_internal_coding_application(row):
             continue
         parsed = parse_web_session_id(row["id"])
         if parsed is None or parsed[0] != user_id:
@@ -382,7 +382,7 @@ def read_sessions(user_id: str = DEFAULT_USER_ID) -> list[dict[str, Any]]:
 
 
 def _delete_stored_session(session_id: str) -> bool:
-    from sessions.session_store import SessionStore
+    from runtime.sessions.session_store import SessionStore
 
     store = SessionStore()
     try:
@@ -506,9 +506,9 @@ def _stream_number(value: Any) -> int | float | None:
     return int(number) if number.is_integer() else round(number, 3)
 
 
-def _is_internal_task_session(row: dict[str, Any]) -> bool:
+def _is_internal_coding_application(row: dict[str, Any]) -> bool:
     metadata = row.get("metadata") or {}
-    return row.get("id", "").startswith("task:") or metadata.get("kind") == "task_session"
+    return row.get("id", "").startswith("task:") or metadata.get("kind") == "coding_application"
 
 
 def read_session(
@@ -517,7 +517,7 @@ def read_session(
     user_id: str = DEFAULT_USER_ID,
     raw: bool = False,
 ) -> dict[str, Any]:
-    from sessions.session_store import SessionStore
+    from runtime.sessions.session_store import SessionStore
 
     storage_id = _web_storage_id(session_id, user_id)
     store = SessionStore()
@@ -534,7 +534,7 @@ def read_session(
             "channel": "web",
             "can_chat": True,
             "messages": [],
-            "current_mode": "hybrid",
+            "active_agent": "hybrid",
         }
     _, chat_id = parse_web_session_id(session["id"]) or (user_id, session_id)
     session["channel"] = "web"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from runtime.failure_reasons import INCOMPLETE_STEP_LIMIT_PREFIX
+from runtime.execution.failure_reasons import INCOMPLETE_STEP_LIMIT_PREFIX
 from runtime.units.json_repair import repair_json_object
 
 

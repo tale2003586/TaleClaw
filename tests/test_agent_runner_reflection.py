@@ -1,12 +1,12 @@
 import unittest
 from types import SimpleNamespace
 
-from runtime.agent_runner import AgentRunner
+from runtime.execution.agent_runner import AgentRunner
 from runtime.agent_spec import AgentSpec
 from models.provider import LLMResponse, ToolCall
-from runtime.reflection import ReflectionAgent, ReflectionDecision
-from modes.base import ModeProfile
-from sessions import Session
+from runtime.execution.reflection import ReflectionAgent, ReflectionDecision
+from tests.fakes import make_agent_spec
+from runtime.sessions import Session
 from tools.executor import ToolExecutor
 from tools.hooks import ToolLoopGuardHook
 from tools.schema import function_tool
@@ -73,7 +73,7 @@ class LoopGuardReflectionAgent:
 
 
 def _profile(tool_mode="bot"):
-    return ModeProfile(
+    return make_agent_spec(
         name=tool_mode,
         tool_mode=tool_mode,
         system_prompt="test profile",
@@ -85,7 +85,7 @@ def _registry():
     registry.register(
         function_tool("echo", "Echo test tool", {"text": {"type": "string"}}, ["text"]),
         lambda **kwargs: f"echo: {kwargs['text']}",
-        enabled_modes={"bot", "coding", "teammate"},
+        allowed_agents={"bot", "coding", "teammate"},
         always_on=True,
     )
     return registry

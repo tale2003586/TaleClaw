@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from sessions.session import Session
+from runtime.sessions.session import Session
 from tools.handlers import configure_subagent_runner, make_lead_handlers
 
 
@@ -52,7 +52,7 @@ class SubagentDispatchValidationTests(unittest.TestCase):
             )
             session = Session(
                 id="parent",
-                current_mode="coding",
+                active_agent="coding",
                 metadata={"user_role": "admin", "workspace_root": tmp},
             )
             task = {
@@ -79,7 +79,7 @@ class SubagentDispatchValidationTests(unittest.TestCase):
             (workspace / "package.json").write_text("{}\n", encoding="utf-8")
             session = Session(
                 id="parent",
-                current_mode="coding",
+                active_agent="coding",
                 metadata={"user_role": "admin", "workspace_root": tmp},
             )
             task = {

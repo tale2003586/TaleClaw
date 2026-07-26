@@ -40,13 +40,11 @@ py-modules = ["cli", "config", "user_scope"]
 [tool.setuptools.packages.find]
 include = [
     "runtime*",
+    "applications*",
     "agents*",
     "models*",
-    "modes*",
     "tools*",
     "memory*",
-    "sessions*",
-    "bus*",
     "gateway*",
     "plugins*",
     "retrieval*",

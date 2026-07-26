@@ -3,8 +3,9 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from runtime.context import ContextBuilder
-from sessions.session import Session
+from runtime.context import ContextBuilder, PromptAssetsService
+from runtime.context.budget import ContextBudgeter
+from runtime.sessions.session import Session
 from skill_runtime.loader import SkillLoader
 
 
@@ -77,7 +78,14 @@ class SkillRuntimeTests(unittest.TestCase):
                 encoding="utf-8",
             )
             loader = SkillLoader(skills_dir)
-            builder = ContextBuilder(skill_loader=loader)
+            budgeter = ContextBudgeter.from_env()
+            builder = ContextBuilder(
+                budgeter=budgeter,
+                prompt_assets_service=PromptAssetsService(
+                    budgeter=budgeter,
+                    skill_loader=loader,
+                ),
+            )
 
             context = builder.build(
                 session=Session(id="web:test"),

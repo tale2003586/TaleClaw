@@ -3,7 +3,7 @@ import unittest
 
 from agents.subagent.failure import classify_subagent_failure
 from agents.subagent.prompting import extract_structured_result
-from runtime.failure_reasons import SubagentFailureReason
+from runtime.execution.failure_reasons import SubagentFailureReason
 from runtime.units.json_repair import repair_json_object
 
 

@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import httpx
 
-from bus.events import InboundMessage, OutboundMessage
+from runtime.messaging.events import InboundMessage, OutboundMessage
 from runtime.agent_loop import AgentLoop
 from gateway.telegram.adapter import TelegramGateway
 from gateway.telegram.client import TelegramBotApiClient, split_telegram_text
@@ -17,8 +17,8 @@ from gateway.telegram.store import (
     build_runtime_chat_id,
     external_chat_id_from_runtime,
 )
-from sessions import Session
-from postgres_utils import temporary_postgres_schema
+from runtime.sessions import Session
+from tests.postgres_utils import temporary_postgres_schema
 
 
 class TelegramIdentityResolverTests(unittest.TestCase):
@@ -108,6 +108,18 @@ class TelegramGatewayStoreTests(unittest.TestCase):
                     )
                     """
                 )
+                conn.execute(
+                    """
+                    INSERT INTO telegram_outbox (
+                        chat_id, text, status, attempts, source, metadata,
+                        created_at, updated_at
+                    )
+                    VALUES (
+                        '123', 'preserved', 'pending', 0, 'legacy', '{}',
+                        '2026-01-01', '2026-01-01'
+                    )
+                    """
+                )
 
             store = TelegramGatewayStore(dsn)
             try:
@@ -120,9 +132,13 @@ class TelegramGatewayStoreTests(unittest.TestCase):
             finally:
                 store.close()
 
-        self.assertEqual("document", pending[0]["message_type"])
-        self.assertEqual("storage/reports/daily.md", pending[0]["document_path"])
-        self.assertEqual("daily", pending[0]["caption"])
+            reopened = TelegramGatewayStore(dsn)
+            reopened.close()
+
+        self.assertEqual(["text", "document"], [item["message_type"] for item in pending])
+        self.assertEqual("preserved", pending[0]["text"])
+        self.assertEqual("storage/reports/daily.md", pending[1]["document_path"])
+        self.assertEqual("daily", pending[1]["caption"])
 
 
 class TelegramClientTests(unittest.IsolatedAsyncioTestCase):
@@ -283,11 +299,11 @@ def private_update(update_id=1, *, chat_id=123, user_id=123, text="hello"):
 
 class TelegramGatewayTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        self.schema = temporary_postgres_schema("telegram_gateway")
+        self.dsn = self.schema.__enter__()
         self.temp_dir = tempfile.TemporaryDirectory()
         self.old_cwd = Path.cwd()
         os.chdir(self.temp_dir.name)
-        self.schema = temporary_postgres_schema("telegram_gateway")
-        self.dsn = self.schema.__enter__()
         self.store = TelegramGatewayStore(self.dsn)
         self.client = FakeTelegramClient()
         self.runtime = FakeRuntime()

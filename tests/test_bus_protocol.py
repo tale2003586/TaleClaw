@@ -2,7 +2,7 @@ import threading
 import time
 import unittest
 
-from bus import AgentMessage, MessageType, ReliableMessageBus, render_agent_message
+from runtime.messaging import AgentMessage, MessageType, ReliableMessageBus, render_agent_message
 
 
 class FakeBus:

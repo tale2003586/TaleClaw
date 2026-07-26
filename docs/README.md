@@ -2,6 +2,11 @@
 
 本目录按主题整理 taleclaw 的设计说明、阶段记录和部署文档。建议面试或代码走读时先看 `overview/`，再按主题深入。
 
+当前系统的统一架构入口：
+
+- [TaleClaw 系统架构](architecture/SYSTEM_ARCHITECTURE.md)
+- [Agent Core 精简总目标](refactor/AGENT_CORE_SIMPLIFICATION_GOAL.md)
+
 ## Overview
 
 - [当前代码目录总结](overview/CODEBASE_SUMMARY.md)
