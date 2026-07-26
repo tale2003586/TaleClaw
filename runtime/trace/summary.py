@@ -97,6 +97,7 @@ def build_trace_summary_payload(
     perfectionism = _perfectionism_summary(events)
     timeline = _tool_timeline(events)
     execution_path = _execution_path(events, run_state)
+    governance = _governance_diagnostics(events)
     return {
         "schema_version": 1,
         "run_id": run_state.get("run_id", ""),
@@ -191,6 +192,7 @@ def build_trace_summary_payload(
         "verification": verification,
         "multi_agent": multi_agent,
         "memory": memory,
+        "runtime_governance": governance,
         "security_rag": security_rag,
         "execution_path": execution_path,
         "timeline": timeline,
@@ -207,6 +209,7 @@ def render_trace_summary_markdown(summary: dict[str, Any]) -> str:
     multi_agent = summary.get("multi_agent") or {}
     memory = summary.get("memory") or {}
     security_rag = summary.get("security_rag") or {}
+    governance = summary.get("runtime_governance") or {}
     lines = [
         "# Trace Summary",
         "",
@@ -327,6 +330,18 @@ def render_trace_summary_markdown(summary: dict[str, Any]) -> str:
         f"- Injection Traces: {_value(memory.get('injection_traces'))}",
         f"- Injected/Filtered: {_value(memory.get('injected_count'))} / {_value(memory.get('filtered_count'))}",
         f"- Last Pressure Level: `{_value(memory.get('last_pressure_level'))}`",
+        "",
+        "## Runtime Governance",
+        "",
+        f"- Candidate Memory: {_value(governance.get('candidate_memory'))}",
+        f"- Pending Added: {_value(governance.get('pending_added'))}",
+        f"- Stable Writes / Rejected: {_value(governance.get('stable_writes'))} / {_value(governance.get('rejected_memory'))}",
+        f"- Relation Candidates / Evolution Proposals: {_value(governance.get('relation_candidates'))} / {_value(governance.get('evolution_proposals'))}",
+        f"- Governance Actions: `{_value(_counts_text(governance.get('memory_policy_actions') or {}))}`",
+        f"- Tool Scopes: `{_value(_counts_text(governance.get('tool_scopes') or {}))}`",
+        f"- Kernel Tool Actions: {_value(governance.get('kernel_tool_actions'))}",
+        f"- Context Pressure: `{_value(governance.get('context_pressure_level'))}`",
+        f"- Injection Selected / Filtered: {_value(governance.get('injection_selected'))} / {_value(governance.get('injection_filtered'))}",
         "",
         "## 关键时间线",
         "",
@@ -674,6 +689,62 @@ def _safe_ratio(numerator: int | float, denominator: int | float) -> float:
     if value <= 0:
         return 0.0
     return float(numerator or 0) / value
+
+
+def _governance_diagnostics(events: list[dict[str, Any]]) -> dict[str, Any]:
+    policy_actions: dict[str, int] = {}
+    tool_scopes: dict[str, int] = {}
+    candidate_memory = pending_added = stable_writes = rejected_memory = 0
+    relation_candidates = evolution_proposals = kernel_tool_actions = 0
+    injection_selected = injection_filtered = 0
+    context_pressure_level = ""
+    for event in events:
+        name = str(event.get("event") or "")
+        payload = event.get("payload") or {}
+        if name == "memory.candidate.evaluated":
+            candidate_memory += 1
+        elif name in {"memory.candidate.created", "memory.candidate.upserted"}:
+            pending_added += max(1, _int(payload.get("pending_added")))
+        elif name == "memory.item.created":
+            stable_writes += 1
+        elif name in {"memory.item.rejected", "memory.governance.rejected"}:
+            rejected_memory += 1
+        elif name == "memory.governance.decided":
+            action = str(payload.get("action") or "unknown")
+            policy_actions[action] = policy_actions.get(action, 0) + 1
+            if action == "discard":
+                rejected_memory += 1
+        elif name == "memory.relation.candidate":
+            relation_candidates += 1
+        elif name == "memory.evolution.proposed":
+            evolution_proposals += 1
+        elif name == "tool.governance.observed":
+            scope = str(payload.get("tool_scope") or "unknown")
+            tool_scopes[scope] = tool_scopes.get(scope, 0) + 1
+            if scope == "kernel":
+                kernel_tool_actions += 1
+        elif name == "context.pressure.observed":
+            context_pressure_level = str(payload.get("level") or "")
+        elif name == "memory.injection.explained":
+            injection_selected += _int(payload.get("selected_count"))
+            injection_filtered += _int(payload.get("filtered_count"))
+            context_pressure_level = str(
+                payload.get("pressure_level") or context_pressure_level
+            )
+    return {
+        "candidate_memory": candidate_memory,
+        "pending_added": pending_added,
+        "stable_writes": stable_writes,
+        "rejected_memory": rejected_memory,
+        "relation_candidates": relation_candidates,
+        "evolution_proposals": evolution_proposals,
+        "memory_policy_actions": policy_actions,
+        "tool_scopes": tool_scopes,
+        "kernel_tool_actions": kernel_tool_actions,
+        "context_pressure_level": context_pressure_level,
+        "injection_selected": injection_selected,
+        "injection_filtered": injection_filtered,
+    }
 
 
 def _security_rag_summary(events: list[dict[str, Any]]) -> dict[str, Any]:

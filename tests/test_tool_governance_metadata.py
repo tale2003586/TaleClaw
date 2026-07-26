@@ -83,3 +83,47 @@ def test_memory_tools_have_explicit_runtime_classifications() -> None:
     assert read.memory_effect is MemoryEffect.READ
     assert read.context_effect is ContextEffect.INJECT
     assert read.requires_audit is True
+
+
+def test_execution_can_emit_serialized_governance_trace_without_affecting_result() -> None:
+    events = []
+    class Trace:
+        def append_event(self, run_state, event_name, payload, **kwargs):
+            events.append((event_name, payload))
+
+    registry = ToolRegistry()
+    registry.register(
+        _schema("checkpoint"),
+        lambda: "ok",
+        governance=ToolGovernanceMetadata(
+            tool_scope=ToolScope.KERNEL,
+            context_effect=ContextEffect.CHECKPOINT,
+        ),
+    )
+
+    assert registry.execute(
+        "checkpoint", {}, trace_store=Trace(), run_state=object()
+    ) == "ok"
+    assert events == [("tool.governance.observed", {
+        "tool_name": "checkpoint",
+        "tool_scope": "kernel",
+        "state_effect": "none",
+        "risk_level": "low",
+        "requires_audit": True,
+        "allowed_modes": [],
+        "policy_tag": "",
+        "memory_effect": "none",
+        "context_effect": "checkpoint",
+    })]
+
+
+def test_governance_trace_failure_does_not_block_tool() -> None:
+    class BrokenTrace:
+        def append_event(self, *args, **kwargs):
+            raise OSError("trace unavailable")
+
+    registry = ToolRegistry()
+    registry.register(_schema(), lambda: "ok")
+    assert registry.execute(
+        "example", {}, trace_store=BrokenTrace(), run_state=object()
+    ) == "ok"

@@ -7,6 +7,7 @@ from memory.archive_store import ArchivedRecentTurn, MemoryArchiveStore
 from memory.history_summary import HistorySummarizer
 from memory.lifecycle import MemoryLifecycle
 from memory.processor import MemoryProcessingDevice
+from memory.governance import MemoryGovernancePipeline
 from memory.store import MemoryStore
 from memory.vector_index import MemoryHit
 from runtime.sessions.session import Session
@@ -71,6 +72,33 @@ class RecordingSummaryProvider:
 
 
 class MemoryLifecycleArchiveTests(unittest.TestCase):
+    def test_governance_trace_redacts_sensitive_candidate_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = MemoryStore(Path(tmp) / "memory")
+            lifecycle = MemoryLifecycle(
+                memory,
+                memory_processor=MemoryProcessingDevice(
+                    history_vector_index=SimilarHistoryVectorIndex(),
+                    scope_resolver=lambda session: "user:test",
+                    similar_min_hits=2,
+                    governance=MemoryGovernancePipeline(),
+                ),
+            )
+            session = Session(id="web:default")
+            secret = "API_KEY=sk-example-123456789"
+            session.add_message("user", secret)
+            session.add_message("assistant", "done")
+
+            result = lifecycle.after_turn(session)
+            trace_text = str(result.trace_events)
+
+            self.assertNotIn(secret, trace_text)
+            self.assertIn("[redacted]", trace_text)
+            self.assertTrue(any(
+                event["event"] == "memory.governance.decided"
+                for event in result.trace_events
+            ))
+
     def test_history_recent_window_and_postgres_archive_share_one_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, temporary_postgres_schema("memory_archive") as dsn:
             root = Path(tmp)

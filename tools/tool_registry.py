@@ -201,6 +201,19 @@ class ToolRegistry:
 
         tool = self._tools[name]
         try:
+            if trace_store is not None and run_state is not None:
+                try:
+                    trace_store.append_event(
+                        run_state,
+                        "tool.governance.observed",
+                        {
+                            "tool_name": name,
+                            **tool.governance.to_dict(),
+                        },
+                        parent_span_id=parent_span_id,
+                    )
+                except Exception:
+                    pass
             handler_args = dict(args)
             if tool.session_scoped or name in SESSION_SCOPED_TOOLS:
                 handler_args["_session"] = session
