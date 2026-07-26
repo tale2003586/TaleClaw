@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import inspect
 import json
 from typing import Callable, Any
@@ -10,6 +10,7 @@ from tools.policy import (
     UNLOCKED_TOOLS_KEY,
     ToolPolicy,
 )
+from tools.governance import ToolGovernanceMetadata, governance_for_tool
 SESSION_SCOPED_TOOLS = {
     "bash",
     "list_files",
@@ -53,6 +54,7 @@ class ToolSpec:
     always_on: bool = False
     session_scoped: bool = False
     admin_only: bool = False
+    governance: ToolGovernanceMetadata = field(default_factory=ToolGovernanceMetadata)
 
     def enabled_for(self, mode: str, session=None) -> bool:
         if self.allowed_agents is not None and mode not in self.allowed_agents:
@@ -79,6 +81,7 @@ class ToolRegistry:
         always_on: bool = False,
         session_scoped: bool = False,
         admin_only: bool = False,
+        governance: ToolGovernanceMetadata | None = None,
     ) -> None:
         name = schema["function"]["name"]
         self._tools[name] = ToolSpec(
@@ -91,6 +94,7 @@ class ToolRegistry:
             always_on=always_on,
             session_scoped=session_scoped,
             admin_only=admin_only,
+            governance=governance or ToolGovernanceMetadata(),
         )
 
     def unregister(self, name: str) -> None:
@@ -113,6 +117,15 @@ class ToolRegistry:
                 ),
                 "always_on": tool.always_on,
             })
+        return sorted(items, key=lambda item: item["name"])
+
+    def governance_catalog(self, *, mode: str | None = None) -> list[dict[str, Any]]:
+        """Return internal governance metadata without changing the model catalog."""
+        items = []
+        for tool in self._tools.values():
+            if mode is not None and not tool.enabled_for(mode):
+                continue
+            items.append({"name": tool.name, **tool.governance.to_dict()})
         return sorted(items, key=lambda item: item["name"])
 
     def schemas_for_mode(self, mode: str = "coding") -> list[dict]:
@@ -318,6 +331,7 @@ def build_lead_tool_registry(team=None) -> ToolRegistry:
             risk=_risk_for_tool(name),
             allowed_agents=_modes_for_tool(name),
             source="lead",
+            governance=governance_for_tool(name),
         )
 
     return registry
@@ -338,6 +352,7 @@ def build_teammate_tool_registry(name: str) -> ToolRegistry:
             risk=_risk_for_tool(tool_name),
             allowed_agents=_modes_for_tool(tool_name),
             source=f"teammate:{name}",
+            governance=governance_for_tool(tool_name),
         )
 
     return registry
