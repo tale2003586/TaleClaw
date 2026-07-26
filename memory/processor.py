@@ -16,6 +16,7 @@ from memory.governance import (
     MemoryWriteRequest,
 )
 from memory.notes import MemoryNoteOrigin
+from memory.enrichment import PendingMemoryEnricher
 
 
 @dataclass
@@ -30,6 +31,7 @@ class MemoryProcessingResult:
     candidate_content: str = ""
     candidate_confidence: float = 0.0
     governance_audit: dict = field(default_factory=dict)
+    enrichment_audit: dict = field(default_factory=dict)
 
 
 class MemoryProcessingDevice:
@@ -45,6 +47,7 @@ class MemoryProcessingDevice:
         similar_min_score: float = 0.55,
         similar_min_hits: int = 2,
         governance: MemoryGovernancePipeline | None = None,
+        enricher: PendingMemoryEnricher | None = None,
     ) -> None:
         self.history_vector_index = history_vector_index
         self.scope_resolver = scope_resolver or history_vector_scope_for_session
@@ -53,6 +56,7 @@ class MemoryProcessingDevice:
         self.similar_min_score = float(similar_min_score)
         self.similar_min_hits = max(1, int(similar_min_hits))
         self.governance = governance
+        self.enricher = enricher
 
     def process_user_description(
         self,
@@ -67,18 +71,22 @@ class MemoryProcessingDevice:
         if not result.candidate_selected:
             return result
 
-        if self.governance is not None:
+        write_request = None
+        if self.governance is not None or self.enricher is not None:
             context = MemoryContext.from_session(session)
             scope = MemoryOwnerScope.TASK if context.task_id else MemoryOwnerScope.USER
             scope_id = context.task_id or context.user_id
-            governed = self.governance.evaluate(MemoryWriteRequest(
+            write_request = MemoryWriteRequest(
                 content=text,
                 origin=MemoryNoteOrigin.INFERRED_BY_LLM,
                 scope=scope,
                 scope_id=scope_id,
                 confidence=result.candidate_confidence,
                 source=source_ref,
-            ))
+            )
+        if self.governance is not None:
+            assert write_request is not None
+            governed = self.governance.evaluate(write_request)
             result.governance_audit = {
                 "action": governed.audit.action.value,
                 "reason": governed.audit.reason,
@@ -92,6 +100,28 @@ class MemoryProcessingDevice:
                 result.candidate_save_result = "Discarded by memory governance"
                 return result
 
+        candidate_metadata = {
+            "selection": {
+                "method": "history_vector_similarity",
+                "similar_min_hits": self.similar_min_hits,
+                "similar_min_score": self.similar_min_score,
+                "similar_hit_count": result.similar_hit_count,
+            },
+            "similar_history": result.similar_hits,
+        }
+        if self.enricher is not None:
+            assert write_request is not None
+            try:
+                enrichment = self.enricher.enrich(write_request)
+                result.enrichment_audit = dict(enrichment.audit)
+                candidate_metadata["enrichment"] = enrichment.enrichment.to_dict()
+                candidate_metadata["enrichment_audit"] = dict(enrichment.audit)
+            except Exception as exc:
+                result.enrichment_audit = {
+                    "status": "fallback",
+                    "error_type": type(exc).__name__,
+                }
+
         related = store.trigger_related_candidates(text, source_ref=source_ref)
         result.related_triggered += len(related)
 
@@ -100,15 +130,7 @@ class MemoryProcessingDevice:
             tag="history_pattern",
             confidence=result.candidate_confidence,
             source_ref=source_ref,
-            metadata={
-                "selection": {
-                    "method": "history_vector_similarity",
-                    "similar_min_hits": self.similar_min_hits,
-                    "similar_min_score": self.similar_min_score,
-                    "similar_hit_count": result.similar_hit_count,
-                },
-                "similar_history": result.similar_hits,
-            },
+            metadata=candidate_metadata,
         )
         result.candidate_save_result = save_result
         if save_result.startswith("Saved"):

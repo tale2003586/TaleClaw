@@ -76,6 +76,10 @@ MEMORY_RELATION_PROPOSALS_ENABLED = _env_bool(
     "MEMORY_RELATION_PROPOSALS_ENABLED",
     False,
 )
+MEMORY_PENDING_ENRICHMENT_ENABLED = _env_bool(
+    "MEMORY_PENDING_ENRICHMENT_ENABLED",
+    False,
+)
 WORKDIR = Path.cwd() 
 WORKSPACE_ROOTS = [
     Path(item).expanduser().resolve()

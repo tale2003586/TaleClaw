@@ -50,6 +50,7 @@ from memory.promotion_service import MemoryPromotionService
 from memory.semantic_retrieval import SemanticMemoryRetrievalService
 from memory.store import MemoryStore
 from memory.governance import MemoryGovernancePipeline
+from memory.enrichment import PendingMemoryEnricher
 from memory.scoped_store import ScopedMemoryStore
 from memory.vector_runtime import (
     build_history_vector_index_from_env,
@@ -268,6 +269,11 @@ def build_runtime() -> AppRuntime:
         governance=(
             MemoryGovernancePipeline()
             if _env_bool("MEMORY_GOVERNANCE_ENABLED", False)
+            else None
+        ),
+        enricher=(
+            PendingMemoryEnricher()
+            if _env_bool("MEMORY_PENDING_ENRICHMENT_ENABLED", False)
             else None
         ),
     )
