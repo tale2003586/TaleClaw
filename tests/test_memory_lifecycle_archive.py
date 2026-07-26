@@ -262,6 +262,35 @@ class MemoryLifecycleArchiveTests(unittest.TestCase):
             self.assertEqual("call_1", record.metadata["messages"][1]["tool_calls"][0]["id"])
             self.assertEqual("搜索结果", record.metadata["messages"][2]["content"])
 
+    def test_legacy_lifecycle_writes_redundant_history_and_whole_files(self) -> None:
+        """Legacy baseline for the stores intentionally retired by Phase 4/6."""
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = MemoryStore(Path(tmp) / "memory")
+            memory.append("self", "agent preference")
+            memory.append("memory", "stable preference")
+            memory.append("now", "current objective")
+            memory.append("pending", "unconfirmed candidate")
+            vector_index = RecordingVectorIndex()
+            lifecycle = MemoryLifecycle(
+                memory,
+                history_vector_index=vector_index,
+                scope_resolver=lambda session: "user:test",
+            )
+            session = Session(id="web:test")
+            session.add_message("user", "remember this turn")
+            session.add_message("assistant", "done")
+
+            result = lifecycle.after_turn(session)
+
+            self.assertTrue(result.history_updated)
+            self.assertTrue(result.recent_context_updated)
+            self.assertIn("remember this turn", memory.read_history())
+            self.assertEqual(1, len(memory.read_recent_turns()))
+            source_types = [record.source_type for record in vector_index.records]
+            self.assertEqual(1, source_types.count("session_turn"))
+            self.assertEqual(5, source_types.count("memory_file"))
+
+
     def test_embedding_text_extracts_structured_content_without_json_noise(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             lifecycle = MemoryLifecycle(MemoryStore(Path(tmp) / "memory"))
