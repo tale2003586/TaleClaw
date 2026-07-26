@@ -53,6 +53,8 @@ class MemoryLifecycle:
         recent_limit: int = 6,
         promotion_confidence: float = 0.85,
         promotion_evidence_count: int = 3,
+        command_service=None,
+        promotion_service=None,
     ) -> None:
         self.store = store
         self.summarizer = summarizer or HistorySummarizer()
@@ -66,6 +68,8 @@ class MemoryLifecycle:
         self.recent_limit = max(1, recent_limit)
         self.promotion_confidence = max(0.0, min(1.0, float(promotion_confidence)))
         self.promotion_evidence_count = max(1, int(promotion_evidence_count))
+        self.command_service = command_service
+        self.promotion_service = promotion_service
 
     def after_turn(self, session) -> MemoryLifecycleResult:
         store = self.store
@@ -80,7 +84,15 @@ class MemoryLifecycle:
         source_ref = f"{session.id}:{max(0, len(session.messages) - 1)}"
 
         explicit = self._extract_explicit_memory(user_text)
-        if explicit:
+        if self.command_service is not None:
+            self._process_governed_memory(
+                session=session,
+                explicit=explicit,
+                user_text=user_text,
+                source_ref=source_ref,
+                result=result,
+            )
+        elif explicit:
             save_result = store.append("memory", explicit)
             if save_result.startswith("Saved"):
                 result.pending_added += 1
@@ -163,6 +175,105 @@ class MemoryLifecycle:
                 if archived:
                     result.archived_count += 1
         return result
+
+    def _process_governed_memory(
+        self,
+        *,
+        session,
+        explicit: str,
+        user_text: str,
+        source_ref: str,
+        result: MemoryLifecycleResult,
+    ) -> None:
+        from memory.commands import MemoryContext, MemoryWriteProposal
+        from memory.domain import (
+            MemoryEvidence,
+            MemoryKind,
+            MemoryOwnerScope,
+            MemorySourceType,
+        )
+
+        context = MemoryContext.from_session(session)
+        if explicit:
+            evidence = MemoryEvidence(
+                id=f"ev:{_text_digest(source_ref + explicit)}",
+                memory_id="pending",
+                source_type=MemorySourceType.EXPLICIT_USER,
+                source_ref=source_ref,
+                session_id=context.session_id,
+                excerpt=explicit,
+            )
+            self.command_service.remember(MemoryWriteProposal(
+                content=explicit,
+                kind=MemoryKind.PREFERENCE,
+                owner_scope=MemoryOwnerScope.USER,
+                owner_id=context.user_id,
+                source_type=MemorySourceType.EXPLICIT_USER,
+                evidence=(evidence,),
+                confidence=1.0,
+                salience=0.8,
+                explicit_user_request=True,
+                metadata={"entrypoint": "memory_lifecycle"},
+            ), context)
+            result.pending_added += 1
+            return
+        if not self._candidate_memory_enabled():
+            return
+        processed = self.memory_processor.evaluate_user_description(
+            session=session,
+            user_text=user_text,
+        )
+        result.related_triggered += processed.similar_hit_count
+        if not processed.candidate_selected:
+            return
+        evidence = [MemoryEvidence(
+            id=f"ev:{_text_digest(source_ref + user_text)}",
+            memory_id="pending",
+            source_type=MemorySourceType.INFERRED,
+            source_ref=source_ref,
+            session_id=context.session_id,
+            excerpt=user_text,
+            metadata={"selection": "history_vector_similarity"},
+        )]
+        for hit in processed.similar_hits:
+            evidence.append(MemoryEvidence(
+                id=f"ev:{_text_digest(str(hit.get('source_ref') or hit.get('id')))}",
+                memory_id="pending",
+                source_type=MemorySourceType.INFERRED,
+                source_ref=str(hit.get("source_ref") or hit.get("id") or ""),
+                session_id=str(hit.get("session_id") or "") or None,
+                excerpt="",
+                metadata={"score": hit.get("score")},
+            ))
+        candidate = self.command_service.propose(MemoryWriteProposal(
+            content=processed.candidate_content,
+            kind=MemoryKind.FACT,
+            owner_scope=MemoryOwnerScope.USER,
+            owner_id=context.user_id,
+            source_type=MemorySourceType.INFERRED,
+            evidence=tuple(evidence),
+            confidence=processed.candidate_confidence,
+            salience=0.5,
+            metadata={"entrypoint": "memory_lifecycle"},
+        ), context)
+        result.pending_added += 1
+        result.candidates_updated += 1
+        if self.promotion_service is not None:
+            promoted, decision = self.promotion_service.promote_if_eligible(
+                candidate.id,
+                context,
+            )
+            if promoted is not None:
+                result.promoted_count += 1
+            result.trace_events.append({
+                "event": "memory.candidate.promotion_evaluated",
+                "payload": {
+                    "memory_id": candidate.id,
+                    "outcome": decision.outcome.value,
+                    "reason": decision.reason,
+                    "independent_evidence_count": decision.independent_evidence_count,
+                },
+            })
 
     def _index_session_turn(
         self,

@@ -11,6 +11,8 @@ from memory.store import MemoryStore
 from memory.vector_index import MemoryHit
 from runtime.sessions.session import Session
 from tests.postgres_utils import temporary_postgres_schema
+from memory.command_service import MemoryCommandService
+from tests.fakes.in_memory_memory_repository import InMemoryMemoryRepository
 
 
 class RecordingVectorIndex:
@@ -221,6 +223,28 @@ class MemoryLifecycleArchiveTests(unittest.TestCase):
             self.assertEqual(1, result.pending_added)
             self.assertEqual([], memory.candidates().read())
             self.assertIn("我喜欢真实的人物细节", memory.memory_path.read_text(encoding="utf-8"))
+
+    def test_governed_explicit_memory_writes_repository_not_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = MemoryStore(Path(tmp) / "memory")
+            repository = InMemoryMemoryRepository()
+            lifecycle = MemoryLifecycle(
+                memory,
+                command_service=MemoryCommandService(repository),
+            )
+            session = Session(
+                id="web:alice:a",
+                metadata={"user_id": "alice"},
+            )
+            session.add_message("user", "记住我喜欢真实的人物细节")
+            session.add_message("assistant", "记住了")
+
+            result = lifecycle.after_turn(session)
+
+            self.assertEqual(1, result.pending_added)
+            self.assertEqual(1, len(repository.items))
+            self.assertTrue(next(iter(repository.items.values())).status.value == "active")
+            self.assertNotIn("人物细节", memory.memory_path.read_text(encoding="utf-8"))
 
     def test_lifecycle_indexes_full_session_turn_to_vector_store(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

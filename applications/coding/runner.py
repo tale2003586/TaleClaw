@@ -1,3 +1,5 @@
+import subprocess
+
 from runtime.context import ContextBuilder, ContextMemoryService, PromptAssetsService
 from runtime.context.budget import ContextBudgeter
 from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
@@ -24,6 +26,7 @@ from runtime.trace.workspace import capture_workspace_snapshot, write_workspace_
 from runtime.workspace import WorkspaceResolver
 from config import WORKDIR, WORKING_MEMORY_CHECKPOINT_ENABLED
 from memory.store import MemoryStore
+from memory.commands import MemoryContext
 from runtime.sessions import SessionManager
 from .artifacts import TaskArtifactPaths, TaskArtifactWriter
 from .conclusions import TaskConclusionExtractor
@@ -46,10 +49,12 @@ class CodingApplication:
         global_memory: MemoryStore,
         workspace_root=None,
         workspace_resolver: WorkspaceResolver | None = None,
+        semantic_memory_command_service=None,
     ) -> None:
         self.sessions = sessions
         self.base_pipeline = base_pipeline
         self.global_memory = global_memory
+        self.semantic_memory_command_service = semantic_memory_command_service
         if workspace_resolver is not None:
             self.workspace_resolver = workspace_resolver
         elif workspace_root is not None:
@@ -102,6 +107,12 @@ class CodingApplication:
             user_id=explicit_user_id_for_session(parent_session),
             user_role=user_role_for_session(parent_session),
         )
+        self.workspace_resolver.bind_session(record.session, workspace)
+        repository_id, repository_revision = _repository_identity(workspace.root)
+        if repository_id:
+            record.session.metadata["repository"] = repository_id
+        if repository_revision:
+            record.session.metadata["code_revision"] = repository_revision
         record.session.metadata[CODING_HANDOFF_METADATA_KEY] = session_handoff.to_dict()
         if WORKING_MEMORY_CHECKPOINT_ENABLED:
             inherit_working_memory(
@@ -195,10 +206,19 @@ class CodingApplication:
             task_summary=reply,
             messages=record.session.messages,
         )
-        promotion = TaskMemoryPromoter(global_memory).promote(
+        promotion = TaskMemoryPromoter(
+            global_memory,
+            command_service=self.semantic_memory_command_service,
+        ).promote(
             task_id=record.task_id,
             task_memory=task_memory,
             extracted_conclusions=extraction.candidates,
+            memory_context=(
+                MemoryContext.from_session(record.session)
+                if self.semantic_memory_command_service is not None
+                else None
+            ),
+            repository_revision=repository_revision,
         )
         artifacts = None
         try:
@@ -278,7 +298,6 @@ class CodingApplication:
                 trace_store.append_event(run_state, "coding_application_completed", task_report)
                 trace_store.write_run_state(run_state)
         return self._format_parent_reply(record, reply, promotion, artifacts)
-
     def _build_task_pipeline(
         self,
         task_memory: MemoryStore,
@@ -402,7 +421,11 @@ class CodingApplication:
         if promotion.promoted:
             lines.extend([
                 "",
-                f"Promoted {len(promotion.promoted)} task memory item(s) to global PENDING.md.",
+                (
+                    f"Submitted {len(promotion.promoted)} governed project memory candidate(s)."
+                    if self.semantic_memory_command_service is not None
+                    else f"Promoted {len(promotion.promoted)} task memory item(s) to global PENDING.md."
+                ),
             ])
         if promotion.skipped:
             lines.extend([
@@ -421,6 +444,27 @@ class CodingApplication:
                 f"Conclusions: `{_portable_path(artifacts.conclusions_path)}`",
             ])
         return "\n".join(lines)
+
+
+def _repository_identity(root) -> tuple[str, str]:
+    try:
+        top = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=True,
+        ).stdout.strip()
+        revision = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=True,
+        ).stdout.strip()
+        return top, revision
+    except (OSError, subprocess.SubprocessError):
+        return "", ""
 
 
 def _pipeline_model_for(pipeline: Runtime, purpose: str):

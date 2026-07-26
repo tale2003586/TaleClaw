@@ -46,6 +46,7 @@ from memory.processor import CandidateMemoryExtractor, MemoryProcessingDevice
 from memory.command_service import MemoryCommandService
 from memory.index_sync import MemoryIndexSynchronizer
 from memory.postgres_repository import PostgresMemoryRepository
+from memory.promotion_service import MemoryPromotionService
 from memory.semantic_retrieval import SemanticMemoryRetrievalService
 from memory.store import MemoryStore
 from memory.scoped_store import ScopedMemoryStore
@@ -137,6 +138,7 @@ def build_runtime() -> AppRuntime:
     semantic_memory_command_service = None
     semantic_memory_retrieval_service = None
     semantic_memory_index_synchronizer = None
+    semantic_memory_promotion_service = None
     semantic_flags_enabled = _env_bool("SEMANTIC_MEMORY_ENABLED", False) or any(
         _env_bool(name, False)
         for name in (
@@ -159,6 +161,15 @@ def build_runtime() -> AppRuntime:
         semantic_memory_index_synchronizer = MemoryIndexSynchronizer(
             semantic_memory_repository,
             semantic_memory_index,
+        )
+        semantic_memory_promotion_service = MemoryPromotionService(
+            semantic_memory_command_service,
+            semantic_memory_repository,
+            min_confidence=_env_float("MEMORY_CANDIDATE_PROMOTION_CONFIDENCE", 0.85),
+            min_independent_evidence=_env_int(
+                "MEMORY_CANDIDATE_PROMOTION_EVIDENCE_COUNT",
+                2,
+            ),
         )
     configure_semantic_memory_services(
         command_service=(
@@ -271,6 +282,16 @@ def build_runtime() -> AppRuntime:
         scope_resolver=history_vector_scope_for_session,
         promotion_confidence=_env_float("MEMORY_CANDIDATE_PROMOTION_CONFIDENCE", 0.85),
         promotion_evidence_count=_env_int("MEMORY_CANDIDATE_PROMOTION_EVIDENCE_COUNT", 3),
+        command_service=(
+            semantic_memory_command_service
+            if _env_bool("SEMANTIC_MEMORY_WRITE_ENABLED", False)
+            else None
+        ),
+        promotion_service=(
+            semantic_memory_promotion_service
+            if _env_bool("SEMANTIC_MEMORY_WRITE_ENABLED", False)
+            else None
+        ),
     )
     if _env_bool("MEMORY_LIFECYCLE_BACKGROUND", True):
         memory_lifecycle = BackgroundMemoryLifecycle(
@@ -341,6 +362,11 @@ def build_runtime() -> AppRuntime:
         sessions=sessions,
         base_pipeline=pipeline,
         global_memory=memory_store,
+        semantic_memory_command_service=(
+            semantic_memory_command_service
+            if _env_bool("SEMANTIC_MEMORY_WRITE_ENABLED", False)
+            else None
+        ),
     )
     subagent_runner = TaskSubagentRunner(
         base_pipeline=pipeline,
