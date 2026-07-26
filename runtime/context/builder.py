@@ -16,6 +16,7 @@ from runtime.context.history import (
 from runtime.context.build_state import BuildState
 from runtime.context.memory import ContextMemoryService
 from runtime.context.sections import ContextBuildReport, ContextSection, message_chars
+from runtime.context.pressure import ContextCategoryUsage, evaluate_context_pressure
 from runtime.context.providers import (
     MINIMAL_CONTEXT_PROVIDERS,
     HistoryContextProvider,
@@ -27,6 +28,8 @@ from config import (
     CODING_CONTEXT_RECENT_GROUPS,
     CODING_CONTEXT_STATE_ENABLED,
     WORKING_MEMORY_RESUME_ENABLED,
+    CONTEXT_PRESSURE_OBSERVATION_ENABLED,
+    CONTEXT_PRESSURE_WINDOW_TOKENS,
 )
 
 
@@ -75,6 +78,7 @@ class ContextBuilder:
         retrieval_service=None,
         prompt_assets_service=None,
         memory_service=None,
+        pressure_observation_enabled: bool | None = None,
     ) -> None:
         self.budgeter = (
             budgeter
@@ -86,6 +90,11 @@ class ContextBuilder:
         )
         self.memory_service = memory_service or ContextMemoryService()
         self.retrieval_service = retrieval_service
+        self.pressure_observation_enabled = (
+            CONTEXT_PRESSURE_OBSERVATION_ENABLED
+            if pressure_observation_enabled is None
+            else bool(pressure_observation_enabled)
+        )
         self.coding_context_view_builder = coding_context_view_builder
         providers = tuple(context_providers or MINIMAL_CONTEXT_PROVIDERS)
         self.context_providers = {provider.name: provider for provider in providers}
@@ -303,7 +312,7 @@ class ContextBuilder:
             profile=profile,
             session=session,
         ):
-            return self._build_coding_context_state_bundle(
+            bundle = self._build_coding_context_state_bundle(
                 session=session,
                 profile=profile,
                 prefix=prefix,
@@ -334,6 +343,14 @@ class ContextBuilder:
                 inbox=inbox or [],
                 background_results=background_results or [],
             )
+            self._observe_context_pressure(
+                bundle.report,
+                trace_store=trace_store,
+                run_state=run_state,
+                parent_span_id=trace_parent_span_id,
+                reasoning_step=reasoning_step,
+            )
+            return bundle
 
         context_frame = self._build_context_frame(
             memory_block=budgeted_memory.rendered_text,
@@ -426,7 +443,57 @@ class ContextBuilder:
             prefix_metadata=dict(prefix.metadata),
         )
         report = self._build_report(build_state)
+        self._observe_context_pressure(
+            report,
+            trace_store=trace_store,
+            run_state=run_state,
+            parent_span_id=trace_parent_span_id,
+            reasoning_step=reasoning_step,
+        )
         return ContextBundle(messages=messages, report=report)
+
+    def _observe_context_pressure(
+        self,
+        report: ContextBuildReport | None,
+        *,
+        trace_store=None,
+        run_state=None,
+        parent_span_id: str | None = None,
+        reasoning_step: int | None = None,
+    ) -> None:
+        if not self.pressure_observation_enabled or report is None:
+            return
+        sections = {section.name: section for section in report.sections}
+        tokens = lambda name: max(0, sections.get(name).rendered_chars // 4) if name in sections else 0
+        retrieval_tokens = tokens("episodic_history") + tokens("security_knowledge")
+        task_events = sections.get("task_runtime_events")
+        task_meta = task_events.metadata if task_events is not None else {}
+        snapshot = evaluate_context_pressure(
+            total_tokens=max(0, report.total_chars // 4),
+            context_window=max(0, CONTEXT_PRESSURE_WINDOW_TOKENS),
+            categories=ContextCategoryUsage(
+                system_tokens=tokens("system_prompt"),
+                recent_turn_tokens=tokens("active_turn"),
+                tool_output_tokens=tokens("task_runtime_events"),
+                memory_tokens=tokens("memory") + tokens("working_memory"),
+                retrieval_tokens=retrieval_tokens,
+                code_context_tokens=tokens("coding_context_state"),
+            ),
+            retrieved_note_count=int(
+                (sections.get("episodic_history").metadata or {}).get("hit_count", 0)
+            ) if sections.get("episodic_history") else 0,
+            large_tool_result_count=int(task_meta.get("background_result_count", 0) or 0),
+            long_running_task=bool(reasoning_step is not None and reasoning_step >= 8),
+        )
+        report.metadata["context_pressure"] = snapshot.to_dict()
+        if trace_store is not None and run_state is not None:
+            trace_store.append_event(
+                run_state,
+                "context.pressure.observed",
+                snapshot.to_dict(),
+                parent_span_id=parent_span_id,
+                step=reasoning_step,
+            )
 
     def _build_coding_context_state_bundle(
         self,
