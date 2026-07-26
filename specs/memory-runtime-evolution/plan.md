@@ -25,7 +25,7 @@
 ## Feature flags
 
 - `MEMORY_GOVERNANCE_ENABLED=0`
-- `MEMORY_RELATION_PROPOSALS_ENABLED=0`
+- Relation proposal 第一轮仅提供纯 service 与测试；因当前 pending store 缺少安全的 proposal persistence 接点，不暴露无效运行时开关。
 - `MEMORY_PENDING_ENRICHMENT_ENABLED=0`
 - `CONTEXT_PRESSURE_OBSERVATION_ENABLED=0`
 - `MEMORY_INJECTION_TRACE_ENABLED=0`
