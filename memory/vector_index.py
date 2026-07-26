@@ -39,6 +39,15 @@ class MemoryVectorIndex(Protocol):
     ) -> list[MemoryHit]:
         ...
 
+    def search_filtered(
+        self,
+        *,
+        query: str,
+        filters: dict[str, str],
+        top_k: int,
+        min_score: float = 0.0,
+    ) -> list[MemoryHit]: ...
+
 
 class NullMemoryVectorIndex:
     def upsert(self, record: MemoryRecord) -> None:
@@ -49,6 +58,16 @@ class NullMemoryVectorIndex:
         *,
         query: str,
         scope: str,
+        top_k: int,
+        min_score: float = 0.0,
+    ) -> list[MemoryHit]:
+        return []
+
+    def search_filtered(
+        self,
+        *,
+        query: str,
+        filters: dict[str, str],
         top_k: int,
         min_score: float = 0.0,
     ) -> list[MemoryHit]:

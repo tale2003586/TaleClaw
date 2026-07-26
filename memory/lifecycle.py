@@ -55,6 +55,7 @@ class MemoryLifecycle:
         promotion_evidence_count: int = 3,
         command_service=None,
         promotion_service=None,
+        index_legacy_memory_files: bool = False,
     ) -> None:
         self.store = store
         self.summarizer = summarizer or HistorySummarizer()
@@ -70,6 +71,7 @@ class MemoryLifecycle:
         self.promotion_evidence_count = max(1, int(promotion_evidence_count))
         self.command_service = command_service
         self.promotion_service = promotion_service
+        self.index_legacy_memory_files = bool(index_legacy_memory_files)
 
     def after_turn(self, session) -> MemoryLifecycleResult:
         store = self.store
@@ -149,12 +151,13 @@ class MemoryLifecycle:
             source_ref=source_ref,
             assistant_summary=assistant_summary,
         )
-        result.vector_indexed += self._index_memory_files(
-            store,
-            session,
-            result,
-            source_ref=source_ref,
-        )
+        if self.index_legacy_memory_files:
+            result.vector_indexed += self._index_memory_files(
+                store,
+                session,
+                result,
+                source_ref=source_ref,
+            )
 
         recent_turns = store.read_recent_turns()
         recent_turns.append(
@@ -299,6 +302,11 @@ class MemoryLifecycle:
                     source_ref=source_ref,
                     metadata={
                         "session_id": getattr(session, "id", ""),
+                        "user_id": _session_user_id(session),
+                        "application": _session_metadata(session, "application"),
+                        "workspace_id": _session_metadata(session, "workspace_id", "workspace_root"),
+                        "project_id": _session_metadata(session, "project_id", "repository"),
+                        "task_id": _session_metadata(session, "task_id"),
                         "mode": getattr(session, "active_agent", ""),
                         "message_count": len(turn_messages),
                         "messages": turn_messages,
@@ -586,3 +594,18 @@ def _trim_preview(text: str, limit: int = 500) -> str:
     if len(value) <= limit:
         return value
     return value[:limit] + "...[truncated]"
+
+
+def _session_metadata(session, *keys: str) -> str:
+    metadata = getattr(session, "metadata", {}) or {}
+    for key in keys:
+        value = str(metadata.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _session_user_id(session) -> str:
+    from user_scope import user_id_for_session
+
+    return user_id_for_session(session)

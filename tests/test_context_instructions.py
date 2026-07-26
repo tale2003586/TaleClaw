@@ -61,7 +61,7 @@ class FakeVectorIndex:
                 scope=kwargs["scope"],
                 source_type="session_turn",
                 source_ref="web:test:3",
-                metadata={"message_count": 3},
+                metadata={"message_count": 3, "session_id": "web:test"},
             )
         ]
 
@@ -617,10 +617,10 @@ class ContextInstructionTests(unittest.TestCase):
             ),
         )
 
-        self.assertIn("<retrieved_history>", context.messages[-2]["content"])
+        self.assertIn("<episodic_history", context.messages[-2]["content"])
         self.assertIn("tool_result[call_1]", context.messages[-2]["content"])
         self.assertEqual("解释 trace 字段", context.messages[-1]["content"])
-        retrieved = context.report.to_dict()["sections"]["retrieved_history"]
+        retrieved = context.report.to_dict()["sections"]["episodic_history"]
         self.assertEqual(1, retrieved["metadata"]["hit_count"])
         self.assertEqual("session_turn", retrieved["metadata"]["hits"][0]["source_type"])
         self.assertEqual(3, retrieved["metadata"]["hits"][0]["message_count"])

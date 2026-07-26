@@ -184,7 +184,7 @@ class RetrievalContextProvider:
             raw_history=raw_history,
             history_hits=history_hits,
             budgeted_history=builder.budgeter.apply(
-                "retrieved_history",
+                "episodic_history",
                 raw_history,
             ),
             raw_security=raw_security,
@@ -220,7 +220,7 @@ class EmptyRetrievalContextProvider:
         return RetrievalContext(
             raw_history="",
             history_hits=[],
-            budgeted_history=builder.budgeter.apply("retrieved_history", ""),
+            budgeted_history=builder.budgeter.apply("episodic_history", ""),
             raw_security="",
             security_decision=None,
             security_hits=[],

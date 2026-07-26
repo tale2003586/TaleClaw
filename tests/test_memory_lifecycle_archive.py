@@ -279,7 +279,7 @@ class MemoryLifecycleArchiveTests(unittest.TestCase):
             self.assertGreaterEqual(result.vector_indexed, 1)
             self.assertEqual(0, result.vector_errors)
             self.assertIn("session_turn", source_types)
-            self.assertIn("memory_file", source_types)
+            self.assertNotIn("memory_file", source_types)
             record = vector_index.records[0]
             self.assertEqual("user:test", record.scope)
             self.assertEqual(4, record.metadata["message_count"])
@@ -299,6 +299,7 @@ class MemoryLifecycleArchiveTests(unittest.TestCase):
                 memory,
                 history_vector_index=vector_index,
                 scope_resolver=lambda session: "user:test",
+                index_legacy_memory_files=True,
             )
             session = Session(id="web:test")
             session.add_message("user", "remember this turn")

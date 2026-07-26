@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from memory.episodic_retrieval import (
+    EpisodicBoundary,
+    EpisodicHistoryRetrievalService,
+)
+
 
 class ContextRetrievalService:
     def __init__(
@@ -17,6 +22,7 @@ class ContextRetrievalService:
         security_route_classifier=None,
         security_knowledge_index=None,
         security_auto_context_enabled: bool = True,
+        episodic_retrieval_service=None,
     ) -> None:
         self.history_vector_index = history_vector_index
         self.history_scope_resolver = history_scope_resolver or (
@@ -28,6 +34,14 @@ class ContextRetrievalService:
         self.security_route_classifier = security_route_classifier
         self.security_knowledge_index = security_knowledge_index
         self.security_auto_context_enabled = bool(security_auto_context_enabled)
+        self.episodic_retrieval_service = (
+            episodic_retrieval_service
+            or EpisodicHistoryRetrievalService(
+                history_vector_index,
+                top_k=self.retrieval_top_k,
+                min_score=self.retrieval_min_score,
+            )
+        )
 
     def retrieve_history(
         self,
@@ -41,31 +55,11 @@ class ContextRetrievalService:
         query = self._retrieval_query(current_request, active_turn_messages)
         if not query.strip():
             return "", []
-        try:
-            hits = self.history_vector_index.search(
-                query=query,
-                scope=self.history_scope_resolver(session),
-                top_k=self.retrieval_top_k,
-                min_score=self.retrieval_min_score,
-            )
-        except Exception:
-            return "", []
-        if not hits:
-            return "", []
-        lines = ["<retrieved_history>"]
-        for index, hit in enumerate(hits, start=1):
-            source = f" source_ref={hit.source_ref}" if hit.source_ref else ""
-            full_count = ""
-            if isinstance(getattr(hit, "metadata", None), dict):
-                count = hit.metadata.get("message_count")
-                if count is not None:
-                    full_count = f" messages={count}"
-            lines.append(
-                f"[{index}] score={hit.score:.4f} source_type={hit.source_type}{source}{full_count}\n"
-                f"{hit.text.strip()}"
-            )
-        lines.append("</retrieved_history>")
-        return "\n\n".join(lines), hits
+        result = self.episodic_retrieval_service.retrieve(
+            query,
+            EpisodicBoundary.from_session(session),
+        )
+        return self.episodic_retrieval_service.render(result), list(result.hits)
 
     def _retrieval_query(self, current_request: str, active_turn_messages: list[dict]) -> str:
         if current_request.strip():
@@ -330,4 +324,3 @@ def _score_tier(score: float) -> str:
     if value >= 0.60:
         return "MEDIUM"
     return "LOW"
-

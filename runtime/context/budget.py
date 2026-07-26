@@ -113,6 +113,12 @@ class ContextBudgeter:
                     ),
                     strategy="head_tail",
                 ),
+                "episodic_history": SectionBudgetRule(
+                    name="episodic_history",
+                    budget_chars=_env_int("CONTEXT_EPISODIC_HISTORY_BUDGET", 2500),
+                    floor_chars=_env_int("CONTEXT_EPISODIC_HISTORY_FLOOR", 500),
+                    strategy="head_tail",
+                ),
                 "security_knowledge": SectionBudgetRule(
                     name="security_knowledge",
                     budget_chars=_env_int("CONTEXT_SECURITY_KNOWLEDGE_BUDGET", 3000),

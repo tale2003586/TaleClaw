@@ -63,17 +63,30 @@ class QdrantMemoryVectorIndex:
         top_k: int,
         min_score: float = 0.0,
     ) -> list[MemoryHit]:
+        return self.search_filtered(
+            query=query,
+            filters={"scope": scope},
+            top_k=top_k,
+            min_score=min_score,
+        )
+
+    def search_filtered(
+        self,
+        *,
+        query: str,
+        filters: dict[str, str],
+        top_k: int,
+        min_score: float = 0.0,
+    ) -> list[MemoryHit]:
         from qdrant_client.models import FieldCondition, Filter, MatchValue
 
+        if not filters:
+            raise ValueError("Qdrant memory search requires at least one trusted filter.")
         vector = self.embeddings.embed(query)
-        query_filter = Filter(
-            must=[
-                FieldCondition(
-                    key="scope",
-                    match=MatchValue(value=scope),
-                )
-            ]
-        )
+        query_filter = Filter(must=[
+            FieldCondition(key=key, match=MatchValue(value=value))
+            for key, value in sorted(filters.items())
+        ])
         points = self._query_points(
             vector=vector,
             query_filter=query_filter,
@@ -90,7 +103,7 @@ class QdrantMemoryVectorIndex:
                     id=str(payload.get("id") or getattr(point, "id", "")),
                     text=str(payload.get("text") or ""),
                     score=score,
-                    scope=str(payload.get("scope") or scope),
+                    scope=str(payload.get("scope") or filters.get("scope") or ""),
                     source_type=str(payload.get("source_type") or ""),
                     source_ref=str(payload.get("source_ref") or ""),
                     metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {},

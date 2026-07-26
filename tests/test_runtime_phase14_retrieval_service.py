@@ -17,7 +17,7 @@ class _Hit:
     score = 0.9
     source_type = "session_turn"
     source_ref = "session:1"
-    metadata = {"message_count": 2}
+    metadata = {"message_count": 2, "session_id": "phase14:history"}
     text = "remembered result"
 
 
@@ -59,7 +59,7 @@ def test_explicit_retrieval_service_preserves_history_context():
         profile=SimpleNamespace(system_prompt="system", tool_mode="bot"),
     )
 
-    assert "<retrieved_history>" in context.messages[-2]["content"]
+    assert "<episodic_history" in context.messages[-2]["content"]
     assert "remembered result" in context.messages[-2]["content"]
 
 

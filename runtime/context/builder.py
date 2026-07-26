@@ -846,7 +846,7 @@ class ContextBuilder:
                 },
             ),
             ContextSection.from_text(
-                "retrieved_history",
+                "episodic_history",
                 retrieved_history_block,
                 raw_text=raw_retrieved_history_block,
                 budget_chars=budgeted_retrieved_history.budget_chars,
