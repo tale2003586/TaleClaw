@@ -317,6 +317,13 @@ def render_trace_summary_markdown(summary: dict[str, Any]) -> str:
         f"- History Vector Failures: {_value(memory.get('history_vector_failures'))}",
         f"- Last Similar Hit Count: {_value(memory.get('last_similar_hit_count'))}",
         f"- Last Candidate Selected: `{_value(memory.get('last_candidate_selected'))}`",
+        f"- Semantic Writes: {_value(memory.get('writes'))}",
+        f"- Semantic Retrievals/Hits: {_value(memory.get('semantic_retrievals'))} / {_value(memory.get('semantic_hits'))}",
+        f"- Promotion/Rejection Rate: {_value(memory.get('promotion_rate'))} / {_value(memory.get('rejection_rate'))}",
+        f"- Duplicate/Conflict Rate: {_value(memory.get('duplicate_rate'))} / {_value(memory.get('conflict_rate'))}",
+        f"- Stale/Cross-scope Rate: {_value(memory.get('stale_hit_rate'))} / {_value(memory.get('cross_scope_leak_rate'))}",
+        f"- Index Failure Rate: {_value(memory.get('index_failure_rate'))}",
+        f"- Memory Context Token Ratio: {_value(memory.get('context_token_ratio'))}",
         "",
         "## 关键时间线",
         "",
@@ -541,6 +548,11 @@ def _memory_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     last_similar_hit_count = None
     last_candidate_selected = None
     promoted_previews = []
+    writes = rejected = superseded = revoked = duplicates = conflicts = 0
+    semantic_retrievals = semantic_retrievals_with_hits = semantic_hits = 0
+    invalid_drops = stale_drops = scope_drops = unused_drops = 0
+    index_completed = index_failed = 0
+    context_token_ratios = []
     for event in events:
         name = event.get("event")
         payload = event.get("payload") or {}
@@ -561,6 +573,46 @@ def _memory_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
             history_vector_failures += 1
         elif name == "memory.lifecycle.completed":
             lifecycle_completed += 1
+        elif name == "memory.item.created":
+            writes += 1
+        elif name == "memory.candidate.created":
+            candidate_upserts += 1
+        elif name in {"memory.item.promoted", "memory.item.confirmed"}:
+            candidate_promotions += 1
+        elif name == "memory.item.rejected":
+            rejected += 1
+        elif name == "memory.item.superseded":
+            superseded += 1
+        elif name == "memory.item.revoked":
+            revoked += 1
+        elif name == "memory.item.duplicate":
+            duplicates += 1
+        elif name == "memory.item.conflict":
+            conflicts += 1
+        elif name == "memory.index.completed":
+            index_completed += 1
+        elif name == "memory.index.failed":
+            index_failed += 1
+        elif name == "memory.semantic.retrieved":
+            semantic_retrievals += 1
+            hit_count = _int(payload.get("hit_count"))
+            semantic_hits += hit_count
+            if hit_count:
+                semantic_retrievals_with_hits += 1
+            drops = payload.get("drop_reasons") if isinstance(payload.get("drop_reasons"), dict) else {}
+            invalid_drops += _int(drops.get("inactive_or_expired"))
+            stale_drops += _int(drops.get("stale_version"))
+            scope_drops += _int(drops.get("scope_mismatch"))
+            unused_drops += _int(drops.get("unused"))
+        elif name == "memory.context.dropped":
+            reason = str(payload.get("reason") or "")
+            if reason == "unused":
+                unused_drops += 1
+            if payload.get("context_token_ratio") is not None:
+                context_token_ratios.append(_float(payload.get("context_token_ratio")))
+    candidate_total = candidate_upserts
+    retrieval_candidates = semantic_hits + invalid_drops + stale_drops + scope_drops + unused_drops
+    index_total = index_completed + index_failed
     return {
         "candidate_evaluations": candidate_evaluations,
         "candidate_upserts": candidate_upserts,
@@ -571,7 +623,41 @@ def _memory_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
         "last_similar_hit_count": last_similar_hit_count,
         "last_candidate_selected": last_candidate_selected,
         "promoted_previews": promoted_previews[-5:],
+        "writes": writes,
+        "candidates": candidate_total,
+        "rejected": rejected,
+        "superseded": superseded,
+        "revoked": revoked,
+        "duplicates": duplicates,
+        "conflicts": conflicts,
+        "index_completed": index_completed,
+        "index_failed": index_failed,
+        "semantic_retrievals": semantic_retrievals,
+        "semantic_hits": semantic_hits,
+        "unused_drops": unused_drops,
+        "promotion_rate": _safe_ratio(candidate_promotions, candidate_total),
+        "rejection_rate": _safe_ratio(rejected, candidate_total),
+        "supersede_rate": _safe_ratio(superseded, max(1, writes)),
+        "revocation_rate": _safe_ratio(revoked, max(1, writes)),
+        "duplicate_rate": _safe_ratio(duplicates, max(1, writes + duplicates)),
+        "conflict_rate": _safe_ratio(conflicts, max(1, writes + conflicts)),
+        "retrieval_hit_rate": _safe_ratio(semantic_retrievals_with_hits, semantic_retrievals),
+        "invalid_retrieval_rate": _safe_ratio(invalid_drops, retrieval_candidates),
+        "stale_hit_rate": _safe_ratio(stale_drops, retrieval_candidates),
+        "cross_scope_leak_rate": _safe_ratio(scope_drops, retrieval_candidates),
+        "index_failure_rate": _safe_ratio(index_failed, index_total),
+        "context_token_ratio": (
+            sum(context_token_ratios) / len(context_token_ratios)
+            if context_token_ratios else 0.0
+        ),
     }
+
+
+def _safe_ratio(numerator: int | float, denominator: int | float) -> float:
+    value = float(denominator or 0)
+    if value <= 0:
+        return 0.0
+    return float(numerator or 0) / value
 
 
 def _security_rag_summary(events: list[dict[str, Any]]) -> dict[str, Any]:

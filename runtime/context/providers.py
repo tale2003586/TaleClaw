@@ -118,9 +118,14 @@ class MemoryContextProvider:
             session,
             profile=profile,
         )
+        memory_budget_name = (
+            "semantic_memory"
+            if raw_memory.lstrip().startswith("<semantic_memory>")
+            else "memory"
+        )
         return MemoryContext(
             raw_memory=raw_memory,
-            budgeted_memory=builder.budgeter.apply("memory", raw_memory),
+            budgeted_memory=builder.budgeter.apply(memory_budget_name, raw_memory),
             raw_working_memory=raw_working,
             budgeted_working_memory=builder.budgeter.apply(
                 "working_memory",
@@ -179,7 +184,7 @@ class RetrievalContextProvider:
             raw_history=raw_history,
             history_hits=history_hits,
             budgeted_history=builder.budgeter.apply(
-                "retrieved_history",
+                "episodic_history",
                 raw_history,
             ),
             raw_security=raw_security,
@@ -215,7 +220,7 @@ class EmptyRetrievalContextProvider:
         return RetrievalContext(
             raw_history="",
             history_hits=[],
-            budgeted_history=builder.budgeter.apply("retrieved_history", ""),
+            budgeted_history=builder.budgeter.apply("episodic_history", ""),
             raw_security="",
             security_decision=None,
             security_hits=[],

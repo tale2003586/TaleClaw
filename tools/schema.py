@@ -965,7 +965,7 @@ Each subagent has about 16 reasoning steps, isolated context, and restricted too
 MEMORY_TOOLS = [
     function_tool(
         "memorize",
-        "Save an important long-term memory, user preference, project convention, or current state.",
+        "Save an explicit durable long-term memory through the governed semantic memory service.",
         {
             "content": {
                 "type": "string",
@@ -975,8 +975,8 @@ MEMORY_TOOLS = [
                 "type": "string",
                 "enum": ["memory", "self", "now", "pending"],
                 "description": (
-                    "Where to save it. Defaults to memory. In a coding task, use pending "
-                    "for durable project conclusions that should be reviewed for promotion."
+                    "Deprecated compatibility parameter. Normal sessions must use memory; "
+                    "Coding task-local pending remains temporarily supported."
                 ),
             },
         },
@@ -984,7 +984,7 @@ MEMORY_TOOLS = [
     ),
     function_tool(
         "recall_memory",
-        "Read long-term memory before answering questions that may depend on preferences, project conventions, or current state.",
+        "Search active, in-scope long-term semantic memory. Raw cross-session history is excluded.",
         {
             "query": {
                 "type": "string",

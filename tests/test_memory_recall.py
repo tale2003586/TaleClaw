@@ -6,6 +6,20 @@ from memory.store import MemoryStore
 
 
 class MemoryRecallTests(unittest.TestCase):
+    def test_legacy_query_recall_mixes_pending_and_history_with_stable_memory(self) -> None:
+        """Legacy baseline: query recall does not distinguish memory classes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = MemoryStore(Path(tmp) / "memory")
+            memory.append("memory", "pytest is the stable project test preference")
+            memory.append_pending("pytest might be useful next time")
+            memory.append_history("USER:\nwe discussed pytest yesterday")
+
+            result = memory.recall("pytest")
+
+            self.assertIn('section="memory"', result)
+            self.assertIn('section="pending"', result)
+            self.assertIn('section="history"', result)
+
     def test_query_recall_returns_relevant_snippets_not_full_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             memory = MemoryStore(Path(tmp) / "memory")

@@ -334,6 +334,16 @@ class Runtime:
         return "chat"
 
     def _after_turn(self, session, *, run_state=None, trace_store=None) -> None:
+        queued_memory_events = []
+        metadata = getattr(session, "metadata", None)
+        if isinstance(metadata, dict):
+            queued_memory_events = list(metadata.pop("memory_trace_events", []) or [])
+        if trace_store is not None and run_state is not None:
+            for item in queued_memory_events:
+                event_name = item.get("event") if isinstance(item, dict) else ""
+                payload = item.get("payload") if isinstance(item, dict) else {}
+                if event_name:
+                    trace_store.append_event(run_state, event_name, payload or {})
         if self.memory_lifecycle is not None:
             enqueue = getattr(self.memory_lifecycle, "enqueue_after_turn", None)
             if enqueue is not None:

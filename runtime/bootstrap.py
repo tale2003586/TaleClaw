@@ -11,7 +11,6 @@ from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
 from runtime.context.retrieval import ContextRetrievalService
 from runtime.working_memory import render_working_memory_block
 from skill_runtime import SKILL_LOADER
-from memory.vector_runtime import history_vector_scope_for_session
 from applications.coding.context_state import build_coding_context_view
 from runtime.agent_spec import AgentSpec
 from models.model_task_runner import ModelTaskRunner
@@ -29,7 +28,11 @@ from tools.hooks import (
     ToolTraceHook,
 )
 from tools.executor import ToolExecutor
-from tools.handlers import cleanup_expired_sandboxes, configure_subagent_runner
+from tools.handlers import (
+    cleanup_expired_sandboxes,
+    configure_semantic_memory_services,
+    configure_subagent_runner,
+)
 from tools.tool_registry import build_lead_tool_registry
 from runtime.routing.agent_router import AgentRouter
 from runtime.routing.hybrid_classifier import HybridModeClassifier
@@ -40,10 +43,16 @@ from memory.archive_store import MemoryArchiveStore
 from memory.history_summary import HistorySummarizer
 from memory.lifecycle import MemoryLifecycle
 from memory.processor import CandidateMemoryExtractor, MemoryProcessingDevice
+from memory.command_service import MemoryCommandService
+from memory.index_sync import MemoryIndexSynchronizer
+from memory.postgres_repository import PostgresMemoryRepository
+from memory.promotion_service import MemoryPromotionService
+from memory.semantic_retrieval import SemanticMemoryRetrievalService
 from memory.store import MemoryStore
 from memory.scoped_store import ScopedMemoryStore
 from memory.vector_runtime import (
     build_history_vector_index_from_env,
+    build_semantic_memory_index_from_env,
     history_vector_scope_for_session,
 )
 from plugins import PluginManager
@@ -125,6 +134,56 @@ def build_runtime() -> AppRuntime:
         if _history_vector_enabled()
         else None
     )
+    semantic_memory_repository = None
+    semantic_memory_command_service = None
+    semantic_memory_retrieval_service = None
+    semantic_memory_index_synchronizer = None
+    semantic_memory_promotion_service = None
+    semantic_flags_enabled = _env_bool("SEMANTIC_MEMORY_ENABLED", False) or any(
+        _env_bool(name, False)
+        for name in (
+            "SEMANTIC_MEMORY_WRITE_ENABLED",
+            "SEMANTIC_MEMORY_READ_ENABLED",
+            "SEMANTIC_MEMORY_CONTEXT_ENABLED",
+        )
+    )
+    if semantic_flags_enabled:
+        semantic_memory_repository = PostgresMemoryRepository()
+        semantic_memory_index = build_semantic_memory_index_from_env()
+        semantic_memory_command_service = MemoryCommandService(
+            semantic_memory_repository,
+        )
+        semantic_memory_retrieval_service = SemanticMemoryRetrievalService(
+            semantic_memory_repository,
+            semantic_memory_index,
+            top_k=_env_int("SEMANTIC_MEMORY_RETRIEVAL_TOP_K", 8),
+        )
+        semantic_memory_index_synchronizer = MemoryIndexSynchronizer(
+            semantic_memory_repository,
+            semantic_memory_index,
+        )
+        semantic_memory_promotion_service = MemoryPromotionService(
+            semantic_memory_command_service,
+            semantic_memory_repository,
+            min_confidence=_env_float("MEMORY_CANDIDATE_PROMOTION_CONFIDENCE", 0.85),
+            min_independent_evidence=_env_int(
+                "MEMORY_CANDIDATE_PROMOTION_EVIDENCE_COUNT",
+                2,
+            ),
+        )
+    configure_semantic_memory_services(
+        command_service=(
+            semantic_memory_command_service
+            if _env_bool("SEMANTIC_MEMORY_WRITE_ENABLED", False)
+            else None
+        ),
+        retrieval_service=(
+            semantic_memory_retrieval_service
+            if _env_bool("SEMANTIC_MEMORY_READ_ENABLED", False)
+            else None
+        ),
+        index_synchronizer=semantic_memory_index_synchronizer,
+    )
     security_retrieval_router = None
     security_route_classifier = None
     security_knowledge_index = None
@@ -166,6 +225,11 @@ def build_runtime() -> AppRuntime:
         memory_service=ContextMemoryService(
             memory_store=memory_store,
             working_memory_renderer=render_working_memory_block,
+            semantic_memory_retriever=(
+                semantic_memory_retrieval_service
+                if _env_bool("SEMANTIC_MEMORY_CONTEXT_ENABLED", False)
+                else None
+            ),
         ),
         retrieval_service=ContextRetrievalService(
             history_vector_index=history_vector_index,
@@ -218,6 +282,20 @@ def build_runtime() -> AppRuntime:
         scope_resolver=history_vector_scope_for_session,
         promotion_confidence=_env_float("MEMORY_CANDIDATE_PROMOTION_CONFIDENCE", 0.85),
         promotion_evidence_count=_env_int("MEMORY_CANDIDATE_PROMOTION_EVIDENCE_COUNT", 3),
+        command_service=(
+            semantic_memory_command_service
+            if _env_bool("SEMANTIC_MEMORY_WRITE_ENABLED", False)
+            else None
+        ),
+        promotion_service=(
+            semantic_memory_promotion_service
+            if _env_bool("SEMANTIC_MEMORY_WRITE_ENABLED", False)
+            else None
+        ),
+        write_legacy_history_files=_env_bool(
+            "MEMORY_LEGACY_HISTORY_FILES_ENABLED",
+            False,
+        ),
     )
     if _env_bool("MEMORY_LIFECYCLE_BACKGROUND", True):
         memory_lifecycle = BackgroundMemoryLifecycle(
@@ -288,6 +366,11 @@ def build_runtime() -> AppRuntime:
         sessions=sessions,
         base_pipeline=pipeline,
         global_memory=memory_store,
+        semantic_memory_command_service=(
+            semantic_memory_command_service
+            if _env_bool("SEMANTIC_MEMORY_WRITE_ENABLED", False)
+            else None
+        ),
     )
     subagent_runner = TaskSubagentRunner(
         base_pipeline=pipeline,
@@ -322,6 +405,10 @@ def build_runtime() -> AppRuntime:
         trace_store=trace_store,
         cancellation_registry=cancellation_registry,
         message_bus=bus,
+        semantic_memory_repository=semantic_memory_repository,
+        semantic_memory_command_service=semantic_memory_command_service,
+        semantic_memory_retrieval_service=semantic_memory_retrieval_service,
+        semantic_memory_index_synchronizer=semantic_memory_index_synchronizer,
     )
     return AppRuntime(
         bus=bus,

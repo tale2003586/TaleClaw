@@ -4,6 +4,11 @@ import os
 
 from memory.embeddings import build_embedding_provider_from_env
 from memory.qdrant_index import QdrantMemoryVectorIndex
+from memory.semantic_index import (
+    NullSemanticMemoryIndex,
+    QdrantSemanticMemoryIndex,
+    SemanticMemoryIndex,
+)
 from memory.vector_index import MemoryVectorIndex, NullMemoryVectorIndex
 from user_scope import user_id_for_session
 
@@ -42,7 +47,7 @@ def history_vector_scope_for_session(session) -> str:
     if metadata.get("kind") == "coding_application":
         task_id = metadata.get("task_id") or getattr(session, "id", "unknown")
         return f"task:{task_id}"
-    return f"user:{user_id_for_session(session)}"
+    return f"session:{getattr(session, 'id', 'unknown')}"
 
 
 def build_memory_vector_index_from_env() -> MemoryVectorIndex:
@@ -51,6 +56,26 @@ def build_memory_vector_index_from_env() -> MemoryVectorIndex:
 
 def memory_vector_scope_for_session(session) -> str:
     return history_vector_scope_for_session(session)
+
+
+def build_semantic_memory_index_from_env() -> SemanticMemoryIndex:
+    if not _env_bool("SEMANTIC_MEMORY_INDEX_ENABLED", default=True):
+        return NullSemanticMemoryIndex()
+    try:
+        return QdrantSemanticMemoryIndex(
+            url=os.getenv("QDRANT_URL", "http://127.0.0.1:6333").strip(),
+            api_key=os.getenv("QDRANT_API_KEY", "").strip() or None,
+            collection=os.getenv(
+                "SEMANTIC_MEMORY_QDRANT_COLLECTION",
+                "taleclaw_semantic_memory_v1",
+            ).strip(),
+            distance=os.getenv("QDRANT_DISTANCE", "Cosine").strip(),
+            embeddings=build_embedding_provider_from_env(),
+        )
+    except Exception:
+        if _env_bool("SEMANTIC_MEMORY_INDEX_STRICT", default=False):
+            raise
+        return NullSemanticMemoryIndex()
 
 
 def _env_first(names: list[str], default: str) -> str:

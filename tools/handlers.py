@@ -2908,12 +2908,103 @@ def memory_store_for_session(session=None) -> MemoryStore:
     return MemoryStore(root)
 
 
+SEMANTIC_MEMORY_COMMAND_SERVICE = None
+SEMANTIC_MEMORY_RETRIEVAL_SERVICE = None
+SEMANTIC_MEMORY_INDEX_SYNCHRONIZER = None
+
+
+def configure_semantic_memory_services(
+    *,
+    command_service=None,
+    retrieval_service=None,
+    index_synchronizer=None,
+) -> None:
+    global SEMANTIC_MEMORY_COMMAND_SERVICE
+    global SEMANTIC_MEMORY_RETRIEVAL_SERVICE
+    global SEMANTIC_MEMORY_INDEX_SYNCHRONIZER
+    SEMANTIC_MEMORY_COMMAND_SERVICE = command_service
+    SEMANTIC_MEMORY_RETRIEVAL_SERVICE = retrieval_service
+    SEMANTIC_MEMORY_INDEX_SYNCHRONIZER = index_synchronizer
+
+
+def _is_coding_memory_session(session) -> bool:
+    metadata = getattr(session, "metadata", {}) or {}
+    return metadata.get("kind") == "coding_application"
+
+
 def run_memorize(*, content: str, section: str = "memory", _session=None) -> str:
+    if SEMANTIC_MEMORY_COMMAND_SERVICE is not None and not _is_coding_memory_session(_session):
+        if str(section or "memory").lower() != "memory":
+            return (
+                "Error: semantic memory no longer accepts file sections; "
+                "use durable memory content with section=memory."
+            )
+        from memory.commands import MemoryContext, MemoryWriteProposal
+        from memory.domain import (
+            MemoryEvidence,
+            MemoryKind,
+            MemoryOwnerScope,
+            MemorySourceType,
+        )
+
+        context = MemoryContext.from_session(_session)
+        evidence = MemoryEvidence(
+            id=str(uuid4()),
+            memory_id="pending",
+            source_type=MemorySourceType.EXPLICIT_USER,
+            source_ref=f"{context.session_id}:tool:memorize",
+            session_id=context.session_id,
+            excerpt=str(content or "")[:1000],
+        )
+        item = SEMANTIC_MEMORY_COMMAND_SERVICE.remember(
+            MemoryWriteProposal(
+                content=content,
+                kind=MemoryKind.PREFERENCE,
+                owner_scope=MemoryOwnerScope.USER,
+                owner_id=context.user_id,
+                source_type=MemorySourceType.EXPLICIT_USER,
+                evidence=(evidence,),
+                confidence=1.0,
+                salience=0.8,
+                explicit_user_request=True,
+                metadata={"entrypoint": "memorize_tool"},
+            ),
+            context,
+        )
+        if SEMANTIC_MEMORY_INDEX_SYNCHRONIZER is not None:
+            try:
+                SEMANTIC_MEMORY_INDEX_SYNCHRONIZER.drain(limit=10)
+            except Exception:
+                pass
+        _queue_memory_trace_events(_session, SEMANTIC_MEMORY_COMMAND_SERVICE)
+        _queue_memory_trace_events(_session, SEMANTIC_MEMORY_INDEX_SYNCHRONIZER)
+        return f"Saved semantic memory {item.id} ({item.status.value})."
     return memory_store_for_session(_session).append(section, content)
 
 
 def run_recall_memory(*, query: str | None = None, _session=None) -> str:
+    if SEMANTIC_MEMORY_RETRIEVAL_SERVICE is not None and not _is_coding_memory_session(_session):
+        from memory.commands import MemoryContext
+
+        result = SEMANTIC_MEMORY_RETRIEVAL_SERVICE.retrieve(
+            str(query or ""),
+            MemoryContext.from_session(_session),
+        )
+        _queue_memory_trace_events(_session, SEMANTIC_MEMORY_RETRIEVAL_SERVICE)
+        rendered = SEMANTIC_MEMORY_RETRIEVAL_SERVICE.render(result)
+        return rendered or "No relevant memory found."
     return memory_store_for_session(_session).recall(query)
+
+
+def _queue_memory_trace_events(session, service) -> None:
+    if session is None or service is None or not hasattr(service, "drain_trace_events"):
+        return
+    events = service.drain_trace_events()
+    if not events:
+        return
+    metadata = getattr(session, "metadata", None)
+    if isinstance(metadata, dict):
+        metadata.setdefault("memory_trace_events", []).extend(events)
 
 MEMORY_HANDLERS = {
     "memorize": run_memorize,

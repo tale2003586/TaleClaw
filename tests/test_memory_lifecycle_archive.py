@@ -11,6 +11,8 @@ from memory.store import MemoryStore
 from memory.vector_index import MemoryHit
 from runtime.sessions.session import Session
 from tests.postgres_utils import temporary_postgres_schema
+from memory.command_service import MemoryCommandService
+from tests.fakes.in_memory_memory_repository import InMemoryMemoryRepository
 
 
 class RecordingVectorIndex:
@@ -128,6 +130,30 @@ class MemoryLifecycleArchiveTests(unittest.TestCase):
             self.assertEqual([], provider.calls)
             self.assertIn("ASSISTANT_SUMMARY:\ndone", memory.read_history())
 
+    def test_normal_production_mode_stops_duplicate_history_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = MemoryStore(Path(tmp) / "memory")
+            vector_index = RecordingVectorIndex()
+            lifecycle = MemoryLifecycle(
+                memory,
+                history_vector_index=vector_index,
+                write_legacy_history_files=False,
+            )
+            session = Session(id="web:alice:a", metadata={"user_id": "alice"})
+            session.add_message("user", "current session event")
+            session.add_message("assistant", "done")
+
+            result = lifecycle.after_turn(session)
+
+            self.assertFalse(result.history_updated)
+            self.assertFalse(result.recent_context_updated)
+            self.assertEqual("# History\n\n", memory.read_history())
+            self.assertEqual([], memory.read_recent_turns())
+            self.assertEqual(
+                ["session_turn"],
+                [record.source_type for record in vector_index.records],
+            )
+
     def test_recent_markdown_bounds_context_but_json_keeps_full_user_text(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             memory = MemoryStore(Path(tmp) / "memory")
@@ -222,6 +248,28 @@ class MemoryLifecycleArchiveTests(unittest.TestCase):
             self.assertEqual([], memory.candidates().read())
             self.assertIn("我喜欢真实的人物细节", memory.memory_path.read_text(encoding="utf-8"))
 
+    def test_governed_explicit_memory_writes_repository_not_markdown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = MemoryStore(Path(tmp) / "memory")
+            repository = InMemoryMemoryRepository()
+            lifecycle = MemoryLifecycle(
+                memory,
+                command_service=MemoryCommandService(repository),
+            )
+            session = Session(
+                id="web:alice:a",
+                metadata={"user_id": "alice"},
+            )
+            session.add_message("user", "记住我喜欢真实的人物细节")
+            session.add_message("assistant", "记住了")
+
+            result = lifecycle.after_turn(session)
+
+            self.assertEqual(1, result.pending_added)
+            self.assertEqual(1, len(repository.items))
+            self.assertTrue(next(iter(repository.items.values())).status.value == "active")
+            self.assertNotIn("人物细节", memory.memory_path.read_text(encoding="utf-8"))
+
     def test_lifecycle_indexes_full_session_turn_to_vector_store(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             memory = MemoryStore(Path(tmp) / "memory")
@@ -255,12 +303,42 @@ class MemoryLifecycleArchiveTests(unittest.TestCase):
             self.assertGreaterEqual(result.vector_indexed, 1)
             self.assertEqual(0, result.vector_errors)
             self.assertIn("session_turn", source_types)
-            self.assertIn("memory_file", source_types)
+            self.assertNotIn("memory_file", source_types)
             record = vector_index.records[0]
             self.assertEqual("user:test", record.scope)
             self.assertEqual(4, record.metadata["message_count"])
             self.assertEqual("call_1", record.metadata["messages"][1]["tool_calls"][0]["id"])
             self.assertEqual("搜索结果", record.metadata["messages"][2]["content"])
+
+    def test_legacy_lifecycle_writes_redundant_history_and_whole_files(self) -> None:
+        """Legacy baseline for the stores intentionally retired by Phase 4/6."""
+        with tempfile.TemporaryDirectory() as tmp:
+            memory = MemoryStore(Path(tmp) / "memory")
+            memory.append("self", "agent preference")
+            memory.append("memory", "stable preference")
+            memory.append("now", "current objective")
+            memory.append("pending", "unconfirmed candidate")
+            vector_index = RecordingVectorIndex()
+            lifecycle = MemoryLifecycle(
+                memory,
+                history_vector_index=vector_index,
+                scope_resolver=lambda session: "user:test",
+                index_legacy_memory_files=True,
+            )
+            session = Session(id="web:test")
+            session.add_message("user", "remember this turn")
+            session.add_message("assistant", "done")
+
+            result = lifecycle.after_turn(session)
+
+            self.assertTrue(result.history_updated)
+            self.assertTrue(result.recent_context_updated)
+            self.assertIn("remember this turn", memory.read_history())
+            self.assertEqual(1, len(memory.read_recent_turns()))
+            source_types = [record.source_type for record in vector_index.records]
+            self.assertEqual(1, source_types.count("session_turn"))
+            self.assertEqual(5, source_types.count("memory_file"))
+
 
     def test_embedding_text_extracts_structured_content_without_json_noise(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

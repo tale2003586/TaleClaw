@@ -10,6 +10,10 @@ class ConclusionCandidate:
     category: str
     content: str
     evidence: str = ""
+    evidence_file: str = ""
+    evidence_location: str = ""
+    code_revision: str = ""
+    verified: bool = False
     confidence: float = 0.0
     source: str = "llm"
 
@@ -87,6 +91,9 @@ def _build_prompt(
         '      "category": "project|decision|preference|fact",\n'
         '      "content": "a reusable conclusion, maximum 240 characters",\n'
         '      "evidence": "short file, command, or result reference",\n'
+        '      "evidence_file": "optional repository-relative file",\n'
+        '      "evidence_location": "optional line, symbol, command, or test",\n'
+        '      "verified": false,\n'
         '      "confidence": 0.0\n'
         "    }\n"
         "  ]\n"
@@ -154,6 +161,12 @@ def _parse_candidates(value: Any) -> list[ConclusionCandidate]:
             category=str(item.get("category", "fact")).strip().lower(),
             content=str(item.get("content", "")).strip(),
             evidence=str(item.get("evidence", "")).strip(),
+            evidence_file=str(
+                item.get("evidence_file") or item.get("evidence") or ""
+            ).strip(),
+            evidence_location=str(item.get("evidence_location") or "").strip(),
+            code_revision=str(item.get("code_revision") or "").strip(),
+            verified=bool(item.get("verified", False)),
             confidence=max(0.0, min(1.0, confidence)),
             source="llm",
         ))

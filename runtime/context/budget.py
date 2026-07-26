@@ -89,6 +89,12 @@ class ContextBudgeter:
                     floor_chars=_env_int("CONTEXT_MEMORY_FLOOR", 500),
                     strategy="head_tail",
                 ),
+                "semantic_memory": SectionBudgetRule(
+                    name="semantic_memory",
+                    budget_chars=_env_int("CONTEXT_SEMANTIC_MEMORY_BUDGET", 2000),
+                    floor_chars=_env_int("CONTEXT_SEMANTIC_MEMORY_FLOOR", 500),
+                    strategy="head_tail",
+                ),
                 "working_memory": SectionBudgetRule(
                     name="working_memory",
                     budget_chars=_env_int("WORKING_MEMORY_CONTEXT_BUDGET", 4000),
@@ -105,6 +111,12 @@ class ContextBudgeter:
                         ["CONTEXT_RETRIEVED_HISTORY_FLOOR", "CONTEXT_RETRIEVED_MEMORY_FLOOR"],
                         500,
                     ),
+                    strategy="head_tail",
+                ),
+                "episodic_history": SectionBudgetRule(
+                    name="episodic_history",
+                    budget_chars=_env_int("CONTEXT_EPISODIC_HISTORY_BUDGET", 2500),
+                    floor_chars=_env_int("CONTEXT_EPISODIC_HISTORY_FLOOR", 500),
                     strategy="head_tail",
                 ),
                 "security_knowledge": SectionBudgetRule(

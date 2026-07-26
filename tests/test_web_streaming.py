@@ -67,6 +67,124 @@ class StreamingProviderTests(unittest.TestCase):
         self.assertEqual({"path": "README.md"}, response.tool_calls[0].arguments)
         self.assertEqual("read_file", response.raw_message["tool_calls"][0]["function"]["name"])
 
+    def test_responses_stream_emits_typed_text_deltas_and_final_usage(self) -> None:
+        tool_item = SimpleNamespace(
+            type="function_call",
+            id="item_1",
+            call_id="call_1",
+            name="read_file",
+            arguments='{"path":"README.md"}',
+        )
+        final_response = SimpleNamespace(
+            output_text="正在处理",
+            output=[tool_item],
+            usage=SimpleNamespace(input_tokens=12, output_tokens=4, total_tokens=16),
+        )
+        events = [
+            SimpleNamespace(type="response.output_text.delta", delta="正在"),
+            SimpleNamespace(type="response.output_text.delta", delta="处理"),
+            SimpleNamespace(type="response.completed", response=final_response),
+        ]
+
+        class Responses:
+            def __init__(self) -> None:
+                self.kwargs = None
+
+            def create(self, **kwargs):
+                self.kwargs = kwargs
+                return events
+
+        responses = Responses()
+        emitted = []
+        response = OpenAICompatibleProvider(
+            SimpleNamespace(responses=responses),
+            wire_api="responses",
+        ).stream_chat(
+            model="test-model",
+            messages=[{"role": "user", "content": "read it"}],
+            tools=[],
+            max_tokens=100,
+            on_text=emitted.append,
+        )
+
+        self.assertTrue(responses.kwargs["stream"])
+        self.assertEqual(["正在", "处理"], emitted)
+        self.assertEqual("正在处理", response.content)
+        self.assertEqual("call_1", response.tool_calls[0].id)
+        self.assertEqual({"path": "README.md"}, response.tool_calls[0].arguments)
+        self.assertEqual(12, response.usage.input_tokens)
+        self.assertEqual(4, response.usage.output_tokens)
+        self.assertEqual(16, response.usage.total_tokens)
+
+    def test_responses_stream_reassembles_function_call_events(self) -> None:
+        added_item = SimpleNamespace(
+            type="function_call",
+            id="item_1",
+            call_id="call_1",
+            name="read_file",
+            arguments="",
+        )
+        events = [
+            SimpleNamespace(
+                type="response.output_item.added",
+                output_index=0,
+                item=added_item,
+            ),
+            SimpleNamespace(
+                type="response.function_call_arguments.delta",
+                output_index=0,
+                delta='{"path":"READ',
+            ),
+            SimpleNamespace(
+                type="response.function_call_arguments.delta",
+                output_index=0,
+                delta='ME.md"}',
+            ),
+            SimpleNamespace(
+                type="response.function_call_arguments.done",
+                output_index=0,
+                name="read_file",
+                arguments='{"path":"README.md"}',
+            ),
+        ]
+        client = SimpleNamespace(
+            responses=SimpleNamespace(create=lambda **kwargs: events),
+        )
+
+        response = OpenAICompatibleProvider(
+            client,
+            wire_api="responses",
+        ).stream_chat(
+            model="test-model",
+            messages=[],
+            tools=[],
+            max_tokens=100,
+            on_text=lambda text: None,
+        )
+
+        self.assertIsNone(response.content)
+        self.assertEqual("call_1", response.tool_calls[0].id)
+        self.assertEqual("read_file", response.tool_calls[0].name)
+        self.assertEqual({"path": "README.md"}, response.tool_calls[0].arguments)
+
+    def test_responses_stream_raises_error_event(self) -> None:
+        events = [SimpleNamespace(
+            type="error",
+            error=SimpleNamespace(message="relay stream failed"),
+        )]
+        client = SimpleNamespace(
+            responses=SimpleNamespace(create=lambda **kwargs: events),
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "relay stream failed"):
+            OpenAICompatibleProvider(client, wire_api="responses").stream_chat(
+                model="test-model",
+                messages=[],
+                tools=[],
+                max_tokens=100,
+                on_text=lambda text: None,
+            )
+
 
 class StreamingHttpTests(unittest.TestCase):
     def test_chat_markdown_renders_formatting_and_escapes_unsafe_content(self) -> None:

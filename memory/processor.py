@@ -19,6 +19,8 @@ class MemoryProcessingResult:
     candidate_selected: bool = False
     candidate_save_result: str = ""
     similar_hits: list[dict] = field(default_factory=list)
+    candidate_content: str = ""
+    candidate_confidence: float = 0.0
 
 
 class MemoryProcessingDevice:
@@ -49,11 +51,46 @@ class MemoryProcessingDevice:
         user_text: str,
         source_ref: str,
     ) -> MemoryProcessingResult:
+        result = self.evaluate_user_description(session=session, user_text=user_text)
+        text = user_text.strip()
+        if not result.candidate_selected:
+            return result
+
+        related = store.trigger_related_candidates(text, source_ref=source_ref)
+        result.related_triggered += len(related)
+
+        save_result = store.upsert_candidate(
+            text,
+            tag="history_pattern",
+            confidence=result.candidate_confidence,
+            source_ref=source_ref,
+            metadata={
+                "selection": {
+                    "method": "history_vector_similarity",
+                    "similar_min_hits": self.similar_min_hits,
+                    "similar_min_score": self.similar_min_score,
+                    "similar_hit_count": result.similar_hit_count,
+                },
+                "similar_history": result.similar_hits,
+            },
+        )
+        result.candidate_save_result = save_result
+        if save_result.startswith("Saved"):
+            result.pending_added += 1
+        if save_result.startswith(("Saved", "Updated")):
+            result.candidates_updated += 1
+        return result
+
+    def evaluate_user_description(
+        self,
+        *,
+        session,
+        user_text: str,
+    ) -> MemoryProcessingResult:
         result = MemoryProcessingResult()
         text = user_text.strip()
         if not text or self.history_vector_index is None:
             return result
-
         hits = self._similar_history(session, text)
         result.similar_hit_count = len(hits)
         result.similar_hits = [
@@ -62,6 +99,11 @@ class MemoryProcessingDevice:
                 "score": hit.score,
                 "source_type": hit.source_type,
                 "source_ref": hit.source_ref,
+                "session_id": (
+                    hit.metadata.get("session_id")
+                    if isinstance(hit.metadata, dict)
+                    else None
+                ),
                 "message_count": (
                     hit.metadata.get("message_count")
                     if isinstance(hit.metadata, dict)
@@ -72,44 +114,9 @@ class MemoryProcessingDevice:
         ]
         if len(hits) < self.similar_min_hits:
             return result
-
-        related = store.trigger_related_candidates(text, source_ref=source_ref)
-        result.related_triggered += len(related)
-
-        save_result = store.upsert_candidate(
-            text,
-            tag="history_pattern",
-            confidence=self._confidence_from_hits(hits),
-            source_ref=source_ref,
-            metadata={
-                "selection": {
-                    "method": "history_vector_similarity",
-                    "similar_min_hits": self.similar_min_hits,
-                    "similar_min_score": self.similar_min_score,
-                    "similar_hit_count": len(hits),
-                },
-                "similar_history": [
-                    {
-                        "id": hit.id,
-                        "score": hit.score,
-                        "source_type": hit.source_type,
-                        "source_ref": hit.source_ref,
-                        "message_count": (
-                            hit.metadata.get("message_count")
-                            if isinstance(hit.metadata, dict)
-                            else None
-                        ),
-                    }
-                    for hit in hits
-                ],
-            },
-        )
         result.candidate_selected = True
-        result.candidate_save_result = save_result
-        if save_result.startswith("Saved"):
-            result.pending_added += 1
-        if save_result.startswith(("Saved", "Updated")):
-            result.candidates_updated += 1
+        result.candidate_content = text
+        result.candidate_confidence = self._confidence_from_hits(hits)
         return result
 
     def extract_stable_memory(self, candidate: MemoryCandidate) -> str:
