@@ -113,16 +113,14 @@ class OpenAICompatibleProvider:
         tool_choice: str = "auto",
     ) -> LLMResponse:
         if self.wire_api == "responses":
-            response = self._responses_chat(
+            return self._responses_stream_chat(
                 messages=messages,
                 tools=tools,
                 model=model,
                 max_tokens=max_tokens,
+                on_text=on_text,
                 tool_choice=tool_choice,
             )
-            if response.content:
-                on_text(response.content)
-            return response
 
         request = {
             "model": model,
@@ -215,6 +213,115 @@ class OpenAICompatibleProvider:
             tool_calls=tool_calls,
             raw_message=raw_message,
             usage=_usage_from_response(response),
+        )
+
+    def _responses_stream_chat(
+        self,
+        *,
+        messages: list[dict],
+        tools: list[dict],
+        model: str,
+        max_tokens: int,
+        on_text: Callable[[str], None],
+        tool_choice: str = "auto",
+    ) -> LLMResponse:
+        request = {
+            "model": model,
+            "input": _messages_to_responses_input(messages),
+            "max_output_tokens": max_tokens,
+            "stream": True,
+        }
+        response_tools = _tools_to_responses_tools(tools)
+        if response_tools:
+            request["tools"] = response_tools
+            request["tool_choice"] = tool_choice
+
+        content_parts: list[str] = []
+        streamed_calls: dict[int, dict[str, str]] = {}
+        final_response = None
+
+        for event in self.client.responses.create(**request):
+            event_type = str(_field(event, "type", "") or "")
+            if event_type == "response.output_text.delta":
+                delta = str(_field(event, "delta", "") or "")
+                if delta:
+                    content_parts.append(delta)
+                    on_text(delta)
+                continue
+
+            if event_type in {
+                "response.output_item.added",
+                "response.output_item.done",
+            }:
+                item = _field(event, "item")
+                if _field(item, "type") == "function_call":
+                    output_index = int(_field(event, "output_index", 0) or 0)
+                    call = streamed_calls.setdefault(
+                        output_index,
+                        {"id": "", "name": "", "arguments": ""},
+                    )
+                    call["id"] = str(
+                        _field(item, "call_id", "")
+                        or _field(item, "id", "")
+                        or call["id"]
+                    )
+                    call["name"] = str(_field(item, "name", "") or call["name"])
+                    item_arguments = _field(item, "arguments", None)
+                    if item_arguments not in (None, ""):
+                        call["arguments"] = str(item_arguments)
+                continue
+
+            if event_type == "response.function_call_arguments.delta":
+                output_index = int(_field(event, "output_index", 0) or 0)
+                call = streamed_calls.setdefault(
+                    output_index,
+                    {"id": "", "name": "", "arguments": ""},
+                )
+                call["arguments"] += str(_field(event, "delta", "") or "")
+                continue
+
+            if event_type == "response.function_call_arguments.done":
+                output_index = int(_field(event, "output_index", 0) or 0)
+                call = streamed_calls.setdefault(
+                    output_index,
+                    {"id": "", "name": "", "arguments": ""},
+                )
+                call["name"] = str(_field(event, "name", "") or call["name"])
+                arguments = _field(event, "arguments", None)
+                if arguments is not None:
+                    call["arguments"] = str(arguments)
+                continue
+
+            if event_type in {"response.completed", "response.incomplete"}:
+                final_response = _field(event, "response")
+                continue
+
+            if event_type in {"error", "response.failed"}:
+                response = _field(event, "response")
+                error = _field(event, "error") or _field(response, "error")
+                message = str(
+                    _field(error, "message", "")
+                    or _field(event, "message", "")
+                    or "Responses API stream failed"
+                )
+                raise RuntimeError(message)
+
+        streamed_content = "".join(content_parts)
+        content = _responses_text(final_response) if final_response is not None else ""
+        if not content:
+            content = streamed_content
+        tool_calls = (
+            _responses_tool_calls(final_response)
+            if final_response is not None
+            else []
+        )
+        if not tool_calls:
+            tool_calls = _streamed_responses_tool_calls(streamed_calls)
+        return LLMResponse(
+            content=content or None,
+            tool_calls=tool_calls,
+            raw_message=_responses_raw_message(content, tool_calls),
+            usage=_usage_from_response(final_response),
         )
 
 
@@ -394,6 +501,25 @@ def _responses_tool_calls(response) -> list[ToolCall]:
         calls.append(ToolCall(
             id=call_id,
             name=name,
+            arguments=arguments,
+        ))
+    return calls
+
+
+def _streamed_responses_tool_calls(
+    streamed_calls: dict[int, dict[str, str]],
+) -> list[ToolCall]:
+    calls = []
+    for output_index in sorted(streamed_calls):
+        item = streamed_calls[output_index]
+        raw_arguments = item["arguments"] or "{}"
+        try:
+            arguments = json.loads(raw_arguments)
+        except Exception:
+            arguments = {}
+        calls.append(ToolCall(
+            id=item["id"],
+            name=item["name"],
             arguments=arguments,
         ))
     return calls
