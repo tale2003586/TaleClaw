@@ -19,3 +19,4 @@
 - [10-数据持久化、索引与本地工件边界](10-数据持久化、索引与本地工件边界.md)
 - [11-会话类型、Profile 与工作记忆边界](11-会话类型、Profile与工作记忆边界.md)
 - [Memory Hierarchy 与演进边界](memory-hierarchy.md)
+- [Relation / Evolution Proposal 运行时接入设计](relation-evolution-runtime-integration.md)
