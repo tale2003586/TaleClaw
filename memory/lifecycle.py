@@ -112,6 +112,17 @@ class MemoryLifecycle:
             result.pending_added += processed.pending_added
             result.candidates_updated += processed.candidates_updated
             result.related_triggered += processed.related_triggered
+            if processed.governance_audit:
+                result.trace_events.append({
+                    "event": "memory.governance.decided",
+                    "payload": dict(processed.governance_audit),
+                })
+            if processed.enrichment_audit:
+                result.trace_events.append({
+                    "event": "memory.enrichment.completed",
+                    "payload": dict(processed.enrichment_audit),
+                })
+            classification = processed.governance_audit.get("classification") or {}
             result.trace_events.append({
                 "event": "memory.candidate.evaluated",
                 "payload": {
@@ -122,7 +133,11 @@ class MemoryLifecycle:
                     "candidate_selected": processed.candidate_selected,
                     "similar_min_hits": self.memory_processor.similar_min_hits,
                     "similar_min_score": self.memory_processor.similar_min_score,
-                    "user_text_preview": _trim_preview(user_text),
+                    "user_text_preview": (
+                        "[redacted]"
+                        if classification.get("sensitive")
+                        else _trim_preview(user_text)
+                    ),
                 },
             })
             if processed.candidate_selected:

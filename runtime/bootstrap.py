@@ -49,6 +49,8 @@ from memory.postgres_repository import PostgresMemoryRepository
 from memory.promotion_service import MemoryPromotionService
 from memory.semantic_retrieval import SemanticMemoryRetrievalService
 from memory.store import MemoryStore
+from memory.governance import MemoryGovernancePipeline
+from memory.enrichment import PendingMemoryEnricher
 from memory.scoped_store import ScopedMemoryStore
 from memory.vector_runtime import (
     build_history_vector_index_from_env,
@@ -157,6 +159,10 @@ def build_runtime() -> AppRuntime:
             semantic_memory_repository,
             semantic_memory_index,
             top_k=_env_int("SEMANTIC_MEMORY_RETRIEVAL_TOP_K", 8),
+            injection_trace_enabled=_env_bool(
+                "MEMORY_INJECTION_TRACE_ENABLED",
+                False,
+            ),
         )
         semantic_memory_index_synchronizer = MemoryIndexSynchronizer(
             semantic_memory_repository,
@@ -243,6 +249,14 @@ def build_runtime() -> AppRuntime:
         ),
         coding_context_view_builder=build_coding_context_view,
         context_providers=DEFAULT_CONTEXT_PROVIDERS,
+        pressure_observation_enabled=_env_bool(
+            "CONTEXT_PRESSURE_OBSERVATION_ENABLED",
+            False,
+        ),
+        injection_trace_enabled=_env_bool(
+            "MEMORY_INJECTION_TRACE_ENABLED",
+            False,
+        ),
     )
     model_task_runner = ModelTaskRunner(
         model_pool=model_pool,
@@ -263,6 +277,16 @@ def build_runtime() -> AppRuntime:
                 max_tokens=_env_int("MEMORY_CANDIDATE_EXTRACT_MAX_TOKENS", 220),
             ),
             max_tokens=_env_int("MEMORY_CANDIDATE_EXTRACT_MAX_TOKENS", 220),
+        ),
+        governance=(
+            MemoryGovernancePipeline()
+            if _env_bool("MEMORY_GOVERNANCE_ENABLED", False)
+            else None
+        ),
+        enricher=(
+            PendingMemoryEnricher()
+            if _env_bool("MEMORY_PENDING_ENRICHMENT_ENABLED", False)
+            else None
         ),
     )
     memory_lifecycle = MemoryLifecycle(

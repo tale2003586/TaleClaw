@@ -266,7 +266,10 @@ class StreamingHttpTests(unittest.TestCase):
         events = []
         handler._send_stream_event = events.append
 
-        with patch("web.server.read_session", return_value={"messages": []}):
+        with patch(
+            "web.server.read_session",
+            return_value={"messages": [], "title": "首轮主题"},
+        ):
             handler._handle_chat_stream()
 
         self.assertEqual(("default", "hello"), agent_service.request)
@@ -279,6 +282,7 @@ class StreamingHttpTests(unittest.TestCase):
         self.assertEqual("read_file", events[0]["tool"])
         self.assertEqual('{"path":"README.md"}', events[0]["args"])
         self.assertEqual("你好", events[-1]["reply"])
+        self.assertEqual("首轮主题", events[-1]["session"]["title"])
 
     def test_stream_event_projection_is_whitelisted_and_small(self) -> None:
         projected = _stream_event_projection({

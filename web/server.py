@@ -62,6 +62,7 @@ from user_scope import (
     web_session_id,
 )
 from web.auth_store import AuthenticatedUser, EnvironmentUser, WebAuthStore
+from web.session_titles import WebSessionTitleService, session_display_title
 
 
 def load_env_file(path: Path) -> None:
@@ -138,6 +139,7 @@ class AgentService:
         self._start_error: BaseException | None = None
         self._session_locks: dict[str, asyncio.Lock] | None = None
         self._pending: dict[str, asyncio.Future[str]] = {}
+        self._session_title_service: WebSessionTitleService | None = None
 
     def ensure_started(self) -> None:
         with self._start_lock:
@@ -271,6 +273,10 @@ class AgentService:
 
         self._runtime = build_runtime()
         self._session_locks = {}
+        self._session_title_service = WebSessionTitleService(
+            runner=self._runtime.services.model_task_runner,
+            timeout_seconds=_env_int("WEB_SESSION_TITLE_TIMEOUT_SECONDS", 8),
+        )
         self._runtime.bus.subscribe_outbound("web", self._handle_outbound)
         self._runtime.start()
 
@@ -320,12 +326,27 @@ class AgentService:
                     metadata=metadata,
                     on_text=on_text,
                 )
+                await self._ensure_session_title(session_key)
                 return await asyncio.wait_for(
                     reply_future,
                     timeout=max(1, int(reply_timeout)),
                 )
             finally:
                 self._pending.pop(scoped_chat_id, None)
+
+    async def _ensure_session_title(self, session_key: str) -> None:
+        if self._runtime is None or self._session_title_service is None:
+            return
+        sessions = getattr(self._runtime.services, "session_manager", None)
+        if sessions is None:
+            return
+        session = sessions.get_or_create(session_key)
+        try:
+            result = await self._session_title_service.ensure_title(session)
+        except Exception:
+            return
+        if result.updated:
+            sessions.save(session)
 
     async def _delete_session_async(self, session_id: str) -> bool:
         if self._runtime is None or self._session_locks is None:
@@ -376,6 +397,7 @@ def read_sessions(user_id: str = DEFAULT_USER_ID) -> list[dict[str, Any]]:
             **row,
             "channel": "web",
             "chat_id": chat_id,
+            "title": session_display_title(row, chat_id),
             "can_chat": True,
         })
     return sessions
@@ -531,6 +553,7 @@ def read_session(
         return {
             "id": storage_id,
             "chat_id": chat_id,
+            "title": chat_id,
             "channel": "web",
             "can_chat": True,
             "messages": [],
@@ -539,6 +562,7 @@ def read_session(
     _, chat_id = parse_web_session_id(session["id"]) or (user_id, session_id)
     session["channel"] = "web"
     session["chat_id"] = chat_id
+    session["title"] = session_display_title(session, chat_id)
     session["can_chat"] = True
     session["messages"] = [_web_message(message) for message in session["messages"]]
     return session

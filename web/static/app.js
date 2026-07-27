@@ -973,7 +973,7 @@ function renderSessions(sessions = state.sessions) {
   const filter = state.sessionFilter.trim().toLowerCase();
   const rows = (sessions || []).filter((session) => {
     const label = session.channel === "web" ? session.chat_id : session.id;
-    return !filter || `${label} ${session.current_mode || ""}`.toLowerCase().includes(filter);
+    return !filter || `${session.title || ""} ${label} ${session.current_mode || ""}`.toLowerCase().includes(filter);
   });
 
   if (rows.length === 0) {
@@ -997,7 +997,7 @@ function renderSessions(sessions = state.sessions) {
 
     const name = document.createElement("span");
     name.className = "session-name";
-    name.textContent = label;
+    name.textContent = session.title || label;
 
     const meta = document.createElement("span");
     meta.className = "session-meta";
@@ -1446,7 +1446,7 @@ async function loadSession(sessionId = state.sessionId, raw = state.rawSession) 
   state.sessionId = session.chat_id || sessionId;
   state.rawSession = raw || (channel !== "web" && channel !== "");
   state.currentMode = session.current_mode || "hybrid";
-  els.sessionTitle.textContent = state.sessionId;
+  els.sessionTitle.textContent = session.title || state.sessionId;
   updateMetrics(session);
   setBusy(false);
   renderMessages(session.messages || [], true);
@@ -1504,6 +1504,7 @@ async function sendMessage(message) {
     }
     const savedMessages = data.session?.messages || [];
     state.currentMode = data.session?.current_mode || state.currentMode;
+    els.sessionTitle.textContent = data.session?.title || state.sessionId;
     renderMessages(savedMessages.length > 0
       ? savedMessages
       : [
