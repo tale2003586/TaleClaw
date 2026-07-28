@@ -8,7 +8,6 @@ const state = {
   memoryFiles: [],
   activeMemory: "MEMORY.md",
   sessionFilter: "",
-  sidebarPanel: localStorage.getItem("sidebarPanel") || "sessions",
   mainView: localStorage.getItem("mainView") || "chat",
   sidebarCollapsed: localStorage.getItem("sidebarCollapsed") === "1",
   mobileSidebarOpen: false,
@@ -20,6 +19,16 @@ const state = {
   currentUser: { id: "local", role: "admin" },
   defaultCodingWorkspaceRoot: "",
   codingWorkspaceRoot: localStorage.getItem(CODING_WORKSPACE_STORAGE_KEY) || "",
+  runs: [],
+  activeRunId: "",
+  runDetailCache: new Map(),
+  runsBusy: false,
+  runsLoaded: false,
+  runsError: "",
+  runStatusFilter: "all",
+  logQuery: "",
+  logLevel: "all",
+  runtimeHealth: { status: "unknown", error: "" },
 };
 
 const els = {
@@ -29,7 +38,6 @@ const els = {
   mobileSidebarOpen: document.querySelector("#mobileSidebarOpen"),
   mobileSecondaryOpen: [...document.querySelectorAll(".mobile-secondary-open")],
   sidebarTabs: [...document.querySelectorAll("[data-sidebar-tab]")],
-  sidebarPanels: [...document.querySelectorAll("[data-sidebar-panel]")],
   mainViewPanels: [...document.querySelectorAll("[data-main-view-panel]")],
   workspaceLabel: document.querySelector("#workspaceLabel"),
   workspacePath: document.querySelector("#workspacePath"),
@@ -80,6 +88,27 @@ const els = {
   analysisState: document.querySelector("#analysisState"),
   analysisSubmitBtn: document.querySelector("#analysisSubmitBtn"),
   analysisOutput: document.querySelector("#analysisOutput"),
+  logsRefreshBtn: document.querySelector("#logsRefreshBtn"),
+  logRunSelect: document.querySelector("#logRunSelect"),
+  logSearch: document.querySelector("#logSearch"),
+  logLevelFilter: document.querySelector("#logLevelFilter"),
+  logsState: document.querySelector("#logsState"),
+  logsTableBody: document.querySelector("#logsTableBody"),
+  logTotalMetric: document.querySelector("#logTotalMetric"),
+  logErrorMetric: document.querySelector("#logErrorMetric"),
+  logWarningMetric: document.querySelector("#logWarningMetric"),
+  runsRefreshBtn: document.querySelector("#runsRefreshBtn"),
+  runStatusFilter: document.querySelector("#runStatusFilter"),
+  runCountMetric: document.querySelector("#runCountMetric"),
+  runsState: document.querySelector("#runsState"),
+  runsList: document.querySelector("#runsList"),
+  runDetail: document.querySelector("#runDetail"),
+  settingsForm: document.querySelector("#settingsForm"),
+  settingsState: document.querySelector("#settingsState"),
+  runtimeHealthMetric: document.querySelector("#runtimeHealthMetric"),
+  runtimeHealthMessage: document.querySelector("#runtimeHealthMessage"),
+  statusRunCountMetric: document.querySelector("#statusRunCountMetric"),
+  statusRefreshBtn: document.querySelector("#statusRefreshBtn"),
 };
 
 async function fetchJson(url, options = {}) {
@@ -240,34 +269,51 @@ async function stopCurrentTurn() {
   }
 }
 
-function setSidebarPanel(panelName) {
-  if (!els.sidebarPanels.some((panel) => panel.dataset.sidebarPanel === panelName)) {
-    panelName = "sessions";
-  }
-  state.sidebarPanel = panelName;
-  localStorage.setItem("sidebarPanel", panelName);
+const ADMIN_VIEWS = new Set(["logs", "runs"]);
 
-  for (const tab of els.sidebarTabs) {
-    tab.classList.toggle("active", tab.dataset.sidebarTab === panelName);
+function isViewAllowed(viewName) {
+  const exists = els.mainViewPanels.some(
+    (panel) => panel.dataset.mainViewPanel === viewName,
+  );
+  if (!exists) return false;
+  return !ADMIN_VIEWS.has(viewName) || state.currentUser.role === "admin";
+}
+
+function applyRoleVisibility() {
+  for (const element of document.querySelectorAll("[data-required-role]")) {
+    const allowed = element.dataset.requiredRole === state.currentUser.role;
+    element.hidden = !allowed;
   }
-  for (const panel of els.sidebarPanels) {
-    panel.classList.toggle("active", panel.dataset.sidebarPanel === panelName);
+  if (!isViewAllowed(state.mainView)) {
+    setMainView("chat");
   }
 }
 
 function setMainView(viewName) {
-  if (!els.mainViewPanels.some((panel) => panel.dataset.mainViewPanel === viewName)) {
-    viewName = "chat";
-  }
+  if (!isViewAllowed(viewName)) viewName = "chat";
   state.mainView = viewName;
   localStorage.setItem("mainView", viewName);
 
+  for (const tab of els.sidebarTabs) {
+    tab.classList.toggle("active", tab.dataset.mainView === viewName);
+    tab.setAttribute("aria-current", tab.dataset.mainView === viewName ? "page" : "false");
+  }
   for (const panel of els.mainViewPanels) {
     panel.classList.toggle("active", panel.dataset.mainViewPanel === viewName);
   }
+  loadViewData(viewName);
+}
 
+function loadViewData(viewName) {
   if (viewName === "files" && state.fileEntries.length === 0) {
     loadFiles().catch(showFileError);
+  } else if (viewName === "memory" && state.memoryFiles.length === 0) {
+    loadMemory().catch((error) => renderViewError(els.memoryContent, error));
+  } else if (viewName === "status") {
+    loadRuntimeHealth();
+    if (state.currentUser.role === "admin") loadRuns().catch(() => {});
+  } else if (viewName === "logs" || viewName === "runs") {
+    loadRuns().catch(() => {});
   }
 }
 
@@ -708,8 +754,13 @@ function renderActivityDiff(activity) {
   if (activity.runId) {
     const link = document.createElement("a");
     link.className = "activity-run-link";
-    link.href = `/runs/${encodeURIComponent(activity.runId)}`;
-    link.textContent = "run";
+    link.href = "#runs";
+    link.textContent = `Run ${activity.runId}`;
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      if (state.currentUser.role !== "admin") return;
+      selectRun(activity.runId, { targetView: "runs" }).catch(() => {});
+    });
     wrap.append(link);
   }
   return wrap;
@@ -1408,10 +1459,9 @@ async function loadHealth() {
     els.workspaceLabel.textContent = `${state.currentUser.id} · ${state.currentUser.role}`;
     els.sidebarUserLabel.textContent = state.currentUser.id;
     els.workspacePath.textContent = data.workspace;
-    for (const button of els.modeActions.querySelectorAll("[data-required-role]")) {
-      button.hidden = button.dataset.requiredRole !== state.currentUser.role;
-    }
+    applyRoleVisibility();
     updateMetrics();
+    renderStatusDashboard();
     setStatus("就绪", "ready");
   } catch (error) {
     setStatus("异常", "error");
@@ -1460,6 +1510,496 @@ async function loadMemory() {
     state.activeMemory = state.memoryFiles[0]?.name || "";
   }
   renderMemory();
+}
+
+function renderViewError(target, error) {
+  if (!target) return;
+  target.textContent = error?.message || String(error || "加载失败");
+  target.classList.add("error");
+}
+
+async function loadRuns({ force = false } = {}) {
+  if (state.currentUser.role !== "admin") return [];
+  if (state.runsBusy) return state.runs;
+  if (state.runsLoaded && !force) {
+    renderRuns();
+    if (state.activeRunId) await loadRunDetail(state.activeRunId);
+    return state.runs;
+  }
+
+  state.runsBusy = true;
+  state.runsError = "";
+  renderRuns();
+  try {
+    const data = await fetchJson("/api/runs");
+    state.runs = Array.isArray(data.runs) ? data.runs : [];
+    state.runsLoaded = true;
+    if (!state.runs.some((run) => run.run_id === state.activeRunId)) {
+      state.activeRunId = state.runs[0]?.run_id || "";
+    }
+    if (force) state.runDetailCache.clear();
+    renderRuns();
+    if (state.activeRunId) await loadRunDetail(state.activeRunId, { force });
+    return state.runs;
+  } catch (error) {
+    state.runsError = error.message;
+    renderRuns();
+    throw error;
+  } finally {
+    state.runsBusy = false;
+    renderRuns();
+  }
+}
+
+async function selectRun(runId, { targetView = "", force = false } = {}) {
+  if (!runId) return;
+  state.activeRunId = runId;
+  if (targetView) setMainView(targetView);
+  renderRuns();
+  await loadRunDetail(runId, { force });
+}
+
+async function loadRunDetail(runId, { force = false } = {}) {
+  if (!runId || state.currentUser.role !== "admin") return null;
+  if (!force && state.runDetailCache.has(runId)) {
+    const cached = state.runDetailCache.get(runId);
+    renderRunDetail(cached);
+    renderLogs(cached);
+    return cached;
+  }
+
+  setRunPageState("正在加载 Trace…");
+  try {
+    const detail = await fetchJson(`/api/run?run_id=${encodeURIComponent(runId)}`);
+    state.runDetailCache.set(runId, detail);
+    renderRunDetail(detail);
+    renderLogs(detail);
+    return detail;
+  } catch (error) {
+    setRunPageState(error.message, "error");
+    renderRunDetail(null, error);
+    renderLogs(null, error);
+    throw error;
+  }
+}
+
+function setRunPageState(message = "", kind = "") {
+  for (const target of [els.runsState, els.logsState]) {
+    if (!target) continue;
+    target.textContent = message;
+    target.className = `inline-state ${kind}`.trim();
+  }
+}
+
+function filteredRuns() {
+  if (state.runStatusFilter === "all") return state.runs;
+  return state.runs.filter((run) => run.status === state.runStatusFilter);
+}
+
+function renderRuns() {
+  if (!els.runsList || !els.logRunSelect) return;
+  els.runCountMetric.textContent = String(state.runs.length);
+  els.statusRunCountMetric.textContent = state.currentUser.role === "admin"
+    ? String(state.runs.length)
+    : "无权限";
+
+  els.logRunSelect.innerHTML = "";
+  for (const run of state.runs) {
+    const option = document.createElement("option");
+    option.value = run.run_id || "";
+    option.textContent = `${run.run_id || "unknown"} · ${run.status || "unknown"}`;
+    option.selected = run.run_id === state.activeRunId;
+    els.logRunSelect.append(option);
+  }
+  els.logRunSelect.disabled = state.runsBusy || state.runs.length === 0;
+
+  els.runsList.innerHTML = "";
+  const rows = filteredRuns();
+  if (state.runsError) {
+    setRunPageState(state.runsError, "error");
+  } else if (state.runsBusy && state.runs.length === 0) {
+    setRunPageState("正在加载 Runs…");
+  } else if (rows.length === 0) {
+    setRunPageState(state.runs.length ? "没有匹配状态的 Run" : "暂无 Run 数据");
+  } else {
+    setRunPageState("");
+  }
+
+  for (const run of rows) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `run-list-item ${run.run_id === state.activeRunId ? "active" : ""}`;
+    button.setAttribute("aria-pressed", run.run_id === state.activeRunId ? "true" : "false");
+
+    const head = document.createElement("span");
+    head.className = "run-list-head";
+    const id = document.createElement("strong");
+    id.textContent = run.run_id || "unknown run";
+    const badge = document.createElement("span");
+    badge.className = `run-status ${statusClass(run.status)}`;
+    badge.textContent = run.status || "unknown";
+    head.append(id, badge);
+
+    const meta = document.createElement("span");
+    meta.className = "run-list-meta";
+    meta.textContent = `${run.mode || "-"} · ${formatDate(run.started_at)}`;
+    const counts = document.createElement("span");
+    counts.className = "run-list-counts";
+    counts.textContent = `${Number(run.reasoning_steps || 0)} steps · ${Number(run.model_calls || 0)} models · ${Number(run.tool_calls || 0)} tools`;
+    button.append(head, meta, counts);
+    button.addEventListener("click", () => selectRun(run.run_id).catch(() => {}));
+    els.runsList.append(button);
+  }
+}
+
+function statusClass(status) {
+  const value = String(status || "unknown").toLowerCase();
+  if (["completed", "success", "ready", "ok"].includes(value)) return "success";
+  if (["failed", "error"].includes(value)) return "error";
+  if (["stopped", "cancelled", "incomplete"].includes(value)) return "warning";
+  if (value === "running") return "running";
+  return "neutral";
+}
+
+function inferLogLevel(event = {}) {
+  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+  const haystack = `${event.event || ""} ${payload.status || ""} ${payload.stop_reason || ""}`.toLowerCase();
+  if (/failed|error|denied|exception|fatal/.test(haystack)) return "error";
+  if (/warn|retry|stopped|cancel|truncat|compress|guard|cooldown|fallback/.test(haystack)) return "warn";
+  return "info";
+}
+
+function summarizeTraceEvent(event = {}) {
+  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+  const preferred = [
+    payload.error_message,
+    payload.error_preview,
+    payload.output_preview,
+    payload.content_preview,
+    payload.summary_preview,
+    payload.reason,
+    payload.stop_reason,
+    payload.description,
+    payload.status,
+  ].find((value) => value !== undefined && value !== null && String(value).trim());
+  let text = preferred ? String(preferred) : "";
+  if (!text) {
+    try {
+      text = Object.keys(payload).length ? JSON.stringify(payload) : String(event.event || "event");
+    } catch (error) {
+      text = String(event.event || "event");
+    }
+  }
+  text = text.replace(/\s+/g, " ").trim();
+  return text.length > 240 ? `${text.slice(0, 237)}…` : text;
+}
+
+function traceEventToLogRow(event = {}) {
+  const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+  return {
+    timestamp: String(event.timestamp || ""),
+    level: inferLogLevel(event),
+    source: String(payload.tool_name || payload.model || event.event || "runtime"),
+    message: summarizeTraceEvent(event),
+    event: String(event.event || "unknown.event"),
+    step: event.step ?? payload.step ?? "",
+    payload,
+  };
+}
+
+function filteredLogRows(detail) {
+  const rows = (Array.isArray(detail?.events) ? detail.events : []).map(traceEventToLogRow);
+  const query = state.logQuery.trim().toLowerCase();
+  return rows.filter((row) => {
+    if (state.logLevel !== "all" && row.level !== state.logLevel) return false;
+    if (!query) return true;
+    return `${row.event} ${row.source} ${row.message}`.toLowerCase().includes(query);
+  });
+}
+
+function renderLogs(detail, error = null) {
+  if (!els.logsTableBody) return;
+  els.logsTableBody.innerHTML = "";
+  const allRows = (Array.isArray(detail?.events) ? detail.events : []).map(traceEventToLogRow);
+  const rows = filteredLogRows(detail);
+  els.logTotalMetric.textContent = String(allRows.length);
+  els.logErrorMetric.textContent = String(allRows.filter((row) => row.level === "error").length);
+  els.logWarningMetric.textContent = String(allRows.filter((row) => row.level === "warn").length);
+
+  if (error) {
+    setRunPageState(error.message || "日志加载失败", "error");
+    return;
+  }
+  if (rows.length === 0) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 5;
+    cell.className = "table-empty";
+    cell.textContent = allRows.length ? "没有匹配筛选条件的事件" : "当前 Run 没有 Trace 事件";
+    row.append(cell);
+    els.logsTableBody.append(row);
+    return;
+  }
+
+  for (const log of rows) {
+    const row = document.createElement("tr");
+    const time = document.createElement("td");
+    time.className = "log-time";
+    time.textContent = formatTraceTime(log.timestamp);
+    const level = document.createElement("td");
+    const levelBadge = document.createElement("span");
+    levelBadge.className = `log-level ${log.level}`;
+    levelBadge.textContent = log.level.toUpperCase();
+    level.append(levelBadge);
+    const source = document.createElement("td");
+    source.className = "log-source";
+    source.textContent = log.source;
+    const message = document.createElement("td");
+    message.className = "log-message";
+    message.textContent = log.message;
+    const detailCell = document.createElement("td");
+    const disclosure = document.createElement("details");
+    disclosure.className = "payload-disclosure";
+    const summary = document.createElement("summary");
+    summary.textContent = log.step === "" ? log.event : `Step ${log.step}`;
+    const pre = document.createElement("pre");
+    pre.textContent = safeJson(log.payload);
+    disclosure.append(summary, pre);
+    detailCell.append(disclosure);
+    row.append(time, level, source, message, detailCell);
+    els.logsTableBody.append(row);
+  }
+}
+
+function formatTraceTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
+function safeJson(value) {
+  try {
+    return JSON.stringify(value ?? {}, null, 2);
+  } catch (error) {
+    return String(value ?? "");
+  }
+}
+
+function groupTraceSteps(detail) {
+  const groups = new Map();
+  const runEvents = [];
+  for (const event of Array.isArray(detail?.events) ? detail.events : []) {
+    if (String(event.session_id || "").startsWith("subtask:")) continue;
+    const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+    const number = Number(event.step ?? payload.step ?? 0);
+    if (!number) {
+      runEvents.push(event);
+      continue;
+    }
+    if (!groups.has(number)) groups.set(number, { number, events: [] });
+    groups.get(number).events.push(event);
+  }
+  return { steps: [...groups.values()].sort((a, b) => a.number - b.number), runEvents };
+}
+
+function renderRunDetail(detail, error = null) {
+  if (!els.runDetail) return;
+  els.runDetail.innerHTML = "";
+  if (error || !detail) {
+    els.runDetail.append(makeEmptyPanel(error ? "Trace 加载失败" : "选择一个 Run", error?.message || "查看真实执行指标与时间线。"));
+    return;
+  }
+
+  const runState = detail.run_state && typeof detail.run_state === "object" ? detail.run_state : {};
+  const metrics = detail.metrics && typeof detail.metrics === "object" ? detail.metrics : {};
+  const header = document.createElement("header");
+  header.className = "run-detail-header";
+  const titleWrap = document.createElement("div");
+  const title = document.createElement("h3");
+  title.textContent = detail.run_id || state.activeRunId || "Run";
+  const meta = document.createElement("p");
+  meta.textContent = `${runState.mode || "-"} · ${formatTraceTime(runState.started_at)}`;
+  titleWrap.append(title, meta);
+  const status = document.createElement("span");
+  status.className = `run-status large ${statusClass(runState.status)}`;
+  status.textContent = runState.status || "unknown";
+  header.append(titleWrap, status);
+
+  const metricsGrid = document.createElement("div");
+  metricsGrid.className = "trace-metrics";
+  const metricItems = [
+    ["步骤", runState.reasoning_steps ?? metrics.reasoning_steps],
+    ["模型调用", metrics.model_calls],
+    ["工具调用", metrics.tool_calls],
+    ["Tokens", metrics.total_tokens],
+    ["耗时", formatDurationMs(metrics.run_duration_ms)],
+    ["Subagents", Array.isArray(detail.subagents) ? detail.subagents.length : 0],
+  ];
+  for (const [label, rawValue] of metricItems) {
+    const card = document.createElement("div");
+    const caption = document.createElement("span");
+    caption.textContent = label;
+    const value = document.createElement("strong");
+    value.textContent = rawValue === undefined || rawValue === null || rawValue === ""
+      ? "不适用"
+      : String(rawValue);
+    card.append(caption, value);
+    metricsGrid.append(card);
+  }
+
+  const requestEvent = (detail.events || []).find((event) => event.event === "inbound_received");
+  const request = requestEvent?.payload?.content_preview || runState.metadata?.request_preview || "未记录请求摘要";
+  const requestPanel = makeTraceSection("用户请求");
+  const requestText = document.createElement("p");
+  requestText.className = "request-preview";
+  requestText.textContent = request;
+  requestPanel.append(requestText);
+
+  const timelineSection = makeTraceSection("执行时间线");
+  const timeline = document.createElement("div");
+  timeline.className = "trace-timeline";
+  const grouped = groupTraceSteps(detail);
+  if (grouped.steps.length === 0) {
+    timeline.append(makeEmptyPanel("没有 Step 事件", "Run 事件仍可在下方查看。"));
+  }
+  for (const step of grouped.steps) timeline.append(renderTraceStep(step));
+  timelineSection.append(timeline);
+
+  const subagents = makeTraceSection("Subagents");
+  subagents.append(renderSubagents(detail.subagents));
+
+  const runEventsSection = makeTraceSection("Run 事件");
+  const runEvents = document.createElement("div");
+  runEvents.className = "trace-event-list";
+  for (const event of grouped.runEvents) runEvents.append(renderTraceEvent(event));
+  if (!grouped.runEvents.length) runEvents.append(makeEmptyPanel("没有独立 Run 事件", "所有事件均已归入步骤。"));
+  runEventsSection.append(runEvents);
+
+  const stateSection = makeTraceSection("Run State");
+  const stateDetails = document.createElement("details");
+  stateDetails.className = "json-panel";
+  const stateSummary = document.createElement("summary");
+  stateSummary.textContent = "查看完整状态 JSON";
+  const statePre = document.createElement("pre");
+  statePre.textContent = safeJson(runState);
+  stateDetails.append(stateSummary, statePre);
+  stateSection.append(stateDetails);
+
+  const answerSection = makeTraceSection("最终结果");
+  const answer = document.createElement("pre");
+  answer.className = "final-answer-preview";
+  answer.textContent = runState.final_answer || runState.error || runState.stop_reason || "不适用";
+  answerSection.append(answer);
+  els.runDetail.append(header, metricsGrid, requestPanel, timelineSection, subagents, runEventsSection, stateSection, answerSection);
+}
+
+function makeTraceSection(titleText) {
+  const section = document.createElement("section");
+  section.className = "trace-section";
+  const title = document.createElement("h4");
+  title.textContent = titleText;
+  section.append(title);
+  return section;
+}
+
+function renderTraceStep(step) {
+  const wrapper = document.createElement("section");
+  wrapper.className = "trace-step";
+  const marker = document.createElement("span");
+  marker.className = "trace-step-marker";
+  marker.textContent = String(step.number);
+  const card = document.createElement("div");
+  card.className = "trace-step-card";
+  const heading = document.createElement("h5");
+  heading.textContent = `Step ${step.number} · Context / Model / Tools`;
+  const events = document.createElement("div");
+  events.className = "trace-event-list";
+  for (const event of step.events) events.append(renderTraceEvent(event));
+  card.append(heading, events);
+  wrapper.append(marker, card);
+  return wrapper;
+}
+
+function renderTraceEvent(event) {
+  const details = document.createElement("details");
+  details.className = `trace-event ${inferLogLevel(event)}`;
+  const summary = document.createElement("summary");
+  const name = document.createElement("strong");
+  name.textContent = event.event || "unknown.event";
+  const preview = document.createElement("span");
+  preview.textContent = summarizeTraceEvent(event);
+  const time = document.createElement("small");
+  time.textContent = formatDurationMs(event.payload?.duration_ms) || formatTraceTime(event.timestamp);
+  summary.append(name, preview, time);
+  const pre = document.createElement("pre");
+  pre.textContent = safeJson(event.payload);
+  details.append(summary, pre);
+  return details;
+}
+
+function renderSubagents(items) {
+  const container = document.createElement("div");
+  container.className = "subagent-grid";
+  if (!Array.isArray(items) || items.length === 0) {
+    container.append(makeEmptyPanel("没有 Subagent", "此 Run 未记录子任务执行。"));
+    return container;
+  }
+  for (const item of items) {
+    const details = document.createElement("details");
+    details.className = "subagent-card";
+    const summary = document.createElement("summary");
+    const title = document.createElement("strong");
+    title.textContent = item.description || item.agent_type || item.session_id || "Subagent";
+    const status = document.createElement("span");
+    status.className = `run-status ${item.success === true ? "success" : item.success === false ? "error" : "warning"}`;
+    status.textContent = item.success === true ? "success" : item.success === false ? "failed" : "incomplete";
+    summary.append(title, status);
+    const pre = document.createElement("pre");
+    pre.textContent = safeJson(item);
+    details.append(summary, pre);
+    container.append(details);
+  }
+  return container;
+}
+
+function makeEmptyPanel(titleText, bodyText) {
+  const panel = document.createElement("div");
+  panel.className = "run-detail-empty compact";
+  const title = document.createElement("h3");
+  title.textContent = titleText;
+  const body = document.createElement("p");
+  body.textContent = bodyText;
+  panel.append(title, body);
+  return panel;
+}
+
+async function loadRuntimeHealth() {
+  state.runtimeHealth = { status: "loading", error: "" };
+  renderStatusDashboard();
+  try {
+    const data = await fetchJson("/api/runtime-health");
+    state.runtimeHealth = {
+      status: data.ok ? "ready" : "error",
+      error: data.error || "",
+    };
+  } catch (error) {
+    state.runtimeHealth = { status: "error", error: error.message };
+  }
+  renderStatusDashboard();
+}
+
+function renderStatusDashboard() {
+  if (!els.runtimeHealthMetric) return;
+  const labels = { loading: "检查中", ready: "就绪", error: "异常", unknown: "未知" };
+  const status = state.runtimeHealth.status || "unknown";
+  els.runtimeHealthMetric.textContent = labels[status] || "未知";
+  els.runtimeHealthMetric.className = status;
+  els.runtimeHealthMessage.textContent = state.runtimeHealth.error
+    || (status === "ready" ? "Runtime 已完成初始化并可接受请求。" : "尚未完成 Runtime 健康检查。");
+  els.statusRunCountMetric.textContent = state.currentUser.role === "admin"
+    ? String(state.runs.length)
+    : "无权限";
 }
 
 async function sendMessage(message) {
@@ -1584,7 +2124,6 @@ function newSession() {
   renderMessages([]);
   updateMetrics({ current_mode: "hybrid" });
   setBusy(false);
-  setSidebarPanel("sessions");
   setMainView("chat");
   loadSessions();
   els.input.focus();
@@ -1661,7 +2200,6 @@ els.modeActions.addEventListener("click", (event) => {
 
 els.sidebarTabs.forEach((tab) => {
   tab.addEventListener("click", () => {
-    setSidebarPanel(tab.dataset.sidebarTab);
     setMainView(tab.dataset.mainView || "chat");
     if (isMobileViewport()) {
       setMobileSidebarOpen(false);
@@ -1733,12 +2271,44 @@ els.workspaceResetBtn.addEventListener("click", () => {
   els.composerState.textContent = "已恢复默认工作路径";
 });
 
+els.logsRefreshBtn?.addEventListener("click", () => {
+  loadRuns({ force: true }).catch(() => {});
+});
+els.logRunSelect?.addEventListener("change", () => {
+  selectRun(els.logRunSelect.value).catch(() => {});
+});
+els.logSearch?.addEventListener("input", () => {
+  state.logQuery = els.logSearch.value;
+  renderLogs(state.runDetailCache.get(state.activeRunId));
+});
+els.logLevelFilter?.addEventListener("change", () => {
+  state.logLevel = els.logLevelFilter.value;
+  renderLogs(state.runDetailCache.get(state.activeRunId));
+});
+els.runStatusFilter?.addEventListener("change", () => {
+  state.runStatusFilter = els.runStatusFilter.value;
+  renderRuns();
+});
+els.runsRefreshBtn?.addEventListener("click", () => {
+  loadRuns({ force: true }).catch(() => {});
+});
+els.statusRefreshBtn?.addEventListener("click", async () => {
+  await Promise.allSettled([
+    loadHealth(),
+    loadRuntimeHealth(),
+    state.currentUser.role === "admin" ? loadRuns({ force: true }) : Promise.resolve(),
+  ]);
+});
+els.settingsForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  els.settingsState.textContent = "预览模式：尚未接入配置保存，未发送任何请求。";
+});
+
 async function init() {
-  setSidebarPanel(state.sidebarPanel);
-  setMainView(state.mainView);
   setSidebarCollapsed(state.sidebarCollapsed);
   syncResponsiveSidebar();
   await loadHealth();
+  setMainView(state.mainView);
   await Promise.all([loadSessions(), loadMemory(), loadFiles()]);
   await loadSession("default", false);
 }
