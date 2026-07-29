@@ -66,6 +66,7 @@ class ModelProfile:
     api_key: str = field(repr=False)
     base_url: str
     model: str
+    user_agent: str = ""
     max_tokens_param: str = "max_tokens"
     wire_api: str = "chat_completions"
     context_window_tokens: int | None = None
@@ -138,9 +139,16 @@ class ModelPool:
     def client_for_profile(self, profile_name: str) -> Any:
         profile = self._require_profile(profile_name)
         if profile.name not in self._clients:
+            client_kwargs: dict[str, Any] = {
+                "api_key": profile.api_key,
+                "base_url": profile.base_url,
+            }
+            if profile.user_agent:
+                client_kwargs["default_headers"] = {
+                    "User-Agent": profile.user_agent,
+                }
             self._clients[profile.name] = self.client_factory(
-                api_key=profile.api_key,
-                base_url=profile.base_url,
+                **client_kwargs,
             )
         return self._clients[profile.name]
 
@@ -623,6 +631,19 @@ def _profile_from_mapping(
             f"or {_env_prefix(profile_name)}_MODEL."
         )
 
+    user_agent = (
+        str(raw.get("user_agent") or "").strip()
+        or _first_env(
+            env,
+            _provider_env_names(
+                profile_name,
+                provider,
+                selected_match=selected_match,
+                suffix="USER_AGENT",
+            ),
+        )
+    )
+
     max_tokens_param = (
         str(raw.get("max_tokens_param") or "").strip()
         or _first_env(
@@ -735,6 +756,7 @@ def _profile_from_mapping(
         api_key=api_key,
         base_url=base_url,
         model=model,
+        user_agent=user_agent,
         max_tokens_param=max_tokens_param,
         wire_api=wire_api,
         context_window_tokens=context_window_tokens,
