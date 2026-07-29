@@ -20,6 +20,7 @@ export interface RuntimeHealthResponse {
 }
 
 export interface MessageDto {
+  seq?: number;
   role: string;
   content?: string;
   name?: string;
@@ -35,9 +36,17 @@ export interface SessionDto {
   current_mode?: string;
   updated_at?: string;
   messages?: MessageDto[];
+  message_page?: {
+    has_more: boolean;
+    next_before?: number | null;
+  };
 }
 
-export interface SessionsResponse { sessions: SessionDto[] }
+export interface SessionsResponse {
+  sessions: SessionDto[];
+  has_more?: boolean;
+  next_offset?: number | null;
+}
 export interface SessionResponse { session: SessionDto }
 
 export interface MemoryFile { name: string; content: string }

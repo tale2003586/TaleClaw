@@ -403,6 +403,48 @@ def read_sessions(user_id: str = DEFAULT_USER_ID) -> list[dict[str, Any]]:
     return sessions
 
 
+def read_sessions_page(
+    user_id: str = DEFAULT_USER_ID,
+    *,
+    limit: int = 30,
+    offset: int = 0,
+) -> dict[str, Any]:
+    from runtime.sessions.session_store import SessionStore
+
+    page_limit = max(1, min(int(limit), 100))
+    page_offset = max(0, int(offset))
+    prefix = f"web:{normalize_user_id(user_id)}:"
+    store = SessionStore()
+    try:
+        rows = store.list_sessions(
+            limit=page_limit + 1,
+            offset=page_offset,
+            id_prefix=prefix,
+        )
+    finally:
+        store.close()
+
+    has_more = len(rows) > page_limit
+    sessions = []
+    for row in rows[:page_limit]:
+        parsed = parse_web_session_id(row["id"])
+        if parsed is None:
+            continue
+        _, chat_id = parsed
+        sessions.append({
+            **row,
+            "channel": "web",
+            "chat_id": chat_id,
+            "title": session_display_title(row, chat_id),
+            "can_chat": True,
+        })
+    return {
+        "sessions": sessions,
+        "has_more": has_more,
+        "next_offset": page_offset + len(sessions) if has_more else None,
+    }
+
+
 def _delete_stored_session(session_id: str) -> bool:
     from runtime.sessions.session_store import SessionStore
 
@@ -538,13 +580,23 @@ def read_session(
     *,
     user_id: str = DEFAULT_USER_ID,
     raw: bool = False,
+    message_limit: int | None = None,
+    before_seq: int | None = None,
 ) -> dict[str, Any]:
     from runtime.sessions.session_store import SessionStore
 
     storage_id = _web_storage_id(session_id, user_id)
     store = SessionStore()
     try:
-        session = store.load_session(storage_id)
+        session = (
+            store.load_session_page(
+                storage_id,
+                limit=max(1, min(int(message_limit), 100)),
+                before_seq=before_seq,
+            )
+            if message_limit is not None
+            else store.load_session(storage_id)
+        )
     finally:
         store.close()
 
@@ -557,6 +609,7 @@ def read_session(
             "channel": "web",
             "can_chat": True,
             "messages": [],
+            "message_page": {"has_more": False, "next_before": None},
             "active_agent": "hybrid",
         }
     _, chat_id = parse_web_session_id(session["id"]) or (user_id, session_id)
@@ -1279,16 +1332,28 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/sessions":
-            self._send_json({"sessions": read_sessions(self._current_user().user_id)})
+            params = parse_qs(parsed.query)
+            limit = max(1, min(_int_value(params.get("limit", [30])[0], 30), 100))
+            offset = max(0, _int_value(params.get("offset", [0])[0], 0))
+            self._send_json(read_sessions_page(
+                self._current_user().user_id,
+                limit=limit,
+                offset=offset,
+            ))
             return
 
         if parsed.path == "/api/session":
             params = parse_qs(parsed.query)
             session_id = params.get("session_id", ["default"])[0]
+            limit = max(1, min(_int_value(params.get("limit", [40])[0], 40), 100))
+            before_value = params.get("before", [""])[0]
+            before_seq = _int_value(before_value) if str(before_value).strip() else None
             self._send_json({
                 "session": read_session(
                     session_id,
                     user_id=self._current_user().user_id,
+                    message_limit=limit,
+                    before_seq=before_seq,
                 )
             })
             return
@@ -1517,7 +1582,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json({
                 "reply": reply,
                 "session_id": session_id,
-                "session": read_session(session_id, user_id=user.user_id),
+                "session": read_session(
+                    session_id,
+                    user_id=user.user_id,
+                    message_limit=40,
+                ),
             })
         except Exception as exc:
             traceback.print_exc()
@@ -1602,7 +1671,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json({
                 "deleted": True,
                 "session_id": parse_web_session_id(storage_id)[1],
-                "sessions": read_sessions(user_id),
+                **read_sessions_page(user_id),
             })
         except ValueError as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
@@ -1659,7 +1728,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "type": "complete",
                     "reply": reply,
                     "session_id": session_id,
-                    "session": read_session(session_id, user_id=user.user_id),
+                    "session": read_session(
+                        session_id,
+                        user_id=user.user_id,
+                        message_limit=40,
+                    ),
                 })
             except Exception as exc:
                 traceback.print_exc()

@@ -224,6 +224,71 @@ class SessionStore:
             "checkpoints": checkpoints,
         }
 
+    def load_session_page(
+        self,
+        session_id: str,
+        *,
+        limit: int,
+        before_seq: int | None = None,
+    ) -> dict[str, Any] | None:
+        page_limit = max(1, int(limit))
+        with self._lock:
+            row = self._conn.execute(
+                sql(self.config, """
+                SELECT id, active_agent, created_at, updated_at, last_compacted, metadata
+                FROM sessions
+                WHERE id = ?
+                """),
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            if before_seq is None:
+                msg_rows = self._conn.execute(
+                    sql(self.config, """
+                    SELECT seq, message_json
+                    FROM messages
+                    WHERE session_id = ?
+                    ORDER BY seq DESC
+                    LIMIT ?
+                    """),
+                    (session_id, page_limit + 1),
+                ).fetchall()
+            else:
+                msg_rows = self._conn.execute(
+                    sql(self.config, """
+                    SELECT seq, message_json
+                    FROM messages
+                    WHERE session_id = ? AND seq < ?
+                    ORDER BY seq DESC
+                    LIMIT ?
+                    """),
+                    (session_id, max(0, int(before_seq)), page_limit + 1),
+                ).fetchall()
+
+        has_more = len(msg_rows) > page_limit
+        selected_rows = list(reversed(msg_rows[:page_limit]))
+        messages = []
+        for msg_row in selected_rows:
+            message = json.loads(row_get(msg_row, "message_json", "{}"))
+            message["seq"] = int(row_get(msg_row, "seq", 0))
+            messages.append(message)
+        return {
+            "id": row_get(row, "id"),
+            "active_agent": row_get(row, "active_agent"),
+            "created_at": row_get(row, "created_at"),
+            "updated_at": row_get(row, "updated_at"),
+            "last_compacted": row_get(row, "last_compacted"),
+            "metadata": json.loads(row_get(row, "metadata", "{}") or "{}"),
+            "messages": messages,
+            "message_page": {
+                "has_more": has_more,
+                "next_before": int(row_get(selected_rows[0], "seq", 0))
+                if has_more and selected_rows
+                else None,
+            },
+        }
+
     def save_session(self, session: Any) -> None:
         if hasattr(session, "_backfill_legacy_messages"):
             session._backfill_legacy_messages()
@@ -492,14 +557,29 @@ class SessionStore:
             inserted += max(0, int(cursor.rowcount or 0))
         return inserted
 
-    def list_sessions(self) -> list[dict[str, Any]]:
+    def list_sessions(
+        self,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+        id_prefix: str | None = None,
+    ) -> list[dict[str, Any]]:
+        statement = """
+            SELECT id, active_agent, created_at, updated_at, last_compacted, metadata
+            FROM sessions
+        """
+        params: list[Any] = []
+        if id_prefix:
+            statement += " WHERE LEFT(id, LENGTH(?)) = ?"
+            params.extend((id_prefix, id_prefix))
+        statement += " ORDER BY updated_at DESC"
+        if limit is not None:
+            statement += " LIMIT ? OFFSET ?"
+            params.extend((max(1, int(limit)), max(0, int(offset))))
         with self._lock:
             rows = self._conn.execute(
-                sql(self.config, """
-                SELECT id, active_agent, created_at, updated_at, last_compacted, metadata
-                FROM sessions
-                ORDER BY updated_at DESC
-                """)
+                sql(self.config, statement),
+                tuple(params),
             ).fetchall()
         return [
             {

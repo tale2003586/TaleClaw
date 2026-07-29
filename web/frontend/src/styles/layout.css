@@ -1,13 +1,14 @@
-.app-shell { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); min-height: 100vh; transition: grid-template-columns var(--normal) var(--ease); }
+.app-shell { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; transition: grid-template-columns var(--normal) var(--ease); }
 .sidebar {
-  position: sticky;
+  position: relative;
   top: 0;
   z-index: 20;
   display: flex;
   height: 100vh;
+  height: 100dvh;
   min-width: 0;
   flex-direction: column;
-  overflow: hidden;
+  overflow: visible;
   border-right: 1px solid var(--border);
   background: var(--sidebar-bg);
 }
@@ -18,17 +19,21 @@
 .brand strong { font-size: 16px; line-height: 1.2; }
 .brand small { overflow: hidden; color: var(--text-tertiary); font: 10px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .brand .collapse-button { width: 30px; min-width: 30px; margin-left: auto; }
-.primary-nav { display: grid; gap: 3px; padding: 12px 10px; }
-.primary-nav button { display: flex; width: 100%; min-height: 38px; align-items: center; gap: 11px; border: 1px solid transparent; border-radius: var(--radius); color: var(--text-secondary); background: transparent; padding: 8px 10px; cursor: pointer; text-align: left; transition: border-color var(--fast), color var(--fast), background-color var(--fast); }
+.primary-nav { display: grid; gap: 4px; padding: 12px 10px 10px; }
+.primary-nav button { position: relative; display: flex; width: 100%; min-height: 40px; align-items: center; gap: 11px; border: 1px solid transparent; border-radius: var(--radius); color: var(--text-secondary); background: transparent; padding: 8px 10px; cursor: pointer; text-align: left; transition: border-color var(--fast), color var(--fast), background-color var(--fast), transform var(--fast); }
 .primary-nav button:hover { color: var(--text-primary); background: var(--hover-bg); }
-.primary-nav button.active { border-color: var(--border); color: var(--text-primary); background: var(--selected-bg); }
+.primary-nav button.active { border-color: color-mix(in srgb, var(--accent) 24%, var(--border)); color: var(--text-primary); background: var(--selected-bg); }
+.primary-nav button.active::before { position: absolute; top: 9px; bottom: 9px; left: -1px; width: 2px; border-radius: 0 2px 2px 0; background: var(--accent); content: ""; }
 .primary-nav button svg { width: 17px; height: 17px; flex: 0 0 17px; color: var(--accent); }
 .primary-nav button strong { font-size: 12px; font-weight: 650; }
-.conversation-panel { display: flex; min-height: 0; flex: 1; flex-direction: column; border-top: 1px solid var(--border); padding: 13px 10px; }
+.conversation-panel { display: flex; min-height: 0; flex: 1; flex-direction: column; border-top: 1px solid var(--border); padding: 13px 10px 10px; overflow: hidden; }
 .conversation-panel > header { display: flex; align-items: center; justify-content: space-between; padding: 0 3px 8px; color: var(--text-tertiary); font: 700 10px var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
 .conversation-panel > header .button, .conversation-panel > header .icon-button { width: 28px; min-height: 28px; padding: 0; }
 .conversation-panel > input { min-height: 34px; margin-bottom: 8px; font-size: 12px; }
 .conversation-list { min-height: 0; flex: 1; overflow: auto; }
+.conversation-load-more { width: 100%; margin-top: 6px; border: 1px dashed var(--border); border-radius: var(--radius); color: var(--text-secondary); background: transparent; padding: 8px; cursor: pointer; font-size: 10px; }
+.conversation-load-more:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.conversation-load-more:disabled { cursor: wait; opacity: .65; }
 .conversation-item { display: flex; align-items: center; border: 1px solid transparent; border-radius: var(--radius); transition: border-color var(--fast), background-color var(--fast); }
 .conversation-item:hover, .conversation-item.active { border-color: var(--border); background: var(--hover-bg); }
 .conversation-item.active { background: var(--selected-bg); }
@@ -39,28 +44,48 @@
 .delete-session { opacity: 0; width: 27px; height: 27px; border-radius: var(--radius-sm); color: var(--text-tertiary); background: transparent; cursor: pointer; transition: opacity var(--fast), color var(--fast), background-color var(--fast); }
 .conversation-item:hover .delete-session, .delete-session:focus { opacity: 1; }
 .delete-session:hover { color: var(--danger-fg); background: var(--danger-bg); }
-.account-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 11px 12px; border-top: 1px solid var(--border); }
-.account-footer div { min-width: 0; display: grid; }
-.account-footer span { color: var(--text-tertiary); font-size: 10px; }
-.account-footer strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; }
-.account-tools { display: flex; align-items: center; gap: 3px; }
-.account-footer .button { min-height: 30px; padding: 5px 8px; }
-.workspace { position: relative; min-width: 0; min-height: 100vh; overflow: hidden; background: var(--canvas); }
-.view-transition { min-height: 100vh; animation: view-in var(--normal) var(--ease) both; }
-.page { display: flex; min-height: 100vh; flex-direction: column; }
+.account-footer { position: relative; padding: 9px 10px; border-top: 1px solid var(--border); background: var(--sidebar-bg); }
+.account-trigger { display: grid; width: 100%; min-height: 46px; grid-template-columns: 34px minmax(0, 1fr) 16px; align-items: center; gap: 9px; border: 1px solid transparent; border-radius: var(--radius-lg); color: var(--text-primary); background: transparent; padding: 5px 7px; cursor: pointer; text-align: left; transition: border-color var(--fast), background-color var(--fast); }
+.account-trigger:hover, .account-trigger.active, .account-trigger[aria-expanded="true"] { border-color: var(--border); background: var(--hover-bg); }
+.account-avatar { display: grid; width: 32px; height: 32px; flex: 0 0 32px; place-items: center; border-radius: 50%; color: var(--accent); background: var(--accent-soft); }
+.account-avatar svg { width: 16px; height: 16px; }
+.account-copy { display: grid; min-width: 0; }
+.account-copy small, .account-menu small { color: var(--text-tertiary); font-size: 10px; }
+.account-copy strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.account-trigger > svg { width: 15px; color: var(--text-tertiary); transition: transform var(--normal) var(--ease); }
+.account-trigger > svg.rotated { transform: rotate(180deg); }
+.account-menu { position: absolute; right: 10px; bottom: calc(100% + 7px); left: 10px; z-index: 45; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-popover); animation: account-menu-in var(--normal) var(--ease) both; }
+.account-menu > header { display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); padding: 12px; }
+.account-menu > header > div { display: grid; min-width: 0; }
+.account-menu > header strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.account-menu nav { display: grid; gap: 2px; padding: 6px; }
+.account-menu button { display: grid; width: 100%; min-height: 44px; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 8px; border: 1px solid transparent; border-radius: var(--radius); color: var(--text-secondary); background: transparent; padding: 5px 7px; cursor: pointer; text-align: left; }
+.account-menu button:hover, .account-menu button.active { color: var(--text-primary); background: var(--hover-bg); }
+.account-menu button.active { border-color: var(--border); background: var(--selected-bg); }
+.account-menu button > svg { width: 16px; color: var(--accent); justify-self: center; }
+.account-menu button > span { display: grid; min-width: 0; }
+.account-menu button strong { font-size: 11px; }
+.account-menu-actions { display: grid; gap: 2px; border-top: 1px solid var(--border); padding: 6px; }
+.account-menu-actions button.danger:hover { color: var(--danger-fg); background: var(--danger-bg); }
+.account-menu-actions button.danger > svg { color: var(--danger-fg); }
+.workspace { position: relative; min-width: 0; height: 100vh; height: 100dvh; min-height: 0; overflow: auto; overscroll-behavior: contain; background: var(--canvas); }
+.view-transition { height: 100%; min-height: 0; animation: view-in var(--normal) var(--ease) both; }
+.page { display: flex; min-height: 100%; flex-direction: column; }
 .page-header { display: flex; min-height: 64px; align-items: center; justify-content: space-between; gap: 18px; padding: 11px var(--page-gutter); border-bottom: 1px solid var(--border); background: var(--canvas); }
 .page-title { min-width: 0; }
 .page-title h2 { margin-top: 2px; font-size: 20px; line-height: 1.2; font-weight: 720; }
 .page-title p { max-width: 720px; margin-top: 3px; overflow: hidden; color: var(--text-secondary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .page-actions, .button-row { display: flex; min-width: 0; align-items: center; gap: 7px; }
 .page-body { width: 100%; max-width: 1640px; margin: 0 auto; padding: var(--page-gutter); }
-.mobile-menu, .drawer-backdrop { display: none; }
+.icon-button.mobile-menu, .drawer-backdrop { display: none; }
 .is-collapsed { grid-template-columns: var(--sidebar-small) minmax(0, 1fr); }
 .is-collapsed .brand { justify-content: center; padding-inline: 10px; }
-.is-collapsed .brand div, .is-collapsed .primary-nav strong, .is-collapsed .conversation-panel, .is-collapsed .account-footer > div { display: none; }
+.is-collapsed .brand div, .is-collapsed .brand-mark, .is-collapsed .primary-nav strong, .is-collapsed .conversation-panel, .is-collapsed .account-copy, .is-collapsed .account-trigger > svg { display: none; }
 .is-collapsed .brand .collapse-button { margin-left: 0; }
 .is-collapsed .primary-nav { padding-inline: 9px; }
 .is-collapsed .primary-nav button { justify-content: center; padding-inline: 8px; }
-.is-collapsed .account-footer { justify-content: center; padding-inline: 8px; }
-.is-collapsed .account-tools { flex-direction: column; }
+.is-collapsed .account-footer { padding-inline: 9px; }
+.is-collapsed .account-trigger { display: grid; grid-template-columns: 1fr; justify-items: center; padding-inline: 7px; }
+.is-collapsed .account-menu { right: auto; bottom: 8px; left: calc(100% + 8px); width: 244px; }
 @keyframes view-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes account-menu-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }

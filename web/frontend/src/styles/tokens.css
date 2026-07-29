@@ -38,7 +38,7 @@
   --skeleton-base: #e5edf2;
   --skeleton-highlight: #f5f8fa;
   --scrollbar-thumb: #b8c6d0;
-  --sidebar: 260px;
+  --sidebar: clamp(248px, 20vw, 292px);
   --sidebar-small: 68px;
   --page-gutter: 24px;
   --radius-sm: 4px;
