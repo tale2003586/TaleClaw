@@ -1,10 +1,21 @@
 import subprocess
+from functools import partial
+from typing import Any
 
-from runtime.context import ContextBuilder, ContextMemoryService, PromptAssetsService
+from runtime.context import (
+    ArtifactStore,
+    ContextBuilder,
+    ContextMemoryService,
+    LongContentDetector,
+    PromptAssetsService,
+)
 from runtime.context.budget import ContextBudgeter
 from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
+from runtime.context.events import ContextEventType, thaw
 from runtime.execution.loop_policies import standard_execution_policies
 from applications.coding.context_state import build_coding_context_view
+from applications.coding.compaction import SemanticCompactor
+from applications.coding.task_state import ensure_task_state
 from runtime.execution.failure_reasons import REASONING_LOOP_STOP_REASON_KEY
 from runtime.runtime import get_last_assistant_text
 from runtime.agent_spec import AgentSpec
@@ -24,7 +35,16 @@ from runtime.trace.events import (
 from runtime.trace.trace_store import event_preview
 from runtime.trace.workspace import capture_workspace_snapshot, write_workspace_artifacts
 from runtime.workspace import WorkspaceResolver
-from config import WORKDIR, WORKING_MEMORY_CHECKPOINT_ENABLED
+from config import (
+    ARTIFACT_OFFLOADING_ENABLED,
+    CONTEXT_ARTIFACT_ROOT,
+    LONG_CONTENT_MAX_BYTES,
+    LONG_CONTENT_MAX_CHARS,
+    LONG_CONTENT_MAX_TOKENS,
+    WORKDIR,
+    WORKING_MEMORY_CHECKPOINT_ENABLED,
+    TASK_STATE_CONTEXT_ENABLED,
+)
 from memory.store import MemoryStore
 from memory.commands import MemoryContext
 from runtime.sessions import SessionManager
@@ -50,11 +70,20 @@ class CodingApplication:
         workspace_root=None,
         workspace_resolver: WorkspaceResolver | None = None,
         semantic_memory_command_service=None,
+        artifact_store: ArtifactStore | None = None,
+        long_content_detector: LongContentDetector | None = None,
     ) -> None:
         self.sessions = sessions
         self.base_pipeline = base_pipeline
         self.global_memory = global_memory
         self.semantic_memory_command_service = semantic_memory_command_service
+        self.artifact_store = artifact_store or ArtifactStore(CONTEXT_ARTIFACT_ROOT)
+        self.long_content_detector = long_content_detector or LongContentDetector(
+            self.artifact_store,
+            max_tokens=LONG_CONTENT_MAX_TOKENS,
+            max_chars=LONG_CONTENT_MAX_CHARS,
+            max_bytes=LONG_CONTENT_MAX_BYTES,
+        )
         if workspace_resolver is not None:
             self.workspace_resolver = workspace_resolver
         elif workspace_root is not None:
@@ -74,6 +103,14 @@ class CodingApplication:
             model=conclusion_model,
         )
         self.artifact_writer = TaskArtifactWriter()
+        compaction_provider, compaction_model = _pipeline_model_for(
+            base_pipeline,
+            "summary",
+        )
+        self.semantic_compactor = SemanticCompactor(
+            provider=compaction_provider,
+            model=compaction_model,
+        )
 
     def run_coding_task(
         self,
@@ -87,6 +124,13 @@ class CodingApplication:
         run_state=None,
         trace_store=None,
     ) -> str:
+        externalized = self._externalize_current_request(
+            parent_session,
+            user_text,
+        )
+        user_text = externalized["content"]
+        request_artifact_refs = externalized["artifact_refs"]
+        original_request_ref = externalized["event_ref"]
         global_memory = self._global_memory_for(parent_session)
         workspace = self.workspace_resolver.resolve(
             workspace_root,
@@ -104,6 +148,8 @@ class CodingApplication:
             parent_session_id=parent_session.id,
             task_type="coding",
             user_request=user_text,
+            original_request_ref=original_request_ref,
+            artifact_refs=request_artifact_refs,
             user_id=explicit_user_id_for_session(parent_session),
             user_role=user_role_for_session(parent_session),
         )
@@ -114,7 +160,16 @@ class CodingApplication:
         if repository_revision:
             record.session.metadata["code_revision"] = repository_revision
         record.session.metadata[CODING_HANDOFF_METADATA_KEY] = session_handoff.to_dict()
-        if WORKING_MEMORY_CHECKPOINT_ENABLED:
+        ensure_task_state(
+            record.session,
+            objective_summary=_request_summary(user_text),
+            original_request_ref=original_request_ref,
+            artifact_refs=[
+                str(ref.get("storage_uri") or ref.get("artifact_id") or "")
+                for ref in request_artifact_refs
+            ],
+        )
+        if WORKING_MEMORY_CHECKPOINT_ENABLED and not TASK_STATE_CONTEXT_ENABLED:
             inherit_working_memory(
                 source_session=parent_session,
                 target_session=record.session,
@@ -156,7 +211,8 @@ class CodingApplication:
         self._seed_task_memory(
             task_memory=task_memory,
             parent_session_id=parent_session.id,
-            user_text=user_text,
+            original_request_ref=original_request_ref,
+            artifact_refs=request_artifact_refs,
             session_handoff=session_handoff,
         )
         record.session.add_message(
@@ -168,6 +224,12 @@ class CodingApplication:
                 workspace=workspace,
                 session_handoff=session_handoff,
             ),
+            metadata={
+                "kind": "coding_task_request",
+                "source": "runtime-generated-wrapper",
+                "original_request_ref": original_request_ref,
+                "artifact_refs": request_artifact_refs,
+            },
         )
 
         task_pipeline = self._build_task_pipeline(
@@ -195,7 +257,7 @@ class CodingApplication:
         stop_reason = record.session.metadata.get(REASONING_LOOP_STOP_REASON_KEY)
         record.session.metadata["status"] = "stopped" if stop_reason else "completed"
         record.session.metadata["task_reply"] = reply
-        if WORKING_MEMORY_CHECKPOINT_ENABLED:
+        if WORKING_MEMORY_CHECKPOINT_ENABLED and not TASK_STATE_CONTEXT_ENABLED:
             sync_working_memory(
                 source_session=record.session,
                 target_session=parent_session,
@@ -249,6 +311,7 @@ class CodingApplication:
             promoted_count=len(promotion.promoted),
             skipped_count=len(promotion.skipped),
             rejected_count=len(promotion.rejected),
+            original_request_ref=original_request_ref,
         )
         parent_session.metadata[PENDING_CODING_TASK_SUMMARY_METADATA_KEY] = (
             parent_task_summary
@@ -315,7 +378,15 @@ class CodingApplication:
                 memory_store=task_memory,
                 working_memory_renderer=render_working_memory_block,
             ),
-            coding_context_view_builder=build_coding_context_view,
+            coding_context_view_builder=partial(
+                build_coding_context_view,
+                semantic_compactor=self.semantic_compactor,
+                compaction_persister=(
+                    self.sessions.compact
+                    if callable(getattr(self.sessions, "compact", None))
+                    else None
+                ),
+            ),
             context_providers=DEFAULT_CONTEXT_PROVIDERS,
         )
         memory_lifecycle = TaskMemoryLifecycle(task_memory)
@@ -342,11 +413,17 @@ class CodingApplication:
         *,
         task_memory: MemoryStore,
         parent_session_id: str,
-        user_text: str,
+        original_request_ref: str,
+        artifact_refs: list[dict[str, Any]],
         session_handoff,
     ) -> None:
         task_memory.append("now", f"Parent session: {parent_session_id}")
-        task_memory.append("now", f"Task request: {user_text}")
+        if original_request_ref:
+            task_memory.append("now", f"Task request event: {original_request_ref}")
+        for ref in artifact_refs:
+            uri = str(ref.get("storage_uri") or ref.get("artifact_id") or "")
+            if uri:
+                task_memory.append("now", f"Task source artifact: {uri}")
         task_memory.append(
             "memory",
             "This task session may read global context but should only write durable "
@@ -354,7 +431,7 @@ class CodingApplication:
         )
         task_memory.write_recent_context(
             f"- parent_session: `{parent_session_id}`\n"
-            f"- task_request: {user_text}\n"
+            f"- task_request_ref: `{original_request_ref or '(pending event id)'}`\n"
             f"- handoff_recent_turns: {len(session_handoff.recent_turns)}\n"
             f"- handoff_has_prior_summary: {bool(session_handoff.prior_summary.strip())}"
         )
@@ -399,6 +476,62 @@ class CodingApplication:
             "</global-memory-snapshot>\n\n"
             f"User coding task:\n{user_text}"
         )
+
+    def _externalize_current_request(self, parent_session, user_text: str) -> dict[str, Any]:
+        content = str(user_text or "")
+        artifact_refs = _latest_user_artifact_refs(
+            parent_session,
+            expected_content=content,
+        )
+        replaces_event_id = ""
+        if ARTIFACT_OFFLOADING_ENABLED:
+            result = self.long_content_detector.externalize(
+                content,
+                artifact_type="user_input",
+                name="coding-user-request",
+                metadata={"session_id": str(getattr(parent_session, "id", "") or "")},
+            )
+            content = result.content
+            if result.artifact_ref is not None:
+                if not artifact_refs:
+                    artifact_refs.append(result.artifact_ref.to_dict())
+                replaces_event_id = _replace_latest_matching_user_message(
+                    parent_session,
+                    original=user_text,
+                    replacement=content,
+                    artifact_ref=result.artifact_ref.to_dict(),
+                )
+                append_event = getattr(parent_session, "append_event", None)
+                if callable(append_event):
+                    append_event(
+                        ContextEventType.ARTIFACT_CREATED,
+                        {
+                            "artifact_ref": result.artifact_ref.to_dict(),
+                            "source": "coding_user_request",
+                        },
+                    )
+        event_ref = _ensure_current_user_request_event(
+            parent_session,
+            content=content,
+            artifact_refs=artifact_refs,
+        )
+        if replaces_event_id:
+            append_event = getattr(parent_session, "append_event", None)
+            if callable(append_event):
+                append_event(
+                    ContextEventType.LEGACY_MESSAGE_REPLACED,
+                    {
+                        "replaces_event_id": replaces_event_id,
+                        "replacement_event_id": event_ref.removeprefix("event://"),
+                        "artifact_ref": artifact_refs[0] if artifact_refs else {},
+                        "source": "coding_user_request",
+                    },
+                )
+        return {
+            "content": content,
+            "artifact_refs": artifact_refs,
+            "event_ref": event_ref,
+        }
 
     def _global_memory_for(self, session) -> MemoryStore:
         if hasattr(self.global_memory, "for_session"):
@@ -471,6 +604,106 @@ def _pipeline_model_for(pipeline: Runtime, purpose: str):
     if hasattr(pipeline, "provider_and_model_for"):
         return pipeline.provider_and_model_for(purpose)
     return pipeline.provider, pipeline.model
+
+
+def _request_summary(value: str) -> str:
+    text = str(value or "").strip().split("\n\n", 1)[0]
+    return " ".join(text.split())[:300] or "Complete the current coding task"
+
+
+def _latest_user_artifact_refs(
+    session,
+    *,
+    expected_content: str | None = None,
+) -> list[dict[str, Any]]:
+    for message in reversed(list(getattr(session, "messages", []) or [])):
+        if not isinstance(message, dict) or str(message.get("role") or "") != "user":
+            continue
+        if (
+            expected_content is not None
+            and str(message.get("content") or "") != str(expected_content or "")
+        ):
+            return []
+        metadata = message.get("metadata")
+        ref = metadata.get("artifact_ref") if isinstance(metadata, dict) else None
+        if ref is None:
+            ref = message.get("artifact_ref")
+        return [dict(ref)] if isinstance(ref, dict) else []
+    return []
+
+
+def _replace_latest_matching_user_message(
+    session,
+    *,
+    original: str,
+    replacement: str,
+    artifact_ref: dict[str, Any],
+) -> str:
+    messages = getattr(session, "messages", []) or []
+    for message in reversed(messages):
+        if not isinstance(message, dict) or str(message.get("role") or "") != "user":
+            continue
+        if str(message.get("content") or "") != str(original or ""):
+            return ""
+        backfill = getattr(session, "_backfill_legacy_messages", None)
+        if callable(backfill):
+            backfill()
+        replaces_event_id = _message_event_id(session, message)
+        message["content"] = replacement
+        metadata = message.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            message["metadata"] = metadata
+        metadata["artifact_ref"] = artifact_ref
+        metadata["content_externalized"] = True
+        return replaces_event_id
+    return ""
+
+
+def _ensure_current_user_request_event(
+    session,
+    *,
+    content: str,
+    artifact_refs: list[dict[str, Any]],
+) -> str:
+    messages = getattr(session, "messages", None)
+    if not isinstance(messages, list):
+        raise TypeError("coding parent session must expose a message list")
+    current = messages[-1] if messages else None
+    if not (
+        isinstance(current, dict)
+        and str(current.get("role") or "") == "user"
+        and str(current.get("content") or "") == str(content or "")
+    ):
+        metadata: dict[str, Any] = {"kind": "coding_user_request_source"}
+        if artifact_refs:
+            metadata.update({
+                "artifact_ref": dict(artifact_refs[0]),
+                "content_externalized": True,
+            })
+        session.add_message("user", content, metadata=metadata)
+        current = session.messages[-1]
+    backfill = getattr(session, "_backfill_legacy_messages", None)
+    if callable(backfill):
+        backfill()
+    event_id = _message_event_id(session, current)
+    if not event_id:
+        raise RuntimeError("coding request source event could not be recorded")
+    return f"event://{event_id}"
+
+
+def _message_event_id(session, message: dict[str, Any]) -> str:
+    for event in reversed(list(getattr(session, "event_log", []) or [])):
+        if str(getattr(event, "type", "") or "") not in {
+            ContextEventType.USER_MESSAGE.value,
+            ContextEventType.USER_CORRECTION.value,
+        }:
+            continue
+        payload = thaw(event.payload)
+        event_message = payload.get("message") if isinstance(payload, dict) else None
+        if isinstance(event_message, dict) and event_message == message:
+            return str(event.event_id)
+    return ""
 
 
 def _task_reasoning_budget(user_text: str, *, default_steps: int) -> int:

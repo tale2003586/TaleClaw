@@ -1,6 +1,6 @@
 # taleclaw 部署教程
 
-这是当前项目的本地 Web 控制台。前端是原生 HTML/CSS/JS，后端用 Python 标准库 HTTP server，聊天逻辑复用 `core.bootstrap.build_runtime()`。
+这是当前项目的本地 Web 控制台。主控制台使用 React 19、TypeScript 和 Vite，登录页保留轻量原生实现；后端使用 Python 标准库 HTTP server，聊天逻辑复用 `core.bootstrap.build_runtime()`。
 
 推荐部署方式：Docker Compose + Nginx + HTTPS。
 
@@ -77,6 +77,23 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 python web/server.py --host 127.0.0.1 --port 8000
+```
+
+仓库包含已构建的 `web/static/app/` 生产资源。修改主控制台前端时，在另一个终端运行：
+
+```bash
+cd web/frontend
+npm ci
+npm run dev
+```
+
+开发服务器会把 `/api` 和 `/login` 代理到 `127.0.0.1:8000`。提交前重新生成生产资源并执行检查：
+
+```bash
+npm run typecheck
+npm run lint
+npm test -- --run
+npm run build
 ```
 
 访问：

@@ -2,7 +2,9 @@ import inspect
 from typing import Callable
 
 from runtime.messaging.user_bus import OutboundMessage, MessageBus
-from config import WORKING_MEMORY_CHECKPOINT_ENABLED
+from config import ARTIFACT_OFFLOADING_ENABLED, WORKING_MEMORY_CHECKPOINT_ENABLED
+from runtime.context.long_content import LongContentDetector
+from runtime.context.events import ContextEventType
 from runtime.runtime import RunContext, Runtime
 from runtime.trace.events import RUN_COMPLETED, RUN_FAILED
 from runtime.trace.run_state import RunState
@@ -32,6 +34,7 @@ class AgentLoop:
         trace_store=None,
         coding_application=None,
         cancellation_registry: CancellationRegistry | None = None,
+        long_content_detector: LongContentDetector | None = None,
     ) -> None:
         self.bus = bus
         self.sessions = sessions
@@ -43,6 +46,7 @@ class AgentLoop:
         self.subagent_runner = subagent_runner
         self.trace_store = trace_store
         self.cancellation_registry = cancellation_registry or CancellationRegistry()
+        self.long_content_detector = long_content_detector
 
     async def run_once(self, on_text: Callable[[str], None] | None = None) -> None:
         inbound = await self.bus.consume_inbound()
@@ -53,7 +57,14 @@ class AgentLoop:
         inbound,
         on_text: Callable[[str], None] | None = None,
     ) -> None:
+        created_artifact = self._externalize_inbound_content(inbound)
         session = self.sessions.get_or_create(inbound.session_key)
+        if created_artifact is not None:
+            _record_artifact_offload_metrics(session, inbound)
+            session.append_event(
+                ContextEventType.ARTIFACT_CREATED,
+                {"artifact_ref": created_artifact, "source": "user_message"},
+            )
         self._begin_cancel_scope(session.id)
         run_state = None
 
@@ -75,6 +86,33 @@ class AgentLoop:
             raise
         finally:
             self._end_cancel_scope(session.id)
+
+    def _externalize_inbound_content(self, inbound) -> dict | None:
+        if not ARTIFACT_OFFLOADING_ENABLED or self.long_content_detector is None:
+            return None
+        content = str(getattr(inbound, "content", "") or "")
+        result = self.long_content_detector.externalize(
+            content,
+            artifact_type="user_input",
+            name="user-message",
+            metadata={
+                "channel": str(getattr(inbound, "channel", "") or ""),
+                "chat_id": str(getattr(inbound, "chat_id", "") or ""),
+            },
+        )
+        if result.artifact_ref is None:
+            return None
+        inbound.content = result.content
+        metadata = getattr(inbound, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+            inbound.metadata = metadata
+        metadata["artifact_ref"] = result.artifact_ref.to_dict()
+        metadata["content_externalized"] = True
+        metadata["original_content_tokens"] = result.assessment.token_count
+        metadata["original_content_chars"] = result.assessment.char_count
+        metadata["original_content_bytes"] = result.assessment.byte_count
+        return result.artifact_ref.to_dict()
 
     def request_cancel(self, session_id: str) -> bool:
         return self.cancellation_registry.request(self._turn_scope(session_id))
@@ -431,3 +469,30 @@ def _accepts_keyword(callable_obj, keyword: str) -> bool:
         parameter.kind == inspect.Parameter.VAR_KEYWORD
         for parameter in parameters.values()
     )
+
+
+def _record_artifact_offload_metrics(session, inbound) -> None:
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        session.metadata = metadata
+    metrics = metadata.get("context_metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+    inbound_metadata = (
+        inbound.metadata if isinstance(getattr(inbound, "metadata", None), dict) else {}
+    )
+    original_chars = max(0, int(inbound_metadata.get("original_content_chars") or 0))
+    original_tokens = max(0, int(inbound_metadata.get("original_content_tokens") or 0))
+    replacement_chars = len(str(getattr(inbound, "content", "") or ""))
+    metrics["artifact_offloaded_chars"] = (
+        int(metrics.get("artifact_offloaded_chars", 0) or 0) + original_chars
+    )
+    metrics["artifact_offloaded_tokens"] = (
+        int(metrics.get("artifact_offloaded_tokens", 0) or 0) + original_tokens
+    )
+    metrics["duplicate_content_saved_chars"] = (
+        int(metrics.get("duplicate_content_saved_chars", 0) or 0)
+        + max(0, original_chars - replacement_chars)
+    )
+    metadata["context_metrics"] = metrics

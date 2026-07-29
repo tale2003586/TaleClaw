@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from config import WORKDIR
+from config import ARTIFACT_OFFLOADING_ENABLED, CONTEXT_ARTIFACT_ROOT, WORKDIR
+from runtime.context.artifacts import ArtifactStore
 from runtime.db import connect, resolve_database_config
 
 
@@ -46,6 +47,76 @@ class ToolResultStore:
 
     def get(self, result_id: str) -> tuple[str, dict[str, Any]]:
         raise NotImplementedError
+
+
+class ArtifactToolResultStore(ToolResultStore):
+    """Unified backend for new tool results; legacy stores remain readable."""
+
+    backend = "artifact"
+
+    def __init__(self, root: str | Path | None = None) -> None:
+        self.store = ArtifactStore(
+            root or os.getenv("CONTEXT_ARTIFACT_ROOT") or CONTEXT_ARTIFACT_ROOT
+        )
+
+    def put(
+        self,
+        *,
+        session_id: str,
+        call_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        content: str,
+        status: str,
+    ) -> StoredToolResult:
+        text = str(content or "")
+        ref = self.store.put_artifact(
+            text,
+            artifact_type="tool_result",
+            name=f"{tool_name or 'tool'}-{call_id or 'result'}",
+            mime_type="text/plain",
+            metadata={
+                "session_id": str(session_id or ""),
+                "call_id": str(call_id or ""),
+                "tool_name": str(tool_name or ""),
+                "arguments": arguments or {},
+                "status": str(status or ""),
+            },
+        )
+        metadata = self.store.get_artifact_metadata(ref).to_dict()
+        metadata.update({
+            "result_id": ref.artifact_id,
+            "backend": self.backend,
+            "uri": ref.storage_uri,
+            "chars": ref.size_chars,
+            "sha256": ref.content_hash,
+            "tool_name": str(tool_name or ""),
+            "call_id": str(call_id or ""),
+        })
+        return StoredToolResult(
+            result_id=ref.artifact_id,
+            backend=self.backend,
+            uri=ref.storage_uri,
+            chars=ref.size_chars,
+            sha256=ref.content_hash,
+            metadata=metadata,
+        )
+
+    def get(self, result_id: str) -> tuple[str, dict[str, Any]]:
+        artifact_id = _clean_result_id(result_id)
+        metadata = self.store.get_artifact_metadata(artifact_id)
+        content = self.store.read_artifact(metadata)
+        assert isinstance(content, str)
+        result = metadata.to_dict()
+        result.update({
+            "result_id": metadata.artifact_id,
+            "backend": self.backend,
+            "uri": metadata.storage_uri,
+            "chars": metadata.size_chars,
+            "sha256": metadata.content_hash,
+            **dict(metadata.metadata or {}),
+        })
+        return content, result
 
 
 class FileToolResultStore(ToolResultStore):
@@ -223,9 +294,13 @@ class PostgresToolResultStore(ToolResultStore):
 
 
 def resolve_tool_result_store() -> ToolResultStore:
-    backend = str(os.getenv("TOOL_RESULT_STORE_BACKEND") or "file").strip().lower()
+    backend = str(os.getenv("TOOL_RESULT_STORE_BACKEND") or "artifact").strip().lower()
     if backend in {"postgres", "postgresql", "pg"}:
         return PostgresToolResultStore()
+    if backend in {"file", "legacy-file"}:
+        return FileToolResultStore()
+    if ARTIFACT_OFFLOADING_ENABLED:
+        return ArtifactToolResultStore()
     return FileToolResultStore()
 
 
@@ -283,6 +358,8 @@ def _clean_result_id(value: str) -> str:
     result_id = str(value or "").strip()
     if result_id.startswith("tool_result://"):
         result_id = result_id.removeprefix("tool_result://")
+    if result_id.startswith("artifact://"):
+        result_id = result_id.removeprefix("artifact://")
     if not result_id or "/" in result_id or "\\" in result_id or ".." in result_id:
         raise ValueError(f"Invalid tool result id: {value}")
     return result_id

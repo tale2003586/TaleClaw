@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from runtime.tooling.signature import tool_call_signature, tool_result_hash
+from config import TASK_STATE_CONTEXT_ENABLED
 
 
 WORKING_MEMORY_METADATA_KEY = "working_memory"
@@ -87,17 +88,199 @@ def is_resume_request(text: str) -> bool:
 
 def load_working_memory(session) -> WorkingMemory | None:
     metadata = getattr(session, "metadata", {}) or {}
+    if TASK_STATE_CONTEXT_ENABLED and metadata.get("task_state"):
+        return _working_memory_projection(session)
     return WorkingMemory.from_payload(metadata.get(WORKING_MEMORY_METADATA_KEY))
 
 
 def save_working_memory(session, memory: WorkingMemory) -> WorkingMemory:
     memory.updated_at = _now_iso()
+    if TASK_STATE_CONTEXT_ENABLED:
+        _reduce_working_memory_projection(session, memory)
+        _metadata_for(session).pop(WORKING_MEMORY_METADATA_KEY, None)
+        return memory
     metadata = _metadata_for(session)
     metadata[WORKING_MEMORY_METADATA_KEY] = memory.to_dict()
     touch = getattr(session, "touch", None)
     if touch is not None:
         touch()
     return memory
+
+
+def _working_memory_projection(session) -> WorkingMemory | None:
+    from applications.coding.task_state import load_task_state
+    from runtime.execution.failure_reasons import REASONING_LOOP_STOP_REASON_KEY
+
+    state = load_task_state(session)
+    if state is None:
+        return None
+    completed = [
+        {
+            "unit_id": item.id,
+            "description": item.description,
+            "conclusion": item.description,
+            "evidence_refs": list(item.evidence_refs),
+            "covered_scope": list(item.covered_scope),
+            "open_questions": list(item.open_questions),
+            "needs_parent_verification": bool(item.needs_parent_verification),
+            "status": "completed",
+        }
+        for item in state.completed
+    ]
+    pending = [
+        {
+            "unit_id": item.id,
+            "description": item.description,
+            "state": (
+                "in_progress" if item.status.value == "in_progress" else
+                "blocked" if item.status.value == "failed" else "todo"
+            ),
+            "status": item.status.value,
+            "priority": item.priority,
+            "evidence_refs": list(item.evidence_refs),
+            "blocked_by": list(item.blocked_by),
+            "scope_files": list(item.scope_files),
+        }
+        for item in state.pending_actions
+        if item.status.value not in {"completed", "superseded"}
+    ]
+    archived = {
+        item.id: {
+            "claim": item.claim,
+            "evidence_refs": list(item.evidence_refs),
+        }
+        for item in [*state.findings, *state.hypotheses]
+    }
+    for item in state.execution_memory.observed_effects:
+        if not isinstance(item, dict) or item.get("kind") != "working_memory_archived_finding":
+            continue
+        key = str(item.get("key") or "")
+        if key:
+            archived[key] = item.get("value")
+    stopped = bool(
+        (getattr(session, "metadata", {}) or {}).get(REASONING_LOOP_STOP_REASON_KEY)
+    )
+    return WorkingMemory(
+        task_id=str(getattr(session, "id", "") or ""),
+        objective=state.objective.summary,
+        completed_units=completed,
+        pending_units=pending,
+        archived_findings=archived,
+        step_checkpoints=list(state.execution_memory.step_checkpoints),
+        observed_calls=list(state.execution_memory.observed_tools),
+        last_checkpoint_step=state.execution_memory.last_step,
+        status=(
+            STATUS_COMPLETED
+            if state.phase.value == "finalization"
+            else STATUS_SUSPENDED
+            if stopped
+            else STATUS_RUNNING
+        ),
+        updated_at=state.updated_at,
+    )
+
+
+def _reduce_working_memory_projection(session, memory: WorkingMemory) -> None:
+    from applications.coding.task_state import (
+        Action,
+        CompletedItem,
+        ItemStatus,
+        Objective,
+        TaskState,
+        load_task_state,
+        save_task_state,
+    )
+
+    state = load_task_state(session)
+    if state is None:
+        state = TaskState(objective=Objective(
+            summary=_clip(memory.objective, 480),
+            original_request_ref=_latest_user_event_ref(session),
+        ))
+    elif memory.objective and memory.objective.strip() != state.objective.summary:
+        state.objective = Objective(
+            summary=_clip(memory.objective, 480),
+            original_request_ref=(
+                _latest_user_event_ref(session)
+                or state.objective.original_request_ref
+            ),
+            source_artifacts=list(state.objective.source_artifacts),
+            supersedes=state.objective.original_request_ref,
+        )
+    state.completed = [
+        CompletedItem(
+            id=str(item.get("unit_id") or _stable_id(item)),
+            description=_clip(item.get("conclusion") or item.get("description"), 800),
+            evidence_refs=[str(ref) for ref in item.get("evidence_refs") or []],
+            covered_scope=[str(value) for value in item.get("covered_scope") or []],
+            open_questions=[str(value) for value in item.get("open_questions") or []],
+            needs_parent_verification=bool(item.get("needs_parent_verification")),
+        )
+        for item in memory.completed_units
+        if isinstance(item, dict)
+    ]
+    state.pending_actions = [
+        Action(
+            id=str(item.get("unit_id") or _stable_id(item)),
+            description=_clip(item.get("description"), 800),
+            status=_task_item_status(item.get("state") or item.get("status")),
+            evidence_refs=[str(ref) for ref in item.get("evidence_refs") or []],
+            priority=str(item.get("priority") or "P1"),
+            blocked_by=[str(value) for value in item.get("blocked_by") or []],
+            scope_files=[str(value) for value in item.get("scope_files") or []],
+        )
+        for item in memory.pending_units
+        if isinstance(item, dict)
+    ]
+    state.execution_memory.observed_tools = list(memory.observed_calls)[-30:]
+    compatibility_effects = [
+        {
+            "kind": "working_memory_archived_finding",
+            "key": str(key),
+            "value": value,
+        }
+        for key, value in memory.archived_findings.items()
+    ]
+    state.execution_memory.observed_effects = [
+        item
+        for item in state.execution_memory.observed_effects
+        if not (
+            isinstance(item, dict)
+            and item.get("kind") == "working_memory_archived_finding"
+        )
+    ] + compatibility_effects
+    state.execution_memory.observed_effects = state.execution_memory.observed_effects[-200:]
+    state.execution_memory.step_checkpoints = list(memory.step_checkpoints)[-STEP_CHECKPOINT_HISTORY_LIMIT:]
+    state.execution_memory.last_step = int(memory.last_checkpoint_step or 0)
+    if memory.status == STATUS_COMPLETED:
+        from applications.coding.task_state import TaskPhase
+        state.phase = TaskPhase.FINALIZATION
+    state.version += 1
+    save_task_state(session, state)
+
+
+def _task_item_status(value: Any):
+    from applications.coding.task_state import ItemStatus
+
+    normalized = str(value or "pending")
+    return {
+        "todo": ItemStatus.PENDING,
+        "pending": ItemStatus.PENDING,
+        "dispatched": ItemStatus.IN_PROGRESS,
+        "in_progress": ItemStatus.IN_PROGRESS,
+        "awaiting_verification": ItemStatus.AWAITING_VERIFICATION,
+        "completed": ItemStatus.COMPLETED,
+        "blocked": ItemStatus.FAILED,
+        "failed": ItemStatus.FAILED,
+        "superseded": ItemStatus.SUPERSEDED,
+    }.get(normalized, ItemStatus.PENDING)
+
+
+def _latest_user_event_ref(session) -> str:
+    for event in reversed(list(getattr(session, "event_log", []) or [])):
+        if str(getattr(event, "type", "") or "") in {"user_message", "user_correction"}:
+            return f"event://{event.event_id}"
+    return ""
 
 
 def prepare_working_memory_for_turn(

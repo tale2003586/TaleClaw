@@ -1,5 +1,11 @@
 # 会话类型、Profile 与工作记忆边界
 
+> 历史说明：本文的 WorkingMemory/CodingContextState 双状态、metadata 双持久化和固定近期组描述
+> 已被 TaskState 架构替代。当前只有 `TaskState` 是任务事实的可变权威；WorkingMemory 是兼容投影，
+> CodingContextState 是 renderer/checkpoint metadata。请以
+> [`TASK_STATE_CONTEXT_ARCHITECTURE.md`](../architecture/TASK_STATE_CONTEXT_ARCHITECTURE.md)
+> 为准。本文以下内容仅用于理解迁移来源。
+
 这篇文档专门说明三个容易混在一起的概念：
 
 - session 是运行时状态容器。

@@ -5,6 +5,7 @@
 当前系统的统一架构入口：
 
 - [TaleClaw 系统架构](architecture/SYSTEM_ARCHITECTURE.md)
+- [TaskState 上下文管理架构](architecture/TASK_STATE_CONTEXT_ARCHITECTURE.md)
 - [Agent Core 精简总目标](refactor/AGENT_CORE_SIMPLIFICATION_GOAL.md)
 
 ## Overview
@@ -29,6 +30,7 @@
 
 ## Sessions And Memory
 
+- [TaskState Context 迁移 Runbook](migrations/TASK_STATE_CONTEXT_MIGRATION.md)
 - [Phase 17：Memory Lifecycle 说明](sessions-memory/PHASE17_MEMORY_LIFECYCLE.md)
 - [Task Session Isolation](sessions-memory/TASK_SESSION_ISOLATION.md)
 - [TaskSession Memory Scope 修复记录](sessions-memory/TASK_SESSION_MEMORY_SCOPE_FIX.md)
@@ -72,7 +74,7 @@
 
 ## Workplan
 
-- [Context Section Budget V1 完成记录](workplan/2026-06-11_CONTEXT_SECTION_BUDGET_V1_COMPLETION.md)
+- [Context Section Budget V1 历史完成记录（Coding 主路径已弃用）](workplan/2026-06-11_CONTEXT_SECTION_BUDGET_V1_COMPLETION.md)
 - [Context 逻辑分层与消息装配完成记录](workplan/2026-06-11_CONTEXT_LOGICAL_SECTION_ASSEMBLY_COMPLETION.md)
 - [Context Section Report 第一阶段完成记录](workplan/2026-06-11_CONTEXT_SECTION_REPORT_COMPLETION.md)
 - [按模式拆分 Assistant / Coding Instructions 完成记录](workplan/2026-06-11_MODE_INSTRUCTIONS_COMPLETION.md)

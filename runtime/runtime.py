@@ -251,6 +251,9 @@ class Runtime:
         reasoning_step: int | None = None,
         run_context=None,
         context_policy=None,
+        model_provider=None,
+        model_tools=None,
+        reserved_output_tokens: int = 0,
     ):
         if self._should_include_task_runtime_events(session, profile):
             notifs = BG.drain_notifications()
@@ -277,6 +280,14 @@ class Runtime:
         if context_prefix is not None:
             build_kwargs["prefix"] = context_prefix
         build = self.agent_runner.context_builder.build
+        provider_budget_inputs = {
+            "model_provider": model_provider,
+            "model_tools": model_tools,
+            "reserved_output_tokens": reserved_output_tokens,
+        }
+        for name, value in provider_budget_inputs.items():
+            if _accepts_keyword(build, name):
+                build_kwargs[name] = value
         if _accepts_keyword(build, "context_policy"):
             build_kwargs["context_policy"] = context_policy
         trace_kwargs = {

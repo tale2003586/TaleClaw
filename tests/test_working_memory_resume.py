@@ -220,8 +220,10 @@ class WorkingMemoryResumeTests(unittest.TestCase):
             StopReason.USER_CANCELLED.value,
             session.metadata[REASONING_LOOP_STOP_REASON_KEY],
         )
-        memory = session.metadata[WORKING_MEMORY_METADATA_KEY]
-        self.assertEqual(STATUS_SUSPENDED, memory["status"])
+        self.assertNotIn(WORKING_MEMORY_METADATA_KEY, session.metadata)
+        memory = load_working_memory(session)
+        self.assertIsNotNone(memory)
+        self.assertEqual(STATUS_SUSPENDED, memory.status)
 
     def test_successful_final_answer_marks_memory_completed(self) -> None:
         provider = CountingProvider()

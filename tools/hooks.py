@@ -284,7 +284,11 @@ class ToolTraceHook(ToolHook):
     def matches(self, request: ToolExecutionRequest) -> bool:
         return True
 
-    def after(self, request: ToolExecutionRequest, result: ToolExecutionResult) -> None:
+    def after(
+        self,
+        request: ToolExecutionRequest,
+        result: ToolExecutionResult,
+    ) -> HookOutcome | None:
         self.records.append({
             "timestamp": time.time(),
             "session_id": request.session_id,
@@ -312,7 +316,11 @@ class ToolResultStoreHook(ToolHook):
     def matches(self, request: ToolExecutionRequest) -> bool:
         return request.tool_name not in self.skip_tools
 
-    def after(self, request: ToolExecutionRequest, result: ToolExecutionResult) -> None:
+    def after(
+        self,
+        request: ToolExecutionRequest,
+        result: ToolExecutionResult,
+    ) -> HookOutcome | None:
         output = str(result.output or "")
         if len(output) < self.min_chars:
             return None
@@ -341,6 +349,38 @@ class ToolResultStoreHook(ToolHook):
                 "chars": stored.chars,
                 "sha256": stored.sha256,
             }
+            if stored.backend == "artifact":
+                from config import (
+                    CONTEXT_ARTIFACT_ROOT,
+                    LONG_CONTENT_MAX_BYTES,
+                    LONG_CONTENT_MAX_CHARS,
+                    LONG_CONTENT_MAX_TOKENS,
+                )
+                from runtime.context.artifacts import ArtifactStore
+                from runtime.context.long_content import LongContentDetector
+
+                detector = LongContentDetector(
+                    ArtifactStore(CONTEXT_ARTIFACT_ROOT),
+                    max_tokens=LONG_CONTENT_MAX_TOKENS,
+                    max_chars=LONG_CONTENT_MAX_CHARS,
+                    max_bytes=LONG_CONTENT_MAX_BYTES,
+                )
+                externalized = detector.externalize_tool_result(
+                    output,
+                    name=f"{request.tool_name}-{request.call_id}",
+                    metadata={
+                        "session_id": request.session_id,
+                        "call_id": request.call_id,
+                        "tool_name": request.tool_name,
+                        "arguments": result.final_arguments,
+                        "status": result.status,
+                    },
+                )
+                if externalized.artifact_ref is not None:
+                    result.metadata["artifact_ref"] = externalized.artifact_ref.to_dict()
+                    result.metadata["artifact_offloaded_chars"] = externalized.assessment.char_count
+                    result.metadata["artifact_offloaded_tokens"] = externalized.assessment.token_count
+                    return HookOutcome(updated_output=externalized.content)
         except Exception as exc:
             result.metadata["tool_result_store_error"] = str(exc)
         return None

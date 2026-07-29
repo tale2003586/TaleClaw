@@ -369,12 +369,13 @@ def test_agent_service_timeout_keeps_stream_and_persists_fallback_title():
 
 
 def test_frontend_uses_title_for_display_but_chat_id_for_identity():
-    source = Path("web/static/app.js").read_text(encoding="utf-8")
+    sessions = Path("web/frontend/src/hooks/useSessions.ts").read_text(encoding="utf-8")
+    shell = Path("web/frontend/src/app/AppShell.tsx").read_text(encoding="utf-8")
+    chat = Path("web/frontend/src/pages/ChatPage.tsx").read_text(encoding="utf-8")
 
-    assert 'name.textContent = session.title || label;' in source
-    assert 'els.sessionTitle.textContent = session.title || state.sessionId;' in source
-    assert 'els.sessionTitle.textContent = data.session?.title || state.sessionId;' in source
-    assert 'state.sessionId = label;' in source
-    assert 'const label = session.channel === "web" ? session.chat_id : "";' in source
-    assert '`${session.title || ""} ${label}' in source
-    assert "name.innerHTML" not in source
+    assert 'session.channel === "web" ? String(session.chat_id || "")' in sessions
+    assert '`${session.title || ""} ${sessionKey(session)}' in sessions
+    assert "setActiveId(String(session.chat_id || id))" in sessions
+    assert "session.title || id" in shell
+    assert "sessions.active?.title || sessions.activeId" in chat
+    assert "dangerouslySetInnerHTML" not in sessions + shell + chat

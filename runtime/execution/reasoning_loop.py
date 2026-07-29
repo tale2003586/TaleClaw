@@ -24,8 +24,21 @@ from runtime.execution.tool_batch import (
     split_read_files_outputs,
     task_call_arguments,
 )
+from config import (
+    DYNAMIC_PROMPT_BUDGET_ENABLED,
+    PROMPT_COMPACTION_TARGET_RATIO,
+    PROMPT_HARD_INPUT_RATIO,
+    PROMPT_SAFETY_MARGIN_TOKENS,
+    PROMPT_SOFT_COMPACTION_RATIO,
+)
+from runtime.context.events import ContextEventType
+from runtime.context.dynamic_budget import (
+    PromptBudgetExceeded,
+    calculate_dynamic_prompt_budget,
+    enforce_hard_token_guard,
+    reduce_prompt_to_hard_limit,
+)
 from runtime.token_estimator import (
-    emergency_trim,
     estimate_tokens,
     output_tokens_for_call,
     safe_context_limit,
@@ -207,6 +220,8 @@ class ReasoningLoop:
                 span_id=context_span_id,
                 parent_span_id=step_span_id,
             )
+            resolved_provider = resolve_provider(session, profile)
+            tools_for_turn = self.tools.schemas_for_turn(session, profile.tool_mode)
             turn_context = _call_build_context(
                 build_context,
                 session,
@@ -215,6 +230,9 @@ class ReasoningLoop:
                 run_state=run_state,
                 trace_parent_span_id=context_span_id,
                 reasoning_step=reasoning_steps,
+                model_provider=resolved_provider[0],
+                model_tools=tools_for_turn,
+                reserved_output_tokens=self.max_tokens,
             )
             context_messages = getattr(turn_context, "messages", [])
             context_report = _context_report_payload(
@@ -258,6 +276,8 @@ class ReasoningLoop:
                 trace_store=trace_store,
                 reasoning_step=reasoning_steps,
                 checkpoint_callback=checkpoint_callback,
+                resolved_provider=resolved_provider,
+                tools_for_turn=tools_for_turn,
             )
 
             if _is_empty_response(response):
@@ -489,10 +509,16 @@ class ReasoningLoop:
         trace_store=None,
         reasoning_step: int = 0,
         checkpoint_callback: Callable | None = None,
+        resolved_provider=None,
+        tools_for_turn=None,
     ):
-        provider, model = resolve_provider(session, profile)
+        provider, model = resolved_provider or resolve_provider(session, profile)
         use_stream = supports_streaming(provider, on_text)
-        tools = self.tools.schemas_for_turn(session, profile.tool_mode)
+        tools = (
+            list(tools_for_turn)
+            if tools_for_turn is not None
+            else self.tools.schemas_for_turn(session, profile.tool_mode)
+        )
         context_messages, dropped_messages = sanitize_context_messages(context.messages)
         context_summary = _context_summary(context_messages, provider=provider)
         if dropped_messages:
@@ -513,11 +539,34 @@ class ReasoningLoop:
             provider,
             reserved_output_tokens=self.max_tokens,
         )
+        # The feature flag controls upstream prompt assembly only. The final
+        # provider gate is an invariant and must remain active during rollback.
+        dynamic_assembly_enabled = bool(DYNAMIC_PROMPT_BUDGET_ENABLED)
+        system_messages = [
+            message
+            for message in context_messages
+            if str(message.get("role") or "") == "system"
+        ]
+        dynamic_budget = calculate_dynamic_prompt_budget(
+            provider=provider,
+            system_messages=system_messages,
+            tools=tools,
+            reserved_output_tokens=self.max_tokens,
+            safety_margin_tokens=(
+                PROMPT_SAFETY_MARGIN_TOKENS
+                if PROMPT_SAFETY_MARGIN_TOKENS > 0
+                else None
+            ),
+            soft_trigger_ratio=PROMPT_SOFT_COMPACTION_RATIO,
+            compaction_target_ratio=PROMPT_COMPACTION_TARGET_RATIO,
+            hard_input_ratio=PROMPT_HARD_INPUT_RATIO,
+        )
+        safe_limit = min(safe_limit, dynamic_budget.hard_prompt_limit)
         estimated_tokens = estimate_tokens(context_messages, provider=provider)
         if estimated_tokens > safe_limit:
             before_message_count = len(context_messages)
             before_tokens = estimated_tokens
-            context_messages = emergency_trim(
+            context_messages = reduce_prompt_to_hard_limit(
                 context_messages,
                 max_tokens=safe_limit,
                 provider=provider,
@@ -533,11 +582,44 @@ class ReasoningLoop:
                     "before_estimated_tokens": before_tokens,
                     "after_estimated_tokens": context_summary["estimated_tokens"],
                     "safe_limit_tokens": safe_limit,
+                    "dynamic_budget": dynamic_budget.to_dict(),
+                    "dynamic_assembly_enabled": dynamic_assembly_enabled,
                 },
                 step=reasoning_step,
                 span_id=_context_span_id(run_state, reasoning_step),
                 parent_span_id=_step_span_id(run_state, reasoning_step),
             )
+        try:
+            guard_usage = enforce_hard_token_guard(
+                context_messages,
+                budget=dynamic_budget,
+                provider=provider,
+            )
+        except PromptBudgetExceeded as exc:
+            _record_hard_budget_block(session, exc)
+            self._trace(
+                trace_store,
+                run_state,
+                "hard_budget_blocked",
+                {
+                    "actual_prompt_tokens": exc.actual_tokens,
+                    "hard_prompt_limit": exc.hard_limit_tokens,
+                    "dynamic_budget": exc.budget.to_dict(),
+                    "dynamic_assembly_enabled": dynamic_assembly_enabled,
+                },
+                step=reasoning_step,
+                span_id=_context_span_id(run_state, reasoning_step),
+                parent_span_id=_step_span_id(run_state, reasoning_step),
+            )
+            raise
+        context_summary = {
+            **context_summary,
+            "actual_prompt_tokens": guard_usage.actual_prompt_tokens,
+            "dynamic_content_tokens": guard_usage.dynamic_content_tokens,
+            "hard_prompt_limit_tokens": guard_usage.hard_prompt_limit,
+            "dynamic_budget": dynamic_budget.to_dict(),
+            "dynamic_assembly_enabled": dynamic_assembly_enabled,
+        }
         request_max_tokens = output_tokens_for_call(
             provider,
             requested_output_tokens=self.max_tokens,
@@ -869,6 +951,12 @@ class ReasoningLoop:
                             parent_span_id=span_id,
                         ),
                     )
+                self._append_tool_result_artifact_event(
+                    session,
+                    request=request,
+                    result=result,
+                    related_tool_call_ids=[call.id],
+                )
                 output = self._with_web_search_budget_notice(
                     session,
                     call.name,
@@ -1050,6 +1138,12 @@ class ReasoningLoop:
                 parent_span_id=parent_span_id,
             ),
         )
+        self._append_tool_result_artifact_event(
+            session,
+            request=request,
+            result=result,
+            related_tool_call_ids=[call.id for call in tool_calls],
+        )
         outputs = split_parallel_task_outputs(result.output, len(tool_calls))
         hook_metadata = {
             **dict(result.metadata or {}),
@@ -1207,6 +1301,12 @@ class ReasoningLoop:
                 run_state=run_state,
                 parent_span_id=parent_span_id,
             ),
+        )
+        self._append_tool_result_artifact_event(
+            session,
+            request=request,
+            result=result,
+            related_tool_call_ids=[call.id for call in tool_calls],
         )
         outputs = split_read_files_outputs(result.output, len(tool_calls))
         hook_metadata = {
@@ -1377,6 +1477,63 @@ class ReasoningLoop:
             error_type="ToolDenied",
             error_message=output,
         )
+
+    def _append_tool_result_artifact_event(
+        self,
+        session,
+        *,
+        request: ToolExecutionRequest,
+        result: ToolExecutionResult,
+        related_tool_call_ids: list[str],
+    ) -> None:
+        metadata = result.metadata if isinstance(result.metadata, dict) else {}
+        artifact_ref = metadata.get("artifact_ref")
+        if not isinstance(artifact_ref, dict):
+            return
+
+        # Preserve event chronology: the assistant tool-call message precedes
+        # artifact creation, while the corresponding tool result follows it.
+        backfill = getattr(session, "_backfill_legacy_messages", None)
+        if callable(backfill):
+            backfill()
+        append_event = getattr(session, "append_event", None)
+        if not callable(append_event):
+            return
+
+        payload = {
+            "artifact_ref": dict(artifact_ref),
+            "source": "tool_result",
+            "tool_call_id": str(request.call_id or ""),
+            "tool_name": str(request.tool_name or ""),
+            "status": str(result.status or ""),
+            "related_tool_call_ids": [
+                str(call_id) for call_id in related_tool_call_ids if call_id
+            ],
+        }
+        for key in ("artifact_offloaded_chars", "artifact_offloaded_tokens"):
+            if key in metadata:
+                payload[key] = metadata[key]
+        append_event(ContextEventType.ARTIFACT_CREATED, payload)
+        session_metadata = getattr(session, "metadata", None)
+        if not isinstance(session_metadata, dict):
+            session_metadata = {}
+            session.metadata = session_metadata
+        metrics = session_metadata.get("context_metrics")
+        if not isinstance(metrics, dict):
+            metrics = {}
+        offloaded_chars = max(0, int(metadata.get("artifact_offloaded_chars") or 0))
+        offloaded_tokens = max(0, int(metadata.get("artifact_offloaded_tokens") or 0))
+        metrics["artifact_offloaded_chars"] = (
+            int(metrics.get("artifact_offloaded_chars", 0) or 0) + offloaded_chars
+        )
+        metrics["artifact_offloaded_tokens"] = (
+            int(metrics.get("artifact_offloaded_tokens", 0) or 0) + offloaded_tokens
+        )
+        metrics["duplicate_content_saved_chars"] = (
+            int(metrics.get("duplicate_content_saved_chars", 0) or 0)
+            + max(0, offloaded_chars - len(str(result.output or "")))
+        )
+        session_metadata["context_metrics"] = metrics
 
     def _stop_turn(
         self,
@@ -1585,6 +1742,23 @@ def _context_summary(messages: list[dict], *, provider=None) -> dict:
         "empty_assistant_messages": empty_assistant_messages,
         "estimated_tokens": estimate_tokens(messages or [], provider=provider),
     }
+
+
+def _record_hard_budget_block(session, error: PromptBudgetExceeded) -> None:
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        session.metadata = metadata
+    metrics = metadata.get("context_metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+    metrics["hard_budget_blocks"] = int(metrics.get("hard_budget_blocks", 0) or 0) + 1
+    metrics["last_hard_budget_block"] = {
+        "actual_prompt_tokens": error.actual_tokens,
+        "hard_prompt_limit": error.hard_limit_tokens,
+        "model_context_window": error.budget.model_context_window,
+    }
+    metadata["context_metrics"] = metrics
 
 
 def _context_report_payload(report) -> dict:

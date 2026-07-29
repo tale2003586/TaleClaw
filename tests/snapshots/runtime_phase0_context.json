@@ -45,6 +45,7 @@
   "coding": {
     "roles": [
       "system",
+      "user",
       "user"
     ],
     "section_order": [
@@ -64,7 +65,8 @@
       "task_runtime_events",
       "inbox",
       "background_results",
-      "context_frame"
+      "context_frame",
+      "coding_context_state"
     ],
     "section_rendered": {
       "system_profile": true,
@@ -83,8 +85,9 @@
       "task_runtime_events": false,
       "inbox": false,
       "background_results": false,
-      "context_frame": false
+      "context_frame": false,
+      "coding_context_state": true
     },
-    "estimated_tokens": 484
+    "estimated_tokens": 1038
   }
 }
