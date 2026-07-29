@@ -33,6 +33,8 @@ class TaskSessionFactory:
         parent_session_id: str,
         task_type: str,
         user_request: str,
+        original_request_ref: str = "",
+        artifact_refs: list[dict] | None = None,
         user_id: str | None = None,
         user_role: str | None = None,
     ) -> TaskSessionRecord:
@@ -53,7 +55,9 @@ class TaskSessionFactory:
             "task_type": task_type,
             "parent_session_id": parent_session_id,
             "status": "running",
-            "user_request": user_request,
+            "user_request_summary": _request_summary(user_request),
+            "original_request_ref": str(original_request_ref or ""),
+            "artifact_refs": list(artifact_refs or []),
             "memory_root": stored_memory_root,
         })
         if user_id:
@@ -72,3 +76,10 @@ class TaskSessionFactory:
 def _slug(value: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", value.strip().lower())
     return slug.strip("-") or "task"
+
+
+def _request_summary(value: str, limit: int = 300) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 15)].rstrip() + "...[truncated]"

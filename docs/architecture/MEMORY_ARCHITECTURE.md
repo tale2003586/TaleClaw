@@ -9,7 +9,7 @@ TaleClaw separates five kinds of state:
 | Session History | PostgreSQL Session Store | Current Session transcript |
 | Episodic History | Session Store; Qdrant is a derived event index | Normal chat: current user + current Session; Coding: trusted Task/Workspace/Project |
 | Long-term Semantic Memory | PostgreSQL `memory_items` and `memory_evidence` | Active, current, unexpired items in trusted owner scopes |
-| Working Memory | Existing runtime Working Memory and Coding Context State | Current work only; no automatic long-term promotion |
+| Task State | `applications/coding/task_state.py`; WorkingMemory is a compatibility projection and CodingContextState is renderer metadata | Current work only; no automatic long-term promotion |
 | Application-local State | Coding or another vertical Application | Remains local unless converted to a governed proposal |
 
 There is no Minecraft Application in the current repository. The architecture defines an Application boundary but does not ship an empty adapter.
@@ -133,7 +133,7 @@ Results render as:
 </episodic_history>
 ```
 
-Failure degrades to empty results; it never retries with user-only scope. Semantic, Episodic and Working Memory are separate Context sections and budgets.
+Failure degrades to empty results; it never retries with user-only scope. Semantic and Episodic retrieval remain separate from the authoritative Coding TaskState. The current Coding prompt path and its dynamic token budget are documented in `TASK_STATE_CONTEXT_ARCHITECTURE.md`.
 
 ## 11. Markdown and legacy adapters
 

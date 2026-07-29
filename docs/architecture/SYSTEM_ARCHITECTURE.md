@@ -200,18 +200,28 @@ Working Memory checkpoint 和显式 Stop Reason。
 runtime/context/
   builder.py       主编排与 Prefix cache
   providers.py     Prompt、History、Memory、Retrieval、Coding Provider
-  budget.py        Section Budget
-  history.py       历史与活动轮次压缩
+  artifacts.py     大型正文的内容寻址存储
+  long_content.py  token-first 外置判定
+  events.py        不可变 Session 事实类型
+  dynamic_budget.py 模型感知预算与最终 Guard
+  budget.py        非 Coding/兼容 Section Budget
+  history.py       非 Coding/兼容历史压缩
   sections.py      ContextSection、ContextBuildReport
   build_state.py   单次构建状态
 ```
 
 Context 按顺序组装 System/Agent instructions、指令文件、Skills、History、
-Active Turn、长期/近期 Memory、Working Memory、History Retrieval、Security
-RAG、Inbox/Background events 和可选 Coding Context State。
+Active Turn、长期/近期 Memory、History Retrieval、Security RAG 和 Inbox/Background
+events。Coding 主路径从不可变 Event Log 构造唯一权威 TaskState，再按目标模型的 token
+窗口选择完整 Recent Tail/Tool Transaction；WorkingMemory 只作为 TaskState 兼容投影，
+CodingContextState 只保存 renderer/checkpoint 元数据。
 
-每个 Section 记录原始大小、预算、截断、压缩原因和传输方式。模型调用前还会
-再次进行 Token 安全窗口检查。
+非 Coding/兼容 Section 仍记录原始大小、预算、截断、压缩原因和传输方式。Coding
+记录 TaskState/recent/evidence 的实际 token 指标；模型调用前按已解析 provider、system
+messages、tool schemas、output reserve 和 safety margin 重新计算硬限制，超限时阻止调用。
+
+Coding 上下文的规范性架构、归档事务和旧方案迁移见
+[`TASK_STATE_CONTEXT_ARCHITECTURE.md`](TASK_STATE_CONTEXT_ARCHITECTURE.md)。
 
 稳定 API：
 
@@ -226,7 +236,7 @@ from runtime.context import ContextBuilder, ContextBundle, ContextPrefix
 - 解析并限制 Workspace；
 - 从父 Session 构造 Handoff；
 - 创建隔离 Task Session；
-- 继承 Working Memory；
+- 初始化/恢复权威 TaskState，并向旧 WorkingMemory API 提供投影；
 - 创建 Task-local Memory；
 - Fork Runtime 并注入 Coding Context；
 - 捕获 Workspace before/after 与 Diff；
@@ -239,8 +249,11 @@ from runtime.context import ContextBuilder, ContextBundle, ContextPrefix
 - 父 Session：用户对话与 Coding Task 摘要；
 - Task Session：一次 Coding 任务完整消息；
 - RunContext：单次执行状态；
-- CodingContextState：压缩后的工具历史；
-- WorkingMemory：行动队列、checkpoint、证据；
+- Event Log：不可变事实与稳定事件边界；
+- ArtifactStore：大型请求、日志和工具结果原文；
+- TaskState：目标、行动、证据、覆盖和执行记忆的唯一权威状态；
+- CodingContextState：generation/boundary/renderer metadata，不维护独立任务事实；
+- WorkingMemory：TaskState 的兼容 API 投影，不再独立持久化；
 - Workspace：真实且受限的代码目录；
 - Task-local Memory：完成后按置信度提升。
 

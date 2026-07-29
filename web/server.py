@@ -1980,7 +1980,7 @@ class RequestHandler(BaseHTTPRequestHandler):
     def _static_target(self, request_path: str) -> Path | None:
         path = unquote(request_path.split("?", 1)[0])
         if path in {"", "/"}:
-            relative = "index.html"
+            relative = "app/index.html"
         else:
             relative = path.lstrip("/")
             if relative.startswith("static/"):
@@ -1990,7 +1990,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         if candidate.is_relative_to(STATIC_DIR) and candidate.is_file():
             return candidate
 
-        fallback = STATIC_DIR / "index.html"
+        fallback = STATIC_DIR / "app" / "index.html"
         if fallback.exists() and "." not in Path(relative).name:
             return fallback
         return None

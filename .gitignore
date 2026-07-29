@@ -3,6 +3,7 @@ __pycache__/
 .DS_Store
 ._*
 node_modules/
+*.tsbuildinfo
 *.tar.gz
 *.egg-info/
 .pytest_cache/

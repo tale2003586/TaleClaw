@@ -41,8 +41,8 @@ class CodingSessionHandoffTests(unittest.TestCase):
 
         rendered = handoff.render_prompt_block()
         self.assertIn("<conversation-history-handoff>", rendered)
-        self.assertIn("<current-user-request>", rendered)
-        self.assertIn("把这个加入到 coding 任务里", rendered)
+        self.assertNotIn("<current-user-request>", rendered)
+        self.assertNotIn("把这个加入到 coding 任务里", rendered)
         self.assertIn("A retry budget limits", rendered)
 
     def test_handoff_prefers_coding_task_summary_metadata_for_assistant_reply(self) -> None:

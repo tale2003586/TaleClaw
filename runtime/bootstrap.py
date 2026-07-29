@@ -1,17 +1,33 @@
 import os
+from functools import partial
 
 from runtime.messaging.user_bus import MessageBus
 from applications.coding.orchestration.teammate import TEAM
-from config import MODEL_HEALTHCHECK_PURPOSES, SUBAGENT_MAX_REASONING_STEPS, WORKDIR
+from config import (
+    CONTEXT_ARTIFACT_ROOT,
+    LONG_CONTENT_MAX_BYTES,
+    LONG_CONTENT_MAX_CHARS,
+    LONG_CONTENT_MAX_TOKENS,
+    MODEL_HEALTHCHECK_PURPOSES,
+    SUBAGENT_MAX_REASONING_STEPS,
+    WORKDIR,
+)
 from models.model_pool import build_model_pool_from_env
 from runtime.agent_loop import AgentLoop
-from runtime.context import ContextBuilder, ContextMemoryService, PromptAssetsService
+from runtime.context import (
+    ArtifactStore,
+    ContextBuilder,
+    ContextMemoryService,
+    LongContentDetector,
+    PromptAssetsService,
+)
 from runtime.context.budget import ContextBudgeter
 from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
 from runtime.context.retrieval import ContextRetrievalService
 from runtime.working_memory import render_working_memory_block
 from skill_runtime import SKILL_LOADER
 from applications.coding.context_state import build_coding_context_view
+from applications.coding.compaction import SemanticCompactor
 from runtime.agent_spec import AgentSpec
 from models.model_task_runner import ModelTaskRunner
 from runtime.runtime import Runtime
@@ -116,7 +132,14 @@ def build_runtime() -> AppRuntime:
     model = model_pool.model_for("chat")
     cleanup_expired_sandboxes()
     bus = MessageBus()
-    sessions = SessionManager()
+    artifact_store = ArtifactStore(CONTEXT_ARTIFACT_ROOT)
+    long_content_detector = LongContentDetector(
+        artifact_store,
+        max_tokens=LONG_CONTENT_MAX_TOKENS,
+        max_chars=LONG_CONTENT_MAX_CHARS,
+        max_bytes=LONG_CONTENT_MAX_BYTES,
+    )
+    sessions = SessionManager(long_content_detector=long_content_detector)
     trace_store = TraceStore()
     cancellation_registry = CancellationRegistry()
     tools = build_lead_tool_registry(TEAM)
@@ -222,6 +245,10 @@ def build_runtime() -> AppRuntime:
             security_route_classifier = None
             security_knowledge_index = None
     context_budgeter = ContextBudgeter.from_env()
+    context_semantic_compactor = SemanticCompactor(
+        provider=model_pool.routed_provider("summary"),
+        model=model_pool.model_for("summary"),
+    )
     context_builder = ContextBuilder(
         budgeter=context_budgeter,
         prompt_assets_service=PromptAssetsService(
@@ -247,7 +274,11 @@ def build_runtime() -> AppRuntime:
             security_knowledge_index=security_knowledge_index,
             security_auto_context_enabled=security_auto_context_enabled,
         ),
-        coding_context_view_builder=build_coding_context_view,
+        coding_context_view_builder=partial(
+            build_coding_context_view,
+            semantic_compactor=context_semantic_compactor,
+            compaction_persister=sessions.compact,
+        ),
         context_providers=DEFAULT_CONTEXT_PROVIDERS,
         pressure_observation_enabled=_env_bool(
             "CONTEXT_PRESSURE_OBSERVATION_ENABLED",
@@ -395,6 +426,8 @@ def build_runtime() -> AppRuntime:
             if _env_bool("SEMANTIC_MEMORY_WRITE_ENABLED", False)
             else None
         ),
+        artifact_store=artifact_store,
+        long_content_detector=long_content_detector,
     )
     subagent_runner = TaskSubagentRunner(
         base_pipeline=pipeline,
@@ -415,6 +448,7 @@ def build_runtime() -> AppRuntime:
         subagent_runner=subagent_runner,
         trace_store=trace_store,
         cancellation_registry=cancellation_registry,
+        long_content_detector=long_content_detector,
     )
 
     services = RuntimeServices(
