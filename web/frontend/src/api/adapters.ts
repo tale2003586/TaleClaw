@@ -38,20 +38,39 @@ export function adaptTraceEvent(dto: TraceEventDto): TraceEvent {
   };
 }
 
-function adaptSubagent(value: unknown): SubagentSummary {
+function adaptSubagent(value: unknown, runId: string): SubagentSummary {
   const raw = asRecord(value);
+  const sessionId = asString(raw.session_id);
+  const events = Array.isArray(raw.events) ? raw.events.map((value) => {
+    const event = asRecord(value);
+    return adaptTraceEvent({
+      ...event,
+      run_id: event.run_id || runId,
+      session_id: event.session_id || sessionId,
+    });
+  }) : [];
   return {
-    sessionId: asString(raw.session_id), description: asString(raw.description),
+    sessionId, description: asString(raw.description),
     agentType: asString(raw.agent_type), success: typeof raw.success === "boolean" ? raw.success : null,
-    stopReason: asString(raw.stop_reason), summaryPreview: asString(raw.summary_preview), raw,
+    truncated: Boolean(raw.truncated), stopReason: asString(raw.stop_reason),
+    startedAt: asString(raw.started_at), finishedAt: asString(raw.finished_at),
+    promptPreview: asString(raw.prompt_preview), summaryPreview: asString(raw.summary_preview),
+    errorPreview: asString(raw.error_preview), reasoningSteps: asNumber(raw.reasoning_steps),
+    modelCalls: asNumber(raw.model_calls), toolCalls: asNumber(raw.tool_calls || raw.tool_count),
+    toolFailures: asNumber(raw.tool_failures), toolDenials: asNumber(raw.tool_denials),
+    eventCount: asNumber(raw.event_count, events.length),
+    models: Array.isArray(raw.models) ? raw.models.map((item) => asString(item)).filter(Boolean) : [],
+    tools: Array.isArray(raw.tools) ? raw.tools.map((item) => asString(item)).filter(Boolean) : [],
+    events, raw,
   };
 }
 
 export function adaptRunDetail(dto: RunDetailDto): RunDetail {
+  const runId = asString(dto.run_id);
   const events = Array.isArray(dto.events) ? dto.events.map((event) => adaptTraceEvent(asRecord(event))) : [];
-  const subagents = Array.isArray(dto.subagents) ? dto.subagents.map(adaptSubagent) : [];
+  const subagents = Array.isArray(dto.subagents) ? dto.subagents.map((item) => adaptSubagent(item, runId)) : [];
   return {
-    runId: asString(dto.run_id), runState: asRecord(dto.run_state), report: asRecord(dto.report),
+    runId, runState: asRecord(dto.run_state), report: asRecord(dto.report),
     metrics: asRecord(dto.metrics), events, subagents,
   };
 }

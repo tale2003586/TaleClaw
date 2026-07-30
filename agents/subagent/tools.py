@@ -1,5 +1,6 @@
 SUBTASK_TOOL_WHITELIST = {
     "explore": {
+        "update_task_state",
         "bash",
         "list_files",
         "rg",
@@ -8,6 +9,7 @@ SUBTASK_TOOL_WHITELIST = {
         "code_outline",
         "read_file",
         "read_files",
+        "read_artifact",
         "git_status",
         "git_diff",
         "git_log",
@@ -17,6 +19,7 @@ SUBTASK_TOOL_WHITELIST = {
         "security_rag_search",
     },
     "code": {
+        "update_task_state",
         "bash",
         "list_files",
         "rg",
@@ -25,6 +28,7 @@ SUBTASK_TOOL_WHITELIST = {
         "code_outline",
         "read_file",
         "read_files",
+        "read_artifact",
         "write_file",
         "edit_file",
         "git_status",
@@ -42,6 +46,7 @@ SUBTASK_TOOL_WHITELIST = {
         "recall_memory",
     },
     "plan": {
+        "update_task_state",
         "bash",
         "list_files",
         "rg",
@@ -50,6 +55,7 @@ SUBTASK_TOOL_WHITELIST = {
         "code_outline",
         "read_file",
         "read_files",
+        "read_artifact",
         "git_status",
         "git_diff",
         "git_log",

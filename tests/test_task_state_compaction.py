@@ -8,11 +8,52 @@ from applications.coding.compaction import (
     SemanticCompactor,
     StatePatch,
 )
-from applications.coding.task_state import Finding, Objective, TaskState
+from applications.coding.task_state import EvidenceRef, Finding, Objective, TaskState
 from runtime.context.dynamic_budget import PromptBudgetExceeded
+from models.provider import LLMResponse, ToolCall
 
 
 class TaskStateCompactionTests(unittest.TestCase):
+    def test_semantic_compactor_uses_structured_state_tool_call(self) -> None:
+        class Provider:
+            context_limit = 128_000
+
+            def __init__(self) -> None:
+                self.request = None
+
+            def chat(self, **kwargs):
+                self.request = kwargs
+                return LLMResponse(
+                    content=None,
+                    tool_calls=[ToolCall(
+                        id="call:state",
+                        name="update_task_state",
+                        arguments={
+                            "add_hypotheses": [{
+                                "claim": "the cause still needs verification"
+                            }]
+                        },
+                    )],
+                )
+
+        provider = Provider()
+        patch = SemanticCompactor(provider=provider, model="summary").propose(
+            state=TaskState(objective=Objective("diagnose")),
+            events=[{
+                "event_id": "evt:1",
+                "event_type": "assistant_message",
+                "payload": {"content": "possible cause"},
+            }],
+        )
+
+        self.assertEqual("required", provider.request["tool_choice"])
+        self.assertEqual(
+            "update_task_state",
+            provider.request["tools"][0]["function"]["name"],
+        )
+        self.assertEqual("tool", patch.origin)
+        self.assertEqual("the cause still needs verification", patch.hypotheses[0].claim)
+
     def test_semantic_chat_is_hard_guarded_before_provider_call(self) -> None:
         class TinyProvider:
             context_limit = 200
@@ -153,12 +194,39 @@ class TaskStateCompactionTests(unittest.TestCase):
             semantic_compactor=compactor,
         )
         result = coordinator.compact(
-            state=TaskState(objective=Objective("keep this objective")),
+            state=TaskState(
+                objective=Objective("keep this objective"),
+                evidence_index={
+                    "evidence:evt:tool": EvidenceRef(
+                        "evidence:evt:tool", "evt:tool", summary="read"
+                    )
+                },
+            ),
             events=[{"event_id": "evt:tool", "event_type": "tool_result", "payload": {"summary": "read"}}],
         )
 
         self.assertEqual("keep this objective", result.state.objective.summary)
         self.assertEqual("finding:1", result.state.findings[0].id)
+
+    def test_compaction_does_not_infer_task_state_from_runtime_events(self) -> None:
+        coordinator = CompactionCoordinator(
+            checkpoint_writer=lambda checkpoint: None,
+            completion_writer=lambda event: None,
+            archive_callback=lambda ids: None,
+        )
+
+        result = coordinator.compact(
+            state=TaskState(objective=Objective("inspect")),
+            events=[{
+                "event_id": "evt:tool",
+                "event_type": "tool_result",
+                "payload": {"path": "secret.py", "summary": "observed"},
+            }],
+        )
+
+        self.assertEqual({}, result.state.evidence_index)
+        self.assertEqual([], result.state.coverage.entries)
+        self.assertEqual(1, len(result.patches))
 
     def test_reducer_assigns_stable_ids_to_new_semantic_items(self) -> None:
         events = [{

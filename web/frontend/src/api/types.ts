@@ -147,8 +147,22 @@ export interface SubagentSummary {
   description: string;
   agentType: string;
   success: boolean | null;
+  truncated: boolean;
   stopReason: string;
+  startedAt: string;
+  finishedAt: string;
+  promptPreview: string;
   summaryPreview: string;
+  errorPreview: string;
+  reasoningSteps: number;
+  modelCalls: number;
+  toolCalls: number;
+  toolFailures: number;
+  toolDenials: number;
+  eventCount: number;
+  models: string[];
+  tools: string[];
+  events: TraceEvent[];
   raw: Record<string, unknown>;
 }
 

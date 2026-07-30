@@ -22,4 +22,29 @@ describe("run adapters", () => {
     expect(grouped.steps[0].events).toHaveLength(2);
     expect(grouped.runEvents[0].event).toBe("run.started");
   });
+
+  it("adapts grouped subagent metrics and events into trace records", () => {
+    const detail = adaptRunDetail({
+      run_id: "run-live",
+      subagents: [{
+        session_id: "subtask:explore:1",
+        description: "inspect runtime",
+        event_count: 2,
+        reasoning_steps: 3,
+        events: [{ event: "tool.call.completed", step: 2, payload: { tool_name: "read_file" } }],
+      }],
+    });
+    expect(detail.subagents[0]).toMatchObject({
+      sessionId: "subtask:explore:1",
+      description: "inspect runtime",
+      eventCount: 2,
+      reasoningSteps: 3,
+    });
+    expect(detail.subagents[0].events[0]).toMatchObject({
+      runId: "run-live",
+      sessionId: "subtask:explore:1",
+      event: "tool.call.completed",
+      step: 2,
+    });
+  });
 });

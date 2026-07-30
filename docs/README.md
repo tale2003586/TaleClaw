@@ -60,6 +60,7 @@
 
 ## Deployment
 
+- [新服务器 `.env` 修改手册](deployment/NEW_SERVER_ENV_GUIDE.md)
 - [taleclaw 首尔服务器完整部署手册](deployment/SEOUL_SERVER_DEPLOYMENT.md)
 
 ## Roadmap And Research

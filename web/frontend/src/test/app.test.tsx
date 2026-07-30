@@ -52,12 +52,18 @@ describe("App", () => {
   it("opens Logs and Runs and explains the empty state", async () => {
     const user = userEvent.setup();
     render(<App />);
+    const chatReply = await screen.findByText("处理完成");
     await user.click(await screen.findByRole("button", { name: /日志/ }));
     expect(await screen.findByRole("heading", { name: "系统日志" })).toBeInTheDocument();
     expect(await screen.findByText("还没有运行日志")).toBeInTheDocument();
+    expect(chatReply).toBeInTheDocument();
+    expect(chatReply).not.toBeVisible();
     await user.click(screen.getByRole("button", { name: /Runs/ }));
     expect(await screen.findByRole("heading", { name: "Runs / Trace" })).toBeInTheDocument();
     expect(await screen.findByText("还没有 Run")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /聊天/ }));
+    expect(await screen.findByText("处理完成")).toBe(chatReply);
+    expect(chatReply).toBeVisible();
   });
 });
 

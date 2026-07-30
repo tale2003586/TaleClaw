@@ -92,7 +92,10 @@ def initialize_runtime_environment() -> None:
     global _ENV_INITIALIZED
     if _ENV_INITIALIZED:
         return
-    load_dotenv_file(WORKDIR / ".env", override=True)
+    # config.py has already loaded .env before evaluating its constants. Keep
+    # the same precedence here so environment variables and constants cannot
+    # disagree after bootstrap initialization.
+    load_dotenv_file(WORKDIR / ".env", override=False)
     _configure_proxy_from_env()
     _ENV_INITIALIZED = True
 
@@ -142,7 +145,7 @@ def build_runtime() -> AppRuntime:
     sessions = SessionManager(long_content_detector=long_content_detector)
     trace_store = TraceStore()
     cancellation_registry = CancellationRegistry()
-    tools = build_lead_tool_registry(TEAM)
+    tools = build_lead_tool_registry(TEAM, artifact_store=artifact_store)
 
     provider = model_pool.routed_provider("chat")
     router = AgentRouter(

@@ -70,6 +70,7 @@
 .account-menu-actions button.danger > svg { color: var(--danger-fg); }
 .workspace { position: relative; min-width: 0; height: 100vh; height: 100dvh; min-height: 0; overflow: auto; overscroll-behavior: contain; background: var(--canvas); }
 .view-transition { height: 100%; min-height: 0; animation: view-in var(--normal) var(--ease) both; }
+.view-layer[hidden] { display: none; }
 .page { display: flex; min-height: 100%; flex-direction: column; }
 .page-header { display: flex; min-height: 64px; align-items: center; justify-content: space-between; gap: 18px; padding: 11px var(--page-gutter); border-bottom: 1px solid var(--border); background: var(--canvas); }
 .page-title { min-width: 0; }

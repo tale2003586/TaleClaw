@@ -2,6 +2,8 @@
   .trace-metrics { grid-template-columns: repeat(3, 1fr); }
   .trace-event > div:first-child { grid-template-columns: 120px minmax(0, 1fr); }
   .trace-event small { grid-column: 2; }
+  .subagent-parent-summary { align-items: stretch; flex-direction: column; }
+  .subagent-parent-metrics { width: 100%; min-width: 0; }
 }
 
 @media (max-width: 1080px) {
@@ -71,6 +73,14 @@
   .trace-event > div:first-child { grid-template-columns: 1fr; }
   .trace-event span { white-space: normal; }
   .trace-event small { grid-column: auto; }
+  .live-refresh { order: 3; width: 100%; justify-content: center; }
+  .subagent-children { padding-left: 10px; }
+  .subagent-children::before { left: 2px; }
+  .subagent-card > summary { align-items: flex-start; flex-direction: column; }
+  .subagent-card-meta { width: 100%; justify-content: space-between; }
+  .subagent-card-meta > span { overflow: hidden; text-overflow: ellipsis; }
+  .subagent-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .subagent-copy-grid { grid-template-columns: 1fr; }
   .settings-grid { display: block; }
   .settings-card { margin-bottom: 10px; }
   .setting-row, .workspace-setting-meta { align-items: stretch; flex-direction: column; }

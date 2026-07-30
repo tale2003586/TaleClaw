@@ -13,6 +13,7 @@ ALWAYS_ON_TOOLS = {
 PRELOADED_TOOLS_BY_MODE = {
     "bot": {
         "load_skill",
+        "read_artifact",
         "storage_list_files",
         "storage_read_file",
         "storage_write_file",
@@ -22,7 +23,9 @@ PRELOADED_TOOLS_BY_MODE = {
         "publish_artifact",
     },
     "coding": {
+        "update_task_state",
         "bash",
+        "read_artifact",
         "edit_file",
         "list_files",
         "rg",
@@ -50,7 +53,9 @@ PRELOADED_TOOLS_BY_MODE = {
         "compact",
     },
     "teammate": {
+        "update_task_state",
         "list_files",
+        "read_artifact",
         "rg",
         "grep",
         "nl",

@@ -52,7 +52,8 @@ export function AppShell() {
   }, [accountMenu]);
   const toggleCollapsed = () => setCollapsed((value) => { localStorage.setItem("sidebarCollapsed", value ? "0" : "1"); return !value; });
   const openView = (nextView: AppView) => { navigate(nextView); setDrawer(false); setAccountMenu(false); };
-  const Page = pages[view];
+  const ChatPage = pages.chat;
+  const SecondaryPage = view === "chat" ? null : pages[view];
   const logout = async () => { try { await postJson("/api/auth/logout", {}); } finally { window.location.assign("/login"); } };
   return <RunsProvider enabled={user.role === "admin"}>
     <main className={`app-shell ${collapsed ? "is-collapsed" : ""} ${drawer ? "is-drawer-open" : ""}`}>
@@ -80,7 +81,15 @@ export function AppShell() {
         </footer>
       </aside>
       <button className="drawer-backdrop" aria-label="关闭侧栏" onClick={() => setDrawer(false)} />
-      <section className="workspace"><IconButton className="mobile-menu" icon={Menu} label="打开侧栏" onClick={() => setDrawer(true)} /><div className="view-transition" key={view}><PageErrorBoundary resetKey={view}><Suspense fallback={<div className="view-skeleton"><Skeleton lines={8} /></div>}><Page /></Suspense></PageErrorBoundary></div></section>
+      <section className="workspace">
+        <IconButton className="mobile-menu" icon={Menu} label="打开侧栏" onClick={() => setDrawer(true)} />
+        <div className="view-transition view-layer" hidden={view !== "chat"} aria-hidden={view !== "chat"}>
+          <PageErrorBoundary resetKey="chat"><Suspense fallback={<div className="view-skeleton"><Skeleton lines={8} /></div>}><ChatPage /></Suspense></PageErrorBoundary>
+        </div>
+        {SecondaryPage && <div className="view-transition view-layer" key={view}>
+          <PageErrorBoundary resetKey={view}><Suspense fallback={<div className="view-skeleton"><Skeleton lines={8} /></div>}><SecondaryPage /></Suspense></PageErrorBoundary>
+        </div>}
+      </section>
     </main>
   </RunsProvider>;
 }

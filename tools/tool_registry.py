@@ -12,6 +12,7 @@ from tools.policy import (
 )
 from tools.governance import ToolGovernanceMetadata, governance_for_tool
 SESSION_SCOPED_TOOLS = {
+    "update_task_state",
     "bash",
     "list_files",
     "rg",
@@ -21,6 +22,7 @@ SESSION_SCOPED_TOOLS = {
     "code_outline",
     "read_file",
     "read_files",
+    "read_artifact",
     "write_file",
     "edit_file",
     "git_status",
@@ -328,13 +330,13 @@ from .schema import LEAD_TOOLS, SEARCH_TOOLS, TEAMMATE_TOOLS
 from .handlers import make_lead_handlers, make_teammate_handlers
 
 
-def build_lead_tool_registry(team=None) -> ToolRegistry:
+def build_lead_tool_registry(team=None, *, artifact_store=None) -> ToolRegistry:
     registry = ToolRegistry()
     if team is None:
         from applications.coding.orchestration.teammate import TEAM
 
         team = TEAM
-    handlers = make_lead_handlers(team)
+    handlers = make_lead_handlers(team, artifact_store=artifact_store)
 
     for schema in LEAD_TOOLS:
         name = schema["function"]["name"]
@@ -354,9 +356,9 @@ def build_lead_tool_registry(team=None) -> ToolRegistry:
     return registry
 
 
-def build_teammate_tool_registry(name: str) -> ToolRegistry:
+def build_teammate_tool_registry(name: str, *, artifact_store=None) -> ToolRegistry:
     registry = ToolRegistry()
-    handlers = make_teammate_handlers(name)
+    handlers = make_teammate_handlers(name, artifact_store=artifact_store)
 
     for schema in TEAMMATE_TOOLS + SEARCH_TOOLS:
         tool_name = schema["function"]["name"]
@@ -394,6 +396,7 @@ def _risk_for_tool(name: str) -> str:
         "code_outline",
         "read_file",
         "read_files",
+        "read_artifact",
         "retrieve_tool_result",
         "git_status",
         "git_diff",
@@ -415,6 +418,7 @@ def _risk_for_tool(name: str) -> str:
 
 def _modes_for_tool(name: str) -> set[str]:
     coding_tools = {
+        "update_task_state",
         "bash",
         "list_files",
         "rg",
@@ -424,6 +428,7 @@ def _modes_for_tool(name: str) -> set[str]:
         "code_outline",
         "read_file",
         "read_files",
+        "read_artifact",
         "retrieve_tool_result",
         "write_file",
         "edit_file",
@@ -455,6 +460,7 @@ def _modes_for_tool(name: str) -> set[str]:
     }
 
     teammate_tools = {
+        "update_task_state",
         "bash",
         "list_files",
         "rg",
@@ -517,5 +523,7 @@ def _modes_for_tool(name: str) -> set[str]:
     }:
         enabled.add("coding")
     if name in {"memorize", "recall_memory", "tool_search", "retrieve_tool_result"}:
+        enabled.update({"bot", "coding", "teammate"})
+    if name == "read_artifact":
         enabled.update({"bot", "coding", "teammate"})
     return enabled

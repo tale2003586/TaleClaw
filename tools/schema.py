@@ -284,6 +284,43 @@ BASE_TOOLS = [
         ["files"],
     ),
     function_tool(
+        "read_artifact",
+        (
+            "Read or search immutable text referenced by an artifact:// URI. Use this "
+            "when a user message or runtime prompt says that long content was externalized "
+            "to an artifact. Reads are paginated by character offset; continue with the "
+            "returned next_offset when truncated."
+        ),
+        {
+            "artifact_ref": {
+                "type": "string",
+                "description": "Artifact URI or id, such as artifact://art_abc123 or art_abc123.",
+            },
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Starting character offset for a paginated read. Defaults to 0.",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 200,
+                "maximum": 50000,
+                "description": "Maximum characters to return. Defaults to 12000.",
+            },
+            "query": {
+                "type": "string",
+                "description": "Optional exact text to search for instead of reading a range.",
+            },
+            "max_results": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 50,
+                "description": "Maximum matches when query is provided. Defaults to 20.",
+            },
+        },
+        ["artifact_ref"],
+    ),
+    function_tool(
         "retrieve_tool_result",
         (
             "Retrieve exact text from a previously compressed tool result by result_id. "
@@ -581,6 +618,190 @@ SKILL_TOOLS = [
 
 TASK_TOOLS = [
     function_tool(
+        "update_task_state",
+        (
+            "Apply explicit durable TaskState changes. Use after reviewing tool "
+            "results when the objective, phase, evidence, findings, decisions, "
+            "actions, questions, or constraints genuinely changed. The runtime "
+            "normalizes these arguments into a StatePatch and validates references "
+            "and transitions. If validation fails, correct the arguments and retry."
+        ),
+        {
+            "phase": {
+                "type": "string",
+                "enum": [
+                    "intake", "planning", "exploration", "implementation",
+                    "verification", "finalization", "blocked",
+                ],
+            },
+            "add_evidence": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "event_id": {"type": "string"},
+                        "kind": {"type": "string"},
+                        "summary": {"type": "string"},
+                        "artifact_ref": {"type": "string"},
+                        "tool_result_ref": {"type": "string"},
+                        "path": {"type": "string"},
+                        "lines": {"type": "string"},
+                        "content_hash": {"type": "string"},
+                        "uri": {"type": "string"},
+                    },
+                    "required": ["id", "event_id", "summary"],
+                },
+            },
+            "add_plan_items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "description": {"type": "string"},
+                        "status": {
+                            "type": "string",
+                            "enum": ["pending", "in_progress", "awaiting_verification", "completed", "failed", "superseded"],
+                        },
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                        "depends_on": {"type": "array", "items": {"type": "string"}},
+                        "supersedes": {"type": "string"},
+                    },
+                    "required": ["description"],
+                },
+            },
+            "add_completed": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "description": {"type": "string"},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                        "source_event_ids": {"type": "array", "items": {"type": "string"}},
+                        "covered_scope": {"type": "array", "items": {"type": "string"}},
+                        "open_questions": {"type": "array", "items": {"type": "string"}},
+                        "needs_parent_verification": {"type": "boolean"},
+                        "supersedes": {"type": "string"},
+                    },
+                    "required": ["description"],
+                },
+            },
+            "add_findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "claim": {"type": "string"},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                        "supersedes": {"type": "string"},
+                    },
+                    "required": ["claim", "evidence_refs"],
+                },
+            },
+            "add_hypotheses": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "claim": {"type": "string"},
+                        "rationale": {"type": "string"},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                        "supersedes": {"type": "string"},
+                    },
+                    "required": ["claim"],
+                },
+            },
+            "add_decisions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "choice": {"type": "string"},
+                        "rationale": {"type": "string"},
+                        "alternatives_rejected": {"type": "array", "items": {"type": "string"}},
+                        "related_findings": {"type": "array", "items": {"type": "string"}},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                        "supersedes": {"type": "string"},
+                    },
+                    "required": ["choice"],
+                },
+            },
+            "add_pending_actions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "description": {"type": "string"},
+                        "status": {
+                            "type": "string",
+                            "enum": ["pending", "in_progress", "awaiting_verification", "completed", "failed", "superseded"],
+                        },
+                        "priority": {"type": "string"},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                        "blocked_by": {"type": "array", "items": {"type": "string"}},
+                        "scope_files": {"type": "array", "items": {"type": "string"}},
+                        "supersedes": {"type": "string"},
+                    },
+                    "required": ["description"],
+                },
+            },
+            "complete_actions": {"type": "array", "items": {"type": "string"}},
+            "add_open_questions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "question": {"type": "string"},
+                        "reason": {"type": "string"},
+                        "resolution_strategy": {"type": "string"},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                        "supersedes": {"type": "string"},
+                    },
+                    "required": ["question"],
+                },
+            },
+            "resolve_questions": {"type": "array", "items": {"type": "string"}},
+            "resolve_hypotheses": {"type": "array", "items": {"type": "string"}},
+            "add_blockers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "description": {"type": "string"},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                        "source_event_ref": {"type": "string"},
+                        "resolution_strategy": {"type": "string"},
+                        "supersedes": {"type": "string"},
+                    },
+                    "required": ["description"],
+                },
+            },
+            "artifact_refs": {"type": "array", "items": {"type": "string"}},
+            "update_constraints": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "text": {"type": "string"},
+                        "source_event_ref": {"type": "string"},
+                        "required": {"type": "boolean"},
+                    },
+                    "required": ["text"],
+                },
+            },
+        },
+    ),
+    function_tool(
         "task_create",
         "Create a persistent task in the task system.",
         {
@@ -649,6 +870,8 @@ TASK_TOOLS = [
         ["task_id"],
     ),
 ]
+
+UPDATE_TASK_STATE_TOOL = TASK_TOOLS[0]
 
 
 BACKGROUND_TOOLS = [

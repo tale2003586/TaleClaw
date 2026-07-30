@@ -129,7 +129,8 @@ class LongContentDetector:
         instruction = _extract_instruction(original, self.instruction_chars)
         descriptor = (
             f"Large content was externalized to {ref.storage_uri} "
-            f"({ref.name}; {assessment.token_count} tokens, {assessment.byte_count} bytes)."
+            f"({ref.name}; {assessment.token_count} tokens, {assessment.byte_count} bytes). "
+            "Use read_artifact with this URI to inspect the complete content or search it."
         )
         return f"{instruction}\n\n{descriptor}\nartifact_ref: {ref.artifact_id}"
 

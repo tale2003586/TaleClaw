@@ -30,6 +30,7 @@ from config import (
     PROMPT_HARD_INPUT_RATIO,
     PROMPT_SAFETY_MARGIN_TOKENS,
     PROMPT_SOFT_COMPACTION_RATIO,
+    TASK_STATE_CONTEXT_ENABLED,
 )
 from runtime.context.events import ContextEventType
 from runtime.context.dynamic_budget import (
@@ -384,6 +385,12 @@ class ReasoningLoop:
                 trace_store=trace_store,
                 reasoning_step=reasoning_steps,
             )
+            self._maybe_inject_task_state_update_reminder(
+                session,
+                profile,
+                response.tool_calls,
+                reasoning_step=reasoning_steps,
+            )
             self._checkpoint_reasoning_step(
                 session,
                 profile,
@@ -496,6 +503,42 @@ class ReasoningLoop:
                     "step": reasoning_steps,
                     "handled_by": "context_budget",
                 })
+
+    def _maybe_inject_task_state_update_reminder(
+        self,
+        session,
+        profile,
+        tool_calls,
+        *,
+        reasoning_step: int,
+    ) -> None:
+        if not TASK_STATE_CONTEXT_ENABLED:
+            return
+        if str(getattr(profile, "tool_mode", "") or "") != "coding":
+            return
+        names = [str(getattr(call, "name", "") or "") for call in tool_calls or []]
+        if not names or all(name == "update_task_state" for name in names):
+            return
+        session.add_message(
+            "user",
+            (
+                '<runtime-task-state-reminder source="runtime" instructions="true" '
+                f'step="{reasoning_step}">\n'
+                "Review the tool results from the preceding step. If they establish "
+                "a durable change to phase, evidence, findings, hypotheses, decisions, "
+                "pending actions, open questions, or constraints, call "
+                "update_task_state in this next response with only those changes. "
+                "You may call it alongside the next task tool. If no durable state "
+                "changed, continue without calling it. Never infer a state update from "
+                "a failed or unverified result.\n"
+                "</runtime-task-state-reminder>"
+            ),
+            metadata={
+                "kind": "runtime_task_state_update_reminder",
+                "source": "runtime-generated",
+                "step": reasoning_step,
+            },
+        )
 
     def _reasoning_step(
         self,
