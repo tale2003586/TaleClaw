@@ -11,8 +11,6 @@ import inspect
 import json
 from typing import Any, Callable, ContextManager, Iterable, Sequence
 
-from runtime.token_estimator import estimate_tokens
-from runtime.units.json_repair import repair_json_object
 from runtime.context.dynamic_budget import (
     calculate_dynamic_prompt_budget,
     enforce_hard_token_guard,
@@ -37,9 +35,6 @@ from .task_state import (
     TaskPhase,
     TaskState,
 )
-
-
-MAX_TASK_STATE_TOKENS = 8_000
 
 
 class StateValidationError(ValueError):
@@ -214,7 +209,10 @@ class StatePatch:
             objective=_coerce(Objective, payload.get("objective")),
             constraints=_coerce_many(Constraint, payload.get("constraints") or payload.get("update_constraints")),
             plan_items=_coerce_many(PlanItem, payload.get("plan_items") or payload.get("plan") or payload.get("add_plan_items")),
-            completed=_coerce_many(CompletedItem, payload.get("completed")),
+            completed=_coerce_many(
+                CompletedItem,
+                payload.get("completed") or payload.get("add_completed"),
+            ),
             findings=_coerce_many(Finding, [
                 *(payload.get("findings") or []),
                 *(payload.get("add_findings") or []),
@@ -224,8 +222,16 @@ class StatePatch:
             decisions=_coerce_many(Decision, payload.get("decisions") or payload.get("add_decisions")),
             pending_actions=_coerce_many(Action, payload.get("pending_actions") or payload.get("add_pending_actions")),
             open_questions=_coerce_many(OpenQuestion, payload.get("open_questions") or payload.get("add_open_questions")),
-            blockers=_coerce_many(Blocker, payload.get("blockers")),
-            evidence=_coerce_many(EvidenceRef, payload.get("evidence") or payload.get("evidence_refs")),
+            blockers=_coerce_many(
+                Blocker,
+                payload.get("blockers") or payload.get("add_blockers"),
+            ),
+            evidence=_coerce_many(
+                EvidenceRef,
+                payload.get("evidence")
+                or payload.get("evidence_refs")
+                or payload.get("add_evidence"),
+            ),
             artifact_refs=[str(value) for value in payload.get("artifact_refs") or [] if value],
             coverage=_coerce_many(CoverageEntry, payload.get("coverage")),
             plan_transitions=_coerce_transitions(payload.get("plan_transitions")),
@@ -375,7 +381,8 @@ class SemanticCompactor:
         if proposal is None:
             return StatePatch(origin="semantic")
         patch = StatePatch.from_payload(proposal)
-        patch.origin = "semantic"
+        # Model-authored changes enter through the structured state tool protocol.
+        patch.origin = "tool"
         if not patch.source_event_ids:
             patch.source_event_ids = [
                 _event_id(event) for event in events if _event_id(event)
@@ -394,30 +401,28 @@ class SemanticCompactor:
         return patch
 
     def _propose_with_chat(self, *, state: TaskState, events: Sequence[dict[str, Any]]) -> dict[str, Any]:
+        from tools.schema import UPDATE_TASK_STATE_TOOL
+
         allowed_evidence = sorted(state.evidence_index)
         event_payload = [_semantic_event_view(event) for event in events]
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "You compact coding task continuity into a JSON StatePatch. "
-                    "Never rewrite the full TaskState, never change objective, never "
-                    "invent evidence or file/test/tool facts, and return JSON only."
+                    "You compact coding task continuity by calling update_task_state. "
+                    "Never rewrite the full TaskState, never change the objective, and "
+                    "never invent evidence or file/test/tool facts. Call the tool once "
+                    "with only durable changes supported by the supplied state/events."
                 ),
             },
             {
                 "role": "user",
                 "content": json.dumps({
-                    "patch_schema": {
-                        "add_findings": [], "update_findings": [],
-                        "add_hypotheses": [], "resolve_hypotheses": [],
-                        "add_decisions": [], "add_pending_actions": [],
-                        "complete_actions": [], "add_open_questions": [],
-                        "resolve_questions": [], "update_constraints": [],
-                    },
                     "rules": {
                         "finding_requires_evidence_refs": True,
-                        "allowed_evidence_refs": allowed_evidence,
+                        "existing_evidence_refs": allowed_evidence,
+                        "new_evidence_must_reference_supplied_event": True,
+                        "new_evidence_requires_explicit_id": True,
                         "latest_user_message_may_supersede_state": True,
                     },
                     "task_state": state.to_dict(),
@@ -428,7 +433,7 @@ class SemanticCompactor:
         budget = calculate_dynamic_prompt_budget(
             provider=self._provider,
             system_messages=[messages[0]],
-            tools=[],
+            tools=[UPDATE_TASK_STATE_TOOL],
             reserved_output_tokens=self._max_tokens,
         )
         enforce_hard_token_guard(
@@ -439,26 +444,39 @@ class SemanticCompactor:
         response = self._provider.chat(
             model=self._model,
             messages=messages,
-            tools=[],
-            tool_choice="none",
+            tools=[UPDATE_TASK_STATE_TOOL],
+            tool_choice="required",
             max_tokens=self._max_tokens,
         )
-        repaired = repair_json_object(str(getattr(response, "content", "") or ""))
-        if not repaired.ok or repaired.payload is None:
-            raise CompactionError(f"semantic compactor returned invalid JSON: {repaired.error}")
-        return repaired.payload
+        calls = [
+            call
+            for call in list(getattr(response, "tool_calls", []) or [])
+            if str(getattr(call, "name", "") or "") == "update_task_state"
+        ]
+        if len(calls) != 1:
+            raise CompactionError(
+                "semantic compactor must call update_task_state exactly once"
+            )
+        arguments = getattr(calls[0], "arguments", None)
+        if not isinstance(arguments, dict):
+            raise CompactionError("update_task_state arguments must be an object")
+        return arguments
 
 
 def validate_state_patch(
     state: TaskState,
     patch: StatePatch,
     *,
-    max_tokens: int = MAX_TASK_STATE_TOKENS,
+    max_tokens: int | None = None,
 ) -> None:
+    # Kept for API compatibility. StatePatch validation is structural and must not
+    # reject an otherwise valid task state merely because its serialized form is
+    # large; prompt budgeting/compaction owns context size.
+    del max_tokens
     _assign_patch_item_ids(patch)
     _assign_patch_id(patch)
-    if patch.origin == "semantic" and patch.objective is not None:
-        raise StateValidationError("semantic compaction cannot change the user objective")
+    if patch.objective is not None:
+        raise StateValidationError("TaskState patches cannot change the user objective")
     if patch.origin == "semantic":
         if patch.evidence:
             raise StateValidationError("semantic compaction cannot create EvidenceRef values")
@@ -497,13 +515,14 @@ def validate_state_patch(
     _validate_transitions(state.pending_actions, patch.action_transitions, "action")
     _validate_transitions(state.open_questions, patch.question_transitions, "question")
     _validate_transitions(state.hypotheses, patch.hypothesis_transitions, "hypothesis")
-    candidate = _apply_patch(state, patch, validate=False)
-    rendered_state = json.dumps(candidate.to_dict(), ensure_ascii=False, default=str)
-    if estimate_tokens([{"role": "user", "content": rendered_state}]) > max_tokens:
-        raise StateValidationError(f"TaskState exceeds {max_tokens} token limit")
 
 
-def reduce_task_state(state: TaskState, patch: StatePatch, *, max_tokens: int = MAX_TASK_STATE_TOKENS) -> TaskState:
+def reduce_task_state(
+    state: TaskState,
+    patch: StatePatch,
+    *,
+    max_tokens: int | None = None,
+) -> TaskState:
     validate_state_patch(state, patch, max_tokens=max_tokens)
     return _apply_patch(state, patch, validate=False)
 
@@ -733,14 +752,12 @@ class CompactionCoordinator:
         completion_writer: Callable[[dict[str, Any]], Any],
         archive_callback: Callable[[list[str]], Any],
         transaction_factory: Callable[[], ContextManager[Any]] | None = None,
-        extractor: DeterministicEventExtractor | None = None,
         semantic_compactor: SemanticCompactor | None = None,
     ) -> None:
         self.checkpoint_writer = checkpoint_writer
         self.completion_writer = completion_writer
         self.archive_callback = archive_callback
         self.transaction_factory = transaction_factory
-        self.extractor = extractor or DeterministicEventExtractor()
         self.semantic_compactor = semantic_compactor or SemanticCompactor()
 
     def compact(
@@ -749,16 +766,14 @@ class CompactionCoordinator:
         state: TaskState,
         events: Sequence[dict[str, Any]],
         compacted_until_event_id: str | None = None,
-        max_tokens: int = MAX_TASK_STATE_TOKENS,
+        max_tokens: int | None = None,
     ) -> CompactionResult:
         eligible = _closed_event_prefix(events, compacted_until_event_id)
         if not eligible:
             return CompactionResult(deepcopy(state), None, compacted_until_event_id, [], [])
-        try:
-            deterministic = self.extractor.extract(eligible)
-            candidate = reduce_task_state(state, deterministic, max_tokens=max_tokens)
-        except Exception as exc:
-            raise CompactionError("deterministic extraction or validation failed") from exc
+        # Runtime event matching must not infer TaskState mutations. State changes
+        # are accepted only through an explicit model-authored StatePatch tool call.
+        candidate = deepcopy(state)
         semantic: StatePatch | None = None
         semantic_error: Exception | None = None
         for _attempt in range(2):
@@ -790,7 +805,13 @@ class CompactionCoordinator:
                 self.archive_callback([_event_id(event) for event in eligible])
         except Exception as exc:
             raise CompactionError("compaction persistence failed; boundary was not advanced") from exc
-        return CompactionResult(candidate, checkpoint, boundary, [_event_id(event) for event in eligible], [deterministic, semantic])
+        return CompactionResult(
+            candidate,
+            checkpoint,
+            boundary,
+            [_event_id(event) for event in eligible],
+            [semantic],
+        )
 
     coordinate = compact
 

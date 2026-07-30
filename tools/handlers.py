@@ -18,6 +18,7 @@ from applications.coding.orchestration.background_task import BG
 from config import (
     CODE_OUTLINE_LARGE_FILE_LINES,
     CODE_OUTLINE_MAX_CHARS,
+    CONTEXT_ARTIFACT_ROOT,
     ORCHESTRATION_REPAIR_ROUNDS,
     REPO_MAP_DEFAULT_MAX_DEPTH,
     REPO_MAP_MAX_CHARS,
@@ -25,6 +26,7 @@ from config import (
     WORKING_MEMORY_CHECKPOINT_ENABLED,
     WORKDIR,
 )
+from runtime.context.artifacts import ArtifactNotFoundError, ArtifactStore
 from runtime.messaging import AgentMessage, MessageType, render_agent_message
 from runtime.messaging.team_bus import BUS
 from agents.subagent.orchestration_state import (
@@ -2533,6 +2535,7 @@ BASE_HANDLERS = {
 }
 
 TASK_HANDLERS = {
+    "update_task_state": lambda **kw: _update_task_state(**kw),
     "task_create": lambda **kw: TASKS.create(
         kw["subject"],
         kw.get("description", "")
@@ -2546,6 +2549,71 @@ TASK_HANDLERS = {
     "task_list": lambda **kw: TASKS.list_all(),
     "task_get": lambda **kw: TASKS.get(kw["task_id"]),
 }
+
+
+def _update_task_state(**kwargs):
+    from applications.coding.compaction import StatePatch, reduce_task_state
+    from applications.coding.task_state import (
+        ensure_task_state,
+        load_task_state,
+        save_task_state,
+    )
+
+    session = kwargs.pop("_session", None)
+    if session is None:
+        raise ValueError("update_task_state requires an active session")
+    state = load_task_state(session)
+    if state is None:
+        objective = next(
+            (
+                str(message.get("content") or "")
+                for message in reversed(list(getattr(session, "messages", []) or []))
+                if isinstance(message, dict)
+                and str(message.get("role") or "") == "user"
+            ),
+            "Complete the current coding task",
+        )
+        state = ensure_task_state(session, objective_summary=objective[:300])
+    patch = StatePatch.from_payload(kwargs)
+    patch.origin = "tool"
+    if not _state_patch_has_changes(patch):
+        raise ValueError("update_task_state requires at least one state change")
+    updated = reduce_task_state(state, patch)
+    save_task_state(session, updated)
+    return json.dumps(
+        {
+            "status": "updated",
+            "task_state_version": updated.version,
+            "patch_id": patch.patch_id,
+            "instruction": (
+                "TaskState updated. If another state change is needed, call "
+                "update_task_state again with only the additional change."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
+def _state_patch_has_changes(patch) -> bool:
+    return bool(
+        patch.phase is not None
+        or patch.constraints
+        or patch.plan_items
+        or patch.completed
+        or patch.findings
+        or patch.hypotheses
+        or patch.decisions
+        or patch.pending_actions
+        or patch.open_questions
+        or patch.blockers
+        or patch.evidence
+        or patch.artifact_refs
+        or patch.coverage
+        or patch.plan_transitions
+        or patch.action_transitions
+        or patch.question_transitions
+        or patch.hypothesis_transitions
+    )
 
 BACKGROUND_HANDLERS = {
     "background_run": lambda **kw: BG.run(kw["command"]),
@@ -2809,9 +2877,10 @@ def _trace_subagent_rejection(
     )
 
 
-def make_lead_handlers(team):
+def make_lead_handlers(team, *, artifact_store=None):
     return {
         **BASE_HANDLERS,
+        **make_artifact_handlers(artifact_store),
         **TASK_HANDLERS,
         **BACKGROUND_HANDLERS,
         **MEMORY_HANDLERS,
@@ -2857,9 +2926,10 @@ def make_lead_handlers(team):
 
 
 
-def make_teammate_handlers(name: str):
+def make_teammate_handlers(name: str, *, artifact_store=None):
     return {
         **BASE_HANDLERS,
+        **make_artifact_handlers(artifact_store),
         **TASK_HANDLERS,
         **BACKGROUND_HANDLERS,
         **make_protocol_handlers(name),
@@ -2876,9 +2946,6 @@ def make_teammate_handlers(name: str):
         ),
         "read_inbox": lambda **kw: _read_structured_inbox(name),
     }
-
-TEAMMATE_HANDLER = make_teammate_handlers("")
-
 
 MEMORY = MemoryStore()
 TASK_MEMORY_ROOT = (WORKDIR / ".coding_applications").resolve()
@@ -3028,6 +3095,113 @@ STORAGE_HANDLERS = {
         _session=kw.get("_session"),
     ),
 }
+
+
+DEFAULT_ARTIFACT_READ_CHARS = 12_000
+MAX_ARTIFACT_READ_CHARS = 50_000
+
+
+def run_read_artifact(
+    artifact_ref: str,
+    offset: int = 0,
+    limit: int | None = None,
+    query: str | None = None,
+    max_results: int = 20,
+    *,
+    artifact_store: ArtifactStore | None = None,
+) -> str:
+    """Read a bounded range from an immutable context artifact, or search it."""
+    store = artifact_store or ArtifactStore(CONTEXT_ARTIFACT_ROOT)
+    reference = str(artifact_ref or "").strip()
+    if not reference:
+        raise ValueError("read_artifact requires a non-empty artifact_ref.")
+    try:
+        metadata = store.get_artifact_metadata(reference)
+    except ArtifactNotFoundError as exc:
+        raise ValueError(f"Artifact not found: {reference}") from exc
+    text_artifact_types = {"text", "user_input", "tool_result", "json", "log"}
+    if (
+        metadata.artifact_type not in text_artifact_types
+        and not metadata.mime_type.startswith("text/")
+        and metadata.mime_type not in {"application/json", "application/xml"}
+    ):
+        raise ValueError(
+            f"Artifact is not readable as text: {metadata.mime_type or 'unknown mime type'}"
+        )
+
+    if query is not None:
+        needle = str(query)
+        if not needle:
+            raise ValueError("read_artifact query must not be empty.")
+        bounded_results = max(1, min(int(max_results or 20), 50))
+        matches = store.search_artifact(
+            reference,
+            needle,
+            max_results=bounded_results,
+        )
+        bounded_matches = [
+            {
+                "start": match["start"],
+                "end": match["end"],
+                "line": match["line"],
+                "snippet": match["snippet"],
+            }
+            for match in matches
+        ]
+        return json.dumps(
+            {
+                "artifact_ref": metadata.storage_uri,
+                "name": metadata.name,
+                "query": needle,
+                "matches": bounded_matches,
+                "match_count": len(bounded_matches),
+                "results_limited_to": bounded_results,
+            },
+            ensure_ascii=False,
+        )
+
+    start = max(0, int(offset or 0))
+    if start > metadata.size_chars:
+        raise ValueError(
+            f"read_artifact offset {start} exceeds artifact size {metadata.size_chars}."
+        )
+    requested_limit = DEFAULT_ARTIFACT_READ_CHARS if limit is None else int(limit)
+    bounded_limit = max(200, min(requested_limit, MAX_ARTIFACT_READ_CHARS))
+    end = min(metadata.size_chars, start + bounded_limit)
+    content = store.read_artifact_range(reference, start, end)
+    truncated = end < metadata.size_chars
+    header = json.dumps(
+        {
+            "artifact_ref": metadata.storage_uri,
+            "name": metadata.name,
+            "mime_type": metadata.mime_type,
+            "size_chars": metadata.size_chars,
+            "offset": start,
+            "returned_chars": len(content),
+            "truncated": truncated,
+            "next_offset": end if truncated else None,
+        },
+        ensure_ascii=False,
+    )
+    return f"{header}\n\n{content}"
+
+
+def make_artifact_handlers(artifact_store=None):
+    return {
+        "read_artifact": lambda **kw: run_read_artifact(
+            kw["artifact_ref"],
+            kw.get("offset", 0),
+            kw.get("limit"),
+            kw.get("query"),
+            kw.get("max_results", 20),
+            artifact_store=artifact_store,
+        ),
+    }
+
+
+# Compatibility alias retained for callers importing the historical handler map.
+TEAMMATE_HANDLER = make_teammate_handlers("")
+
 
 SANDBOX_HANDLERS = {
     "sandbox_list_files": lambda **kw: run_sandbox_list(

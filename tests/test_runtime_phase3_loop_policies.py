@@ -79,6 +79,10 @@ def test_tool_batch_policy_only_selects_homogeneous_bounded_calls():
 def test_working_memory_policy_is_explicitly_scoped_to_coding(monkeypatch):
     policy = WorkingMemoryPolicy()
     monkeypatch.setattr("runtime.execution.loop_policies.WORKING_MEMORY_CHECKPOINT_ENABLED", True)
+    monkeypatch.setattr("runtime.execution.loop_policies.TASK_STATE_CONTEXT_ENABLED", False)
 
     assert policy.enabled_for(CODING_AGENT_SPEC)
     assert not policy.enabled_for(BOT_AGENT_SPEC)
+
+    monkeypatch.setattr("runtime.execution.loop_policies.TASK_STATE_CONTEXT_ENABLED", True)
+    assert not policy.enabled_for(CODING_AGENT_SPEC)

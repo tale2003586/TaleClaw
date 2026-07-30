@@ -1,9 +1,10 @@
 {
-  "registered_count": 50,
+  "registered_count": 52,
   "chat_visible": [
     "load_skill",
     "memorize",
     "publish_artifact",
+    "read_artifact",
     "recall_memory",
     "sandbox_list_files",
     "sandbox_read_file",
@@ -30,6 +31,7 @@
     "memorize",
     "nl",
     "parallel_tasks",
+    "read_artifact",
     "read_file",
     "read_files",
     "read_inbox",
@@ -42,6 +44,7 @@
     "task_list",
     "task_update",
     "tool_search",
+    "update_task_state",
     "write_file"
   ],
   "critical_schema_sha256": {

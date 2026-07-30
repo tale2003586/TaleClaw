@@ -20,6 +20,7 @@ export interface RuntimeHealthResponse {
 }
 
 export interface MessageDto {
+  seq?: number;
   role: string;
   content?: string;
   name?: string;
@@ -35,9 +36,17 @@ export interface SessionDto {
   current_mode?: string;
   updated_at?: string;
   messages?: MessageDto[];
+  message_page?: {
+    has_more: boolean;
+    next_before?: number | null;
+  };
 }
 
-export interface SessionsResponse { sessions: SessionDto[] }
+export interface SessionsResponse {
+  sessions: SessionDto[];
+  has_more?: boolean;
+  next_offset?: number | null;
+}
 export interface SessionResponse { session: SessionDto }
 
 export interface MemoryFile { name: string; content: string }
@@ -138,8 +147,22 @@ export interface SubagentSummary {
   description: string;
   agentType: string;
   success: boolean | null;
+  truncated: boolean;
   stopReason: string;
+  startedAt: string;
+  finishedAt: string;
+  promptPreview: string;
   summaryPreview: string;
+  errorPreview: string;
+  reasoningSteps: number;
+  modelCalls: number;
+  toolCalls: number;
+  toolFailures: number;
+  toolDenials: number;
+  eventCount: number;
+  models: string[];
+  tools: string[];
+  events: TraceEvent[];
   raw: Record<string, unknown>;
 }
 

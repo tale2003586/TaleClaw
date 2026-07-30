@@ -97,6 +97,63 @@ class ModelPoolEnvTests(unittest.TestCase):
         self.assertEqual("gpt-4o", provider.tokenizer_model)
         self.assertTrue(provider.bpe_tokenizer_enabled)
 
+    def test_provider_user_agent_is_scoped_to_its_client(self) -> None:
+        env = {
+            "LLM_PROVIDER": "openai_relay",
+            "OPENAI_RELAY_API_KEY": "relay-key",
+            "OPENAI_RELAY_BASE_URL": "http://relay.example",
+            "OPENAI_RELAY_MODEL": "gpt-test",
+            "OPENAI_RELAY_USER_AGENT": "codex-cli",
+            "DEEPSEEK_API_KEY": "deepseek-key",
+        }
+        client_calls = []
+
+        def client_factory(**kwargs):
+            client_calls.append(kwargs)
+            return FakeChatClient("ok")
+
+        pool = build_model_pool_from_env(env, client_factory=client_factory)
+
+        self.assertEqual("codex-cli", pool.profile_for("chat").user_agent)
+        pool.client_for_profile("openai_relay")
+        pool.client_for_profile("deepseek")
+
+        self.assertEqual(
+            {"User-Agent": "codex-cli"},
+            client_calls[0]["default_headers"],
+        )
+        self.assertNotIn("default_headers", client_calls[1])
+
+    def test_provider_json_user_agent_overrides_environment(self) -> None:
+        env = {
+            "LLM_PROVIDER": "relay",
+            "RELAY_USER_AGENT": "environment-client",
+            "LLM_PROVIDERS_JSON": json.dumps({
+                "relay": {
+                    "api_key": "relay-key",
+                    "base_url": "http://relay.example",
+                    "model": "gpt-test",
+                    "user_agent": "profile-client",
+                },
+            }),
+        }
+        client_calls = []
+
+        pool = build_model_pool_from_env(
+            env,
+            client_factory=lambda **kwargs: (
+                client_calls.append(kwargs) or FakeChatClient("ok")
+            ),
+        )
+
+        pool.client_for_profile("relay")
+
+        self.assertEqual("profile-client", pool.profile_for("chat").user_agent)
+        self.assertEqual(
+            {"User-Agent": "profile-client"},
+            client_calls[0]["default_headers"],
+        )
+
     def test_gemini_provider_uses_openai_compatibility_defaults(self) -> None:
         env = {
             "LLM_PROVIDER": "gemini",

@@ -101,7 +101,7 @@ class CodingContextStateTests(unittest.TestCase):
         rendered = "\n".join(str(message.get("content") or "") for message in context.messages)
         self.assertIn("<coding-context-state", rendered)
         self.assertIn("do_not_repeat", rendered)
-        self.assertIn("old_a.py", rendered)
+        self.assertNotIn("old_a.py", rendered)
         self.assertIn("recent-marker", rendered)
         # A bounded evidence summary may retain the marker, but the 900-line raw
         # tool body must no longer be present in the prompt tail.

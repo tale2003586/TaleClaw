@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import math
 
-from config import REASONING_FINISHING_REMINDER_RATIO, WORKING_MEMORY_CHECKPOINT_ENABLED
+from config import (
+    REASONING_FINISHING_REMINDER_RATIO,
+    TASK_STATE_CONTEXT_ENABLED,
+    WORKING_MEMORY_CHECKPOINT_ENABLED,
+)
 from runtime.trace.trace_store import event_preview
 from runtime.working_memory import (
     checkpoint_reasoning_step,
@@ -187,6 +191,8 @@ class WorkingMemoryPolicy:
             checkpoint_callback(session)
 
     def complete(self, session, *, final_answer: str, step: int) -> None:
+        if TASK_STATE_CONTEXT_ENABLED:
+            return
         complete_working_memory(session, final_answer=final_answer, step=step)
 
     def stop(
@@ -213,6 +219,7 @@ class WorkingMemoryPolicy:
     def enabled_for(self, profile) -> bool:
         return bool(
             WORKING_MEMORY_CHECKPOINT_ENABLED
+            and not TASK_STATE_CONTEXT_ENABLED
             and str(getattr(profile, "tool_mode", "") or "") == "coding"
         )
 

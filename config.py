@@ -1,6 +1,14 @@
 import os
 from pathlib import Path
 
+from runtime.env_loader import load_dotenv_file
+
+
+# Configuration constants are evaluated at import time. Load the project env
+# first so entrypoints cannot freeze fallback values before bootstrap runs.
+PROJECT_ROOT = Path(__file__).resolve().parent
+load_dotenv_file(PROJECT_ROOT / ".env", override=False)
+
 
 def _env_float(name: str, default: float) -> float:
     try:

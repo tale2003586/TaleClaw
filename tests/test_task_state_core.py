@@ -13,6 +13,7 @@ from applications.coding.task_state import (
     Action,
     EvidenceRef,
     Finding,
+    Hypothesis,
     ItemStatus,
     Objective,
     PlanItem,
@@ -23,6 +24,7 @@ from applications.coding.task_state import (
     migrate_working_memory_payload,
 )
 from runtime.sessions.session import Session
+from tools.handlers import TASK_HANDLERS
 
 
 class TaskStateCoreTests(unittest.TestCase):
@@ -121,6 +123,49 @@ class TaskStateCoreTests(unittest.TestCase):
         illegal = StatePatch(phase=TaskPhase.VERIFICATION)
         with self.assertRaisesRegex(StateValidationError, "illegal phase"):
             validate_state_patch(state, illegal)
+
+    def test_validator_does_not_reject_large_but_structurally_valid_state(self) -> None:
+        state = TaskState(objective=Objective("x" * 40_000))
+        patch = StatePatch(
+            hypotheses=[
+                Hypothesis("hypothesis:large", "still needs verification")
+            ]
+        )
+
+        updated = reduce_task_state(state, patch, max_tokens=1)
+
+        self.assertEqual("hypothesis:large", updated.hypotheses[0].id)
+
+    def test_update_task_state_tool_normalizes_patch_and_allows_retry(self) -> None:
+        session = Session(id="task:state-tool", active_agent="coding")
+        session.add_message("user", "inspect state updates")
+
+        with self.assertRaisesRegex(StateValidationError, "unknown evidence"):
+            TASK_HANDLERS["update_task_state"](
+                _session=session,
+                add_findings=[{
+                    "claim": "unsupported",
+                    "evidence_refs": ["evidence:missing"],
+                }],
+            )
+
+        TASK_HANDLERS["update_task_state"](
+            _session=session,
+            add_evidence=[{
+                "id": "evidence:evt:read",
+                "event_id": "evt:read",
+                "summary": "read target.py",
+                "path": "target.py",
+            }],
+            add_findings=[{
+                "claim": "target.py was inspected",
+                "evidence_refs": ["evidence:evt:read"],
+            }],
+        )
+
+        state = load_task_state(session)
+        self.assertIn("evidence:evt:read", state.evidence_index)
+        self.assertEqual("target.py was inspected", state.findings[0].claim)
 
     def test_reducer_records_replacement_history_and_checks_action_transitions(self) -> None:
         state = TaskState(

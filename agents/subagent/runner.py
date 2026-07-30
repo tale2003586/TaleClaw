@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import traceback
 import uuid
+from functools import partial
 
 from agents.subagent.failure import (
     STATUS_FAILED,
@@ -29,8 +30,15 @@ from agents.subagent.trace import (
     trace_subagent_completed,
     trace_subagent_started,
 )
-from config import SUBAGENT_MAX_REASONING_STEPS, WORKING_MEMORY_CHECKPOINT_ENABLED
+from applications.coding.compaction import SemanticCompactor
+from applications.coding.context_state import build_coding_context_view
+from config import (
+    SUBAGENT_MAX_REASONING_STEPS,
+    TASK_STATE_CONTEXT_ENABLED,
+    WORKING_MEMORY_CHECKPOINT_ENABLED,
+)
 from runtime.context import ContextBuilder
+from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
 from runtime.execution.failure_reasons import (
     REASONING_LOOP_STOP_REASON_KEY,
     StopReason,
@@ -243,13 +251,39 @@ class TaskSubagentRunner:
             provider=base_runner.provider,
             model=base_runner.model,
             tool_executor=base_runner.tool_executor,
-            context_builder=ContextBuilder(),
+            context_builder=self._sub_context_builder(),
             memory_lifecycle=None,
             model_pool=base_runner.model_pool,
             reflection_agent=base_runner.reflection_agent,
             max_tokens=base_runner.max_tokens,
             max_reasoning_steps=self.max_reasoning_steps,
         )
+
+    def _sub_context_builder(self) -> ContextBuilder:
+        base_builder = self.base_pipeline.agent_runner.context_builder
+        compaction_provider, compaction_model = self.base_pipeline.provider_and_model_for(
+            "summary"
+        )
+        kwargs = {
+            "context_providers": DEFAULT_CONTEXT_PROVIDERS,
+            "coding_context_view_builder": partial(
+                build_coding_context_view,
+                semantic_compactor=SemanticCompactor(
+                    provider=compaction_provider,
+                    model=compaction_model,
+                ),
+            ),
+        }
+        if isinstance(base_builder, ContextBuilder):
+            kwargs.update({
+                "budgeter": base_builder.budgeter,
+                "prompt_assets_service": base_builder.prompt_assets_service,
+                "memory_service": base_builder.memory_service,
+                "retrieval_service": base_builder.retrieval_service,
+                "pressure_observation_enabled": base_builder.pressure_observation_enabled,
+                "injection_trace_enabled": base_builder.injection_trace_enabled,
+            })
+        return ContextBuilder(**kwargs)
 
     def _summarize_after_step_limit(
         self,
@@ -364,7 +398,11 @@ class TaskSubagentRunner:
             active_agent="coding",
             metadata=metadata,
         )
-        if WORKING_MEMORY_CHECKPOINT_ENABLED and parent_session is not None:
+        if (
+            WORKING_MEMORY_CHECKPOINT_ENABLED
+            and not TASK_STATE_CONTEXT_ENABLED
+            and parent_session is not None
+        ):
             inherit_working_memory(
                 source_session=parent_session,
                 target_session=session,

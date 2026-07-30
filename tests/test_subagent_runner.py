@@ -15,7 +15,6 @@ from runtime.working_memory import (
     checkpoint_subtasks_dispatched,
     load_working_memory,
     prepare_working_memory_for_turn,
-    render_working_memory_block,
 )
 from runtime.sessions import Session
 from tools.executor import ToolExecutor
@@ -304,6 +303,29 @@ def _pipeline(provider=None, registry=None) -> Runtime:
 
 
 class SubagentRunnerTests(unittest.TestCase):
+    def test_subagent_uses_coding_task_state_context(self) -> None:
+        runner = TaskSubagentRunner(base_pipeline=_pipeline())
+        session = runner._new_session(
+            prompt="inspect runtime",
+            agent_type="explore",
+            description="stateful scout",
+        )
+        profile = runner._profile("explore")
+
+        context = runner._sub_context_builder().build(
+            session=session,
+            profile=profile,
+            active_turn_start_index=0,
+        )
+
+        report = context.report.to_dict()
+        self.assertTrue(report["metadata"]["coding_context_state_enabled"])
+        self.assertEqual(
+            "task_state_token_window",
+            report["sections"]["active_turn"]["metadata"]["strategy"],
+        )
+        self.assertIn("task_state", session.metadata)
+
     def test_unknown_agent_type_returns_structured_error(self) -> None:
         runner = TaskSubagentRunner(base_pipeline=_pipeline())
 
@@ -335,7 +357,7 @@ class SubagentRunnerTests(unittest.TestCase):
             self.assertNotIn("parallel_tasks", tools)
             self.assertNotIn("spawn_teammate", tools)
 
-    def test_subagent_session_inherits_parent_working_memory_snapshot(self) -> None:
+    def test_subagent_task_state_mode_does_not_inherit_parent_working_memory(self) -> None:
         parent = Session(id="parent-session", active_agent="coding")
         prepare_working_memory_for_turn(
             parent,
@@ -388,21 +410,8 @@ class SubagentRunnerTests(unittest.TestCase):
 
         child_memory = load_working_memory(child)
         parent_memory = load_working_memory(parent)
-        self.assertIsNotNone(child_memory)
-        self.assertIsNot(child_memory, parent_memory)
-        self.assertEqual(child.id, child_memory.task_id)
-        self.assertEqual("inspect runtime/pipeline.py", child_memory.objective)
-        self.assertEqual(1, len(child_memory.completed_units))
-        self.assertEqual([], child_memory.pending_units)
+        self.assertIsNone(child_memory)
         self.assertEqual(1, len(parent_memory.pending_units))
-        self.assertIn("inherited_parent_working_memory", child_memory.archived_findings)
-        rendered = render_working_memory_block(child)
-        self.assertIn('view="subagent_snapshot"', rendered)
-        self.assertIn("继承的已完成证据", rendered)
-        self.assertIn("active <subtask> prompt 为准", rendered)
-        self.assertNotIn("Pending parent-only investigation", rendered)
-        self.assertNotIn("current-subtask", rendered)
-        self.assertNotIn("下一步动作队列", rendered)
 
     def test_run_uses_isolated_session_and_returns_summary(self) -> None:
         provider = FinalAnswerProvider(_explore_answer("done from subagent"))
@@ -666,6 +675,11 @@ class SubagentRunnerTests(unittest.TestCase):
         self.assertEqual("completed", result.status)
         self.assertIsNone(result.failure_reason)
         self.assertEqual("right/Mapper.xml", result.findings[0]["path"])
+        second_turn = provider.calls[1]["messages"]
+        self.assertTrue(any(
+            "update_task_state" in str(message.get("content") or "")
+            for message in second_turn
+        ))
 
     def test_subagent_writes_execution_events_into_parent_trace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
