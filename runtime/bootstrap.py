@@ -38,7 +38,9 @@ from runtime.env_loader import load_dotenv_file
 from memory.background_lifecycle import BackgroundMemoryLifecycle
 from runtime.trace.trace_store import TraceStore
 from tools.hooks import (
+    ArtifactAccessGuardHook,
     FileWriteScopeHook,
+    TaskStateLifecycleGuardHook,
     ToolLoopGuardHook,
     ToolResultStoreHook,
     ToolTraceHook,
@@ -381,7 +383,11 @@ def build_runtime() -> AppRuntime:
         memory_store=memory_store,
     )
 
-    executor_hooks = [FileWriteScopeHook()]
+    executor_hooks = [
+        FileWriteScopeHook(),
+        TaskStateLifecycleGuardHook(),
+        ArtifactAccessGuardHook(),
+    ]
     if _tool_loop_guard_enabled():
         executor_hooks.append(ToolLoopGuardHook())
     executor_hooks.extend([

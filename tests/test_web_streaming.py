@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -283,6 +284,55 @@ class StreamingHttpTests(unittest.TestCase):
         self.assertEqual('{"path":"README.md"}', events[0]["args"])
         self.assertEqual("你好", events[-1]["reply"])
         self.assertEqual("首轮主题", events[-1]["session"]["title"])
+
+    def test_chat_attachment_is_parsed_before_combined_message_reaches_agent(self) -> None:
+        from web.mineru import MinerUResult
+
+        class AgentService:
+            def ask_stream(self, **kwargs):
+                self.request = kwargs
+                kwargs["on_text"]("完成")
+                return "完成"
+
+        class FakeMinerU:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def parse_file(self, path):
+                self.path = path
+                return MinerUResult(path.name, "# 解析正文", "batch-1", "https://example.test/result.zip")
+
+        agent_service = AgentService()
+        handler = object.__new__(RequestHandler)
+        handler.agent_service = agent_service
+        handler._current_user = lambda: SimpleNamespace(user_id="alice", role="user")
+        handler._read_json_body = lambda: {
+            "session_id": "default",
+            "message": "总结这份报告",
+            "attachments": ["chat-attachments/report.pdf"],
+        }
+        handler._send_stream_headers = lambda: None
+        events = []
+        handler._send_stream_event = events.append
+
+        with (
+            patch("web.server._safe_storage_path", return_value=Path(__file__)),
+            patch("web.mineru.MinerUClient", FakeMinerU),
+            patch("web.server.read_session", return_value={"messages": [], "title": "报告"}),
+        ):
+            handler._handle_chat_stream()
+
+        self.assertEqual("总结这份报告", agent_service.request["content"])
+        self.assertNotIn("# 解析正文", agent_service.request["content"])
+        self.assertEqual(
+            "# 解析正文",
+            agent_service.request["attachments"][0]["content"],
+        )
+        self.assertEqual("总结这份报告\n\n附件：test_web_streaming.py", agent_service.request["display_content"])
+        self.assertEqual(["status", "status", "delta", "complete"], [event["type"] for event in events])
 
     def test_stream_event_projection_is_whitelisted_and_small(self) -> None:
         projected = _stream_event_projection({

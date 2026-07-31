@@ -30,9 +30,11 @@ from runtime.sessions.session import Session, SessionManager
 from tools.executor import ToolExecutor
 from tools.handlers import cleanup_expired_sandboxes
 from tools.hooks import (
+    ArtifactAccessGuardHook,
     FileWriteScopeHook,
     ShellSafetyHook,
     ShellWorkspaceScopeHook,
+    TaskStateLifecycleGuardHook,
     ToolLoopGuardHook,
     ToolResultStoreHook,
     ToolTraceHook,
@@ -213,6 +215,8 @@ class CodingBenchmarkHarness:
                 ShellSafetyHook(),
                 ShellWorkspaceScopeHook(workspace),
                 FileWriteScopeHook(workspace),
+                TaskStateLifecycleGuardHook(),
+                ArtifactAccessGuardHook(),
                 ToolLoopGuardHook(),
                 ToolResultStoreHook(),
                 ToolTraceHook(),

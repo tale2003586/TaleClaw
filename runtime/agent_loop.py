@@ -57,14 +57,18 @@ class AgentLoop:
         inbound,
         on_text: Callable[[str], None] | None = None,
     ) -> None:
-        created_artifact = self._externalize_inbound_content(inbound)
+        created_artifacts = self._externalize_inbound_artifacts(inbound)
         session = self.sessions.get_or_create(inbound.session_key)
-        if created_artifact is not None:
+        if created_artifacts:
+            from runtime.context.artifact_access import register_artifact_access_state
+
             _record_artifact_offload_metrics(session, inbound)
-            session.append_event(
-                ContextEventType.ARTIFACT_CREATED,
-                {"artifact_ref": created_artifact, "source": "user_message"},
-            )
+            for created_artifact in created_artifacts:
+                register_artifact_access_state(session.metadata, created_artifact)
+                session.append_event(
+                    ContextEventType.ARTIFACT_CREATED,
+                    {"artifact_ref": created_artifact, "source": "user_message"},
+                )
         self._begin_cancel_scope(session.id)
         run_state = None
 
@@ -86,6 +90,53 @@ class AgentLoop:
             raise
         finally:
             self._end_cancel_scope(session.id)
+
+    def _externalize_inbound_artifacts(self, inbound) -> list[dict]:
+        created = self._externalize_inbound_attachments(inbound)
+        content_ref = self._externalize_inbound_content(inbound)
+        if content_ref is not None:
+            created.append(content_ref)
+        return created
+
+    def _externalize_inbound_attachments(self, inbound) -> list[dict]:
+        metadata = getattr(inbound, "metadata", None)
+        attachments = metadata.get("attachments") if isinstance(metadata, dict) else None
+        if not isinstance(attachments, list) or not attachments:
+            return []
+        if not ARTIFACT_OFFLOADING_ENABLED or self.long_content_detector is None:
+            return []
+        normalized = []
+        created = []
+        for index, raw in enumerate(attachments):
+            if not isinstance(raw, dict):
+                continue
+            content = raw.get("content")
+            if content is None:
+                normalized.append(dict(raw))
+                continue
+            name = str(raw.get("name") or f"attachment-{index + 1}")
+            ref = self.long_content_detector.artifact_store.put_artifact(
+                str(content),
+                artifact_type="user_input",
+                name=name,
+                mime_type="text/markdown",
+                metadata={
+                    "source": "user_attachment",
+                    "source_media_type": str(raw.get("media_type") or ""),
+                    "source_size_bytes": max(0, int(raw.get("size_bytes") or 0)),
+                },
+            )
+            descriptor = {
+                "name": name,
+                "media_type": str(raw.get("media_type") or "application/octet-stream"),
+                "size_bytes": max(0, int(raw.get("size_bytes") or 0)),
+                "content_state": "externalized",
+                "artifact_ref": ref.to_dict(),
+            }
+            normalized.append(descriptor)
+            created.append(ref.to_dict())
+        metadata["attachments"] = normalized
+        return created
 
     def _externalize_inbound_content(self, inbound) -> dict | None:
         if not ARTIFACT_OFFLOADING_ENABLED or self.long_content_detector is None:

@@ -171,6 +171,8 @@ class AgentService:
         user_id: str = DEFAULT_USER_ID,
         user_role: str = DEFAULT_USER_ROLE,
         workspace_root: str | None = None,
+        display_content: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
         timeout: int = 180,
     ) -> str:
         return self.ask_stream(
@@ -179,6 +181,8 @@ class AgentService:
             user_id=user_id,
             user_role=user_role,
             workspace_root=workspace_root,
+            display_content=display_content,
+            attachments=attachments,
             timeout=timeout,
         )
 
@@ -190,6 +194,8 @@ class AgentService:
         user_id: str = DEFAULT_USER_ID,
         user_role: str = DEFAULT_USER_ROLE,
         workspace_root: str | None = None,
+        display_content: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
         on_text: Callable[[str], None] | None = None,
         timeout: int = 1800,
     ) -> str:
@@ -204,6 +210,8 @@ class AgentService:
                 user_id=user_id,
                 user_role=user_role,
                 workspace_root=workspace_root,
+                display_content=display_content,
+                attachments=attachments,
                 on_text=on_text,
                 reply_timeout=_env_int("WEB_AGENT_REPLY_TIMEOUT_SECONDS", timeout),
             ),
@@ -301,6 +309,8 @@ class AgentService:
         user_id: str,
         user_role: str,
         workspace_root: str | None = None,
+        display_content: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
         on_text: Callable[[str], None] | None = None,
         reply_timeout: int = 180,
     ) -> str:
@@ -318,6 +328,10 @@ class AgentService:
             }
             if workspace_root:
                 metadata["workspace_root"] = str(workspace_root)
+            if display_content:
+                metadata["display_content"] = str(display_content)
+            if attachments:
+                metadata["attachments"] = [dict(item) for item in attachments]
             try:
                 await self._runtime.run_message(
                     content=content,
@@ -624,6 +638,11 @@ def read_session(
 def _web_message(message: dict[str, Any]) -> dict[str, Any]:
     result = dict(message)
     content = result.get("content")
+    metadata = result.get("metadata") or {}
+    if result.get("role") == "user" and isinstance(metadata, dict):
+        display_content = metadata.get("display_content")
+        if isinstance(display_content, str) and display_content.strip():
+            result["content"] = display_content
     if result.get("role") == "assistant" and isinstance(content, str):
         result["display_html"] = render_chat_markdown(content)
     return result
@@ -1691,6 +1710,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             message = str(payload.get("message", "")).strip()
             session_id = str(payload.get("session_id", "default")).strip() or "default"
             workspace_root = str(payload.get("workspace_root", "")).strip() or None
+            attachment_paths = payload.get("attachments") or []
+            if not isinstance(attachment_paths, list) or not all(isinstance(item, str) for item in attachment_paths):
+                raise ValueError("attachments must be a list of storage paths")
+            if len(attachment_paths) > 5:
+                raise ValueError("A maximum of 5 attachments is supported per message")
             user = self._current_user()
             if not message:
                 self._send_json({"error": "message is required"}, status=HTTPStatus.BAD_REQUEST)
@@ -1713,17 +1737,44 @@ class RequestHandler(BaseHTTPRequestHandler):
         def run_agent() -> None:
             unsubscribe: Callable[[], None] = lambda: None
             try:
+                agent_content = message
+                display_content = None
+                attachment_payloads = None
+                if attachment_paths:
+                    from web.mineru import (
+                        MinerUClient,
+                        build_attachment_payloads,
+                        display_message,
+                    )
+
+                    events.put({"type": "status", "status": "mineru", "text": "正在使用 MinerU 精准解析附件…"})
+                    paths = []
+                    for relative_path in attachment_paths:
+                        path = _safe_storage_path(relative_path, user_id=user.user_id)
+                        if not path.is_file() or path.is_symlink():
+                            raise ValueError(f"附件不存在或不可读取：{relative_path}")
+                        paths.append(path)
+                    with MinerUClient() as mineru:
+                        parsed = [mineru.parse_file(path) for path in paths]
+                    attachment_payloads = build_attachment_payloads(parsed, paths)
+                    display_content = display_message(message, parsed)
+                    events.put({"type": "status", "status": "agent", "text": "附件解析完成，正在交给 LLM…"})
                 subscribe_session = getattr(self.agent_service, "subscribe_session", None)
                 if callable(subscribe_session):
                     unsubscribe = subscribe_session(session_key, enqueue_trace_event)
-                reply = self.agent_service.ask_stream(
+                ask_kwargs = dict(
                     session_id=session_id,
-                    content=message,
+                    content=agent_content,
                     user_id=user.user_id,
                     user_role=user.role,
                     workspace_root=workspace_root,
                     on_text=lambda text: events.put({"type": "delta", "text": text}),
                 )
+                if display_content is not None:
+                    ask_kwargs["display_content"] = display_content
+                if attachment_payloads is not None:
+                    ask_kwargs["attachments"] = attachment_payloads
+                reply = self.agent_service.ask_stream(**ask_kwargs)
                 events.put({
                     "type": "complete",
                     "reply": reply,

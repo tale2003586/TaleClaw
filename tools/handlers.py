@@ -2552,6 +2552,11 @@ TASK_HANDLERS = {
 
 
 def _update_task_state(**kwargs):
+    mode = str(kwargs.pop("_mode", "") or "")
+    if not mode:
+        mode = str(getattr(kwargs.get("_session"), "active_agent", "") or "")
+    if mode not in {"coding", "teammate"}:
+        return _update_task_state_core(**kwargs)
     from applications.coding.compaction import StatePatch, reduce_task_state
     from applications.coding.task_state import (
         ensure_task_state,
@@ -2594,9 +2599,53 @@ def _update_task_state(**kwargs):
     )
 
 
+def _update_task_state_core(**kwargs):
+    from runtime.task_state import (
+        TaskStateCorePatch,
+        apply_task_state_core_patch,
+        ensure_task_state_core,
+        load_task_state_core,
+        save_task_state_core,
+    )
+
+    session = kwargs.pop("_session", None)
+    if session is None:
+        raise ValueError("update_task_state requires an active session")
+    state = load_task_state_core(session)
+    if state is None:
+        objective = next(
+            (
+                str(message.get("content") or "")
+                for message in reversed(list(getattr(session, "messages", []) or []))
+                if isinstance(message, dict)
+                and str(message.get("role") or "") == "user"
+            ),
+            "Answer the user's current request",
+        )
+        state = ensure_task_state_core(session, objective=objective)
+    patch = TaskStateCorePatch.from_payload(kwargs)
+    updated = apply_task_state_core_patch(state, patch)
+    save_task_state_core(session, updated)
+    return json.dumps(
+        {
+            "status": "updated",
+            "task_state_version": updated.version,
+            "task_status": updated.status,
+        },
+        ensure_ascii=False,
+    )
+
+
 def _state_patch_has_changes(patch) -> bool:
     return bool(
-        patch.phase is not None
+        patch.current_focus is not None
+        or patch.completion_basis_add
+        or patch.requested_status is not None
+        or patch.stop_reason is not None
+        or patch.pending_replace is not None
+        or patch.open_questions_replace is not None
+        or patch.blockers_replace is not None
+        or patch.phase is not None
         or patch.constraints
         or patch.plan_items
         or patch.completed
@@ -3186,9 +3235,66 @@ def run_read_artifact(
     return f"{header}\n\n{content}"
 
 
+def run_read_artifact_with_metadata(
+    artifact_ref: str,
+    offset: int = 0,
+    limit: int | None = None,
+    query: str | None = None,
+    max_results: int = 20,
+    *,
+    artifact_store: ArtifactStore | None = None,
+):
+    """Return the compatibility string plus structured access metadata."""
+    from runtime.context.artifact_access import normalize_query
+    from tools.executor import ToolHandlerOutput
+
+    store = artifact_store or ArtifactStore(CONTEXT_ARTIFACT_ROOT)
+    reference = str(artifact_ref or "").strip()
+    try:
+        record = store.get_artifact_metadata(reference)
+    except ArtifactNotFoundError as exc:
+        raise ValueError(f"Artifact not found: {reference}") from exc
+    output = run_read_artifact(
+        reference,
+        offset=offset,
+        limit=limit,
+        query=query,
+        max_results=max_results,
+        artifact_store=store,
+    )
+    if query is not None:
+        parsed = json.loads(output)
+        access = {
+            "artifact_ref": record.storage_uri,
+            "mode": "search",
+            "normalized_query": normalize_query(query),
+            "match_count": int(parsed.get("match_count") or 0),
+            "size_chars": record.size_chars,
+        }
+    else:
+        header = json.loads(output.split("\n\n", 1)[0])
+        start = int(header.get("offset") or 0)
+        end = start + int(header.get("returned_chars") or 0)
+        access = {
+            "artifact_ref": record.storage_uri,
+            "mode": "range",
+            "requested_range": [
+                max(0, int(offset or 0)),
+                max(0, int(offset or 0))
+                + max(200, min(int(limit or DEFAULT_ARTIFACT_READ_CHARS), MAX_ARTIFACT_READ_CHARS)),
+            ],
+            "returned_range": [start, end],
+            "size_chars": record.size_chars,
+            "truncated": bool(header.get("truncated")),
+            "next_offset": header.get("next_offset"),
+            "eof": not bool(header.get("truncated")),
+        }
+    return ToolHandlerOutput(output, metadata={"artifact_access": access})
+
+
 def make_artifact_handlers(artifact_store=None):
     return {
-        "read_artifact": lambda **kw: run_read_artifact(
+        "read_artifact": lambda **kw: run_read_artifact_with_metadata(
             kw["artifact_ref"],
             kw.get("offset", 0),
             kw.get("limit"),

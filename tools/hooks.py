@@ -10,6 +10,65 @@ from runtime.tooling.signature import tool_call_signature, tool_result_hash
 from tools.executor import HookOutcome, ToolExecutionRequest, ToolExecutionResult, ToolHook
 
 
+class TaskStateLifecycleGuardHook(ToolHook):
+    """Prevent tool execution after the shared task reaches a terminal state."""
+
+    name = "task_state_lifecycle_guard"
+
+    def matches(self, request: ToolExecutionRequest) -> bool:
+        return True
+
+    def before(self, request: ToolExecutionRequest) -> HookOutcome:
+        from runtime.task_state.models import TERMINAL_TASK_STATUSES, TaskStateCore
+
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        state = TaskStateCore.from_payload(metadata.get("task_state"))
+        if state is None or state.status not in TERMINAL_TASK_STATUSES:
+            return HookOutcome()
+        return HookOutcome(deny_reason=(
+            f"TaskState is terminal ({state.status}); additional tool calls are not allowed. "
+            "Return the final result or start a new task."
+        ))
+
+
+class ArtifactAccessGuardHook(ToolHook):
+    """Resource-level duplicate guard and deterministic access reducer."""
+
+    name = "artifact_access_guard"
+
+    def matches(self, request: ToolExecutionRequest) -> bool:
+        return request.tool_name == "read_artifact"
+
+    def before(self, request: ToolExecutionRequest) -> HookOutcome:
+        from runtime.context.artifact_access import guard_artifact_access
+
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        reason = guard_artifact_access(metadata, request.arguments)
+        return HookOutcome(deny_reason=reason) if reason else HookOutcome()
+
+    def after(
+        self,
+        request: ToolExecutionRequest,
+        result: ToolExecutionResult,
+    ) -> HookOutcome | None:
+        from runtime.context.artifact_access import (
+            record_artifact_access_failure,
+            reduce_artifact_access,
+        )
+
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        access = result.metadata.get("artifact_access") if isinstance(result.metadata, dict) else None
+        if result.status == "success" and isinstance(access, dict):
+            reduce_artifact_access(metadata, access)
+        elif result.status in {"error", "success"} and result_is_error(result.output):
+            record_artifact_access_failure(
+                metadata,
+                request.arguments.get("artifact_ref"),
+                result.error_message or result.output,
+            )
+        return None
+
+
 class ShellSafetyHook(ToolHook):
     name = "shell_safety"
 
@@ -311,7 +370,7 @@ class ToolResultStoreHook(ToolHook):
         skip_tools: set[str] | None = None,
     ) -> None:
         self.min_chars = max(0, int(min_chars))
-        self.skip_tools = set(skip_tools or {"retrieve_tool_result"})
+        self.skip_tools = set(skip_tools or {"retrieve_tool_result", "read_artifact"})
 
     def matches(self, request: ToolExecutionRequest) -> bool:
         return request.tool_name not in self.skip_tools

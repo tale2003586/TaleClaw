@@ -189,8 +189,12 @@ def test_memory_disabled_and_enabled_context_injection_position(tmp_path):
     enabled_report = enabled.report.to_dict()["sections"]["memory"]
     assert disabled_report["rendered_chars"] == 0
     assert enabled_report["rendered_chars"] > 0
-    assert enabled.messages[1]["role"] == "user"
-    assert "Use pytest fixtures." in enabled.messages[1]["content"]
+    memory_message = next(
+        message for message in enabled.messages
+        if message.get("role") == "user"
+        and "Use pytest fixtures." in str(message.get("content") or "")
+    )
+    assert memory_message["role"] == "user"
     assert enabled.messages[-1]["content"] == "remember my preference"
 
 

@@ -22,9 +22,11 @@ from runtime.workspace import WorkspaceResolver
 from runtime.sessions.session import Session, SessionManager
 from tools.executor import ToolExecutor
 from tools.hooks import (
+    ArtifactAccessGuardHook,
     FileWriteScopeHook,
     ShellSafetyHook,
     ShellWorkspaceScopeHook,
+    TaskStateLifecycleGuardHook,
     ToolLoopGuardHook,
     ToolResultStoreHook,
     ToolTraceHook,
@@ -292,6 +294,8 @@ def run_swebench_instance(
             ShellSafetyHook(),
             ShellWorkspaceScopeHook(workspace),
             FileWriteScopeHook(workspace),
+            TaskStateLifecycleGuardHook(),
+            ArtifactAccessGuardHook(),
             ToolLoopGuardHook(),
             ToolResultStoreHook(),
             ToolTraceHook(),

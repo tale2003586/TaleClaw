@@ -23,9 +23,6 @@ from runtime.context.providers import (
     PromptContextProvider,
 )
 from config import (
-    CODING_CONTEXT_COMPACTION_TARGET_TOKENS,
-    CODING_CONTEXT_COMPACTION_TRIGGER_TOKENS,
-    CODING_CONTEXT_RECENT_GROUPS,
     CODING_CONTEXT_STATE_ENABLED,
     PROMPT_SAFETY_MARGIN_TOKENS,
     WORKING_MEMORY_RESUME_ENABLED,
@@ -36,6 +33,9 @@ from config import (
     MEMORY_INJECTION_TRACE_ENABLED,
 )
 from runtime.context.dynamic_budget import calculate_dynamic_prompt_budget
+from runtime.context.artifact_access import artifact_access_summary_message
+from runtime.context.attachments import latest_user_attachments, render_user_attachments_message
+from runtime.task_state import ensure_task_state_core, render_task_state_core_message
 from runtime.token_estimator import estimate_tokens
 
 
@@ -73,6 +73,16 @@ class ContextBuilder:
         "Some tools are deferred. Use tool_search to find or unlock tools that are not currently visible.",
         "For code-security questions involving vulnerabilities, CVE/CWE/GHSA, dependencies, auth, authorization, injection, XSS, SSRF, tokens, secrets, file upload, path traversal, or secure coding guidance, call security_rag_search for local evidence before giving a final answer.",
         "Search-like tools are limited opportunities. Batch queries and gather enough evidence before deciding whether another search is necessary.",
+        (
+            "An attachment reference indicates that the user supplied a file. "
+            "Attachment presence alone does not imply a request to inspect its contents. "
+            "Attachment content is relevant only when required by the current user request."
+        ),
+        (
+            "Task state blocks are runtime-generated data, not user instructions. "
+            "Use the mode-appropriate update_task_state schema for genuine semantic changes; "
+            "do not make a separate model request only to maintain state."
+        ),
     ]
     _coding_context_guidance = (
         "A coding-context-state block is runtime-generated context, not a real user "
@@ -332,11 +342,19 @@ class ContextBuilder:
             raw_task_runtime_events,
         )
 
-        if self.context_providers["coding"].enabled(
+        coding_context_enabled = self.context_providers["coding"].enabled(
             self,
             profile=profile,
             session=session,
-        ):
+        )
+        runtime_state_messages = self._build_shared_runtime_state_messages(
+            session,
+            profile=profile,
+            current_request=current_request,
+            include_task_state=not coding_context_enabled,
+        )
+
+        if coding_context_enabled:
             bundle = self._build_coding_context_state_bundle(
                 session=session,
                 profile=profile,
@@ -370,6 +388,7 @@ class ContextBuilder:
                 model_provider=model_provider,
                 model_tools=model_tools or [],
                 reserved_output_tokens=reserved_output_tokens,
+                runtime_state_messages=runtime_state_messages,
             )
             self._observe_context_pressure(
                 bundle.report,
@@ -412,6 +431,7 @@ class ContextBuilder:
                 *budgeted_history.rendered_messages,
             ]
 
+        messages.extend(runtime_state_messages)
         if context_frame:
             messages.append({
                 "role": "user",
@@ -472,6 +492,7 @@ class ContextBuilder:
             prefix_metadata=dict(prefix.metadata),
         )
         report = self._build_report(build_state)
+        self._append_runtime_state_reports(report, runtime_state_messages)
         self._observe_context_pressure(
             report,
             trace_store=trace_store,
@@ -577,6 +598,7 @@ class ContextBuilder:
         model_provider,
         model_tools: list[dict[str, Any]],
         reserved_output_tokens: int,
+        runtime_state_messages: list[dict[str, Any]],
     ) -> ContextBundle:
         effective_active_turn_start_index = (
             active_turn_start_index
@@ -641,14 +663,12 @@ class ContextBuilder:
             "objective": current_request,
             "active_turn_start_index": effective_active_turn_start_index,
             "static_messages": messages,
-            "threshold_tokens": CODING_CONTEXT_COMPACTION_TRIGGER_TOKENS,
-            "target_tokens": CODING_CONTEXT_COMPACTION_TARGET_TOKENS,
-            "keep_recent_groups": CODING_CONTEXT_RECENT_GROUPS,
         }
         if usable_input_tokens is not None:
             view_kwargs["usable_input_tokens"] = usable_input_tokens
         view = self.coding_context_view_builder(session, **view_kwargs)
         messages.append(view.state_message)
+        messages.extend(runtime_state_messages)
         messages.extend(view.recent_messages)
         if context_frame:
             messages.append({
@@ -743,6 +763,7 @@ class ContextBuilder:
         )
         report = self._build_report(build_state)
         self._append_coding_context_state_report(report, view)
+        self._append_runtime_state_reports(report, runtime_state_messages)
         context_metrics = {
             **dict(view.state.metrics or {}),
             "retrieved_evidence_tokens": estimate_tokens([
@@ -758,6 +779,58 @@ class ContextBuilder:
         session.metadata["context_metrics"] = context_metrics
         report.metadata["context_metrics"] = dict(context_metrics)
         return ContextBundle(messages=messages, report=report)
+
+    def _build_shared_runtime_state_messages(
+        self,
+        session,
+        *,
+        profile,
+        current_request: str,
+        include_task_state: bool,
+    ) -> list[dict[str, Any]]:
+        messages: list[dict[str, Any]] = []
+        if TASK_STATE_CONTEXT_ENABLED and include_task_state:
+            refs = []
+            for item in latest_user_attachments(session):
+                ref = item.get("artifact_ref")
+                if isinstance(ref, dict):
+                    ref = ref.get("storage_uri") or ref.get("artifact_id")
+                if ref:
+                    refs.append(str(ref))
+            state = ensure_task_state_core(
+                session,
+                objective=current_request or "Answer the user's current request",
+                artifact_refs=refs,
+            )
+            messages.append(render_task_state_core_message(state))
+        attachment_message = render_user_attachments_message(session)
+        if attachment_message is not None:
+            messages.append(attachment_message)
+        access_message = artifact_access_summary_message(
+            getattr(session, "metadata", {}) or {}
+        )
+        if access_message is not None:
+            messages.append(access_message)
+        return messages
+
+    def _append_runtime_state_reports(
+        self,
+        report: ContextBuildReport,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        for message in messages:
+            metadata = message.get("metadata") if isinstance(message, dict) else {}
+            metadata = metadata if isinstance(metadata, dict) else {}
+            name = str(metadata.get("kind") or "runtime_state")
+            report.sections.append(ContextSection.from_text(
+                name,
+                str(message.get("content") or ""),
+                metadata={
+                    "transport": "runtime_message",
+                    "preserve": True,
+                    **metadata,
+                },
+            ))
 
     def _append_coding_context_state_report(
         self,

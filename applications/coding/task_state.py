@@ -14,9 +14,17 @@ import hashlib
 import json
 from typing import Any, Callable, Iterable
 
+from runtime.task_state.models import (
+    TASK_STATE_INITIAL_VERSION,
+    TASK_STATE_METADATA_KEY,
+    TASK_STATE_SCHEMA,
+    TaskStateCore,
+    TaskStatus,
+    task_state_envelope,
+)
 
-TASK_STATE_VERSION = 1
-TASK_STATE_METADATA_KEY = "task_state"
+
+TASK_STATE_VERSION = TASK_STATE_INITIAL_VERSION
 OBJECTIVE_SUMMARY_LIMIT = 480
 
 
@@ -233,28 +241,66 @@ class StateHistoryEntry:
 
 
 @dataclass
-class TaskState:
-    objective: Objective
+class TaskState(TaskStateCore):
+    """Coding extension of the shared runtime TaskStateCore.
+
+    The inherited lifecycle fields remain the only mutable authority.  Richer
+    coding item types refine the common collections for compatibility with the
+    existing compactor and checkpoint format.
+    """
+
+    objective: Objective = field(default_factory=lambda: Objective(""))
     constraints: list[Constraint] = field(default_factory=list)
-    phase: TaskPhase = TaskPhase.INTAKE
-    plan: list[PlanItem] = field(default_factory=list)
     completed: list[CompletedItem] = field(default_factory=list)
-    findings: list[Finding] = field(default_factory=list)
-    hypotheses: list[Hypothesis] = field(default_factory=list)
-    decisions: list[Decision] = field(default_factory=list)
     pending_actions: list[Action] = field(default_factory=list)
     open_questions: list[OpenQuestion] = field(default_factory=list)
     blockers: list[Blocker] = field(default_factory=list)
+    phase: TaskPhase = TaskPhase.INTAKE
+    plan: list[PlanItem] = field(default_factory=list)
+    findings: list[Finding] = field(default_factory=list)
+    hypotheses: list[Hypothesis] = field(default_factory=list)
+    decisions: list[Decision] = field(default_factory=list)
     evidence_index: dict[str, EvidenceRef] = field(default_factory=dict)
-    artifact_refs: list[str] = field(default_factory=list)
     coverage: CoverageState = field(default_factory=CoverageState)
     execution_memory: ExecutionMemory = field(default_factory=ExecutionMemory)
     history: list[StateHistoryEntry] = field(default_factory=list)
-    version: int = TASK_STATE_VERSION
-    updated_at: str = field(default_factory=_now)
 
     def to_dict(self) -> dict[str, Any]:
-        return _to_plain(self)
+        return task_state_envelope(
+            self,
+            extensions={"coding": self.coding_extension_dict()},
+        )
+
+    def core_dict(self) -> dict[str, Any]:
+        return _to_plain({
+            "task_id": self.task_id,
+            "version": self.version,
+            "objective": self.objective,
+            "constraints": self.constraints,
+            "status": self.status,
+            "current_focus": self.current_focus,
+            "completed": self.completed,
+            "pending_actions": self.pending_actions,
+            "open_questions": self.open_questions,
+            "blockers": self.blockers,
+            "completion_basis": self.completion_basis,
+            "stop_reason": self.stop_reason,
+            "artifact_refs": self.artifact_refs,
+            "updated_at": self.updated_at,
+        })
+
+    def coding_extension_dict(self) -> dict[str, Any]:
+        return _to_plain({
+            "phase": self.phase,
+            "plan": self.plan,
+            "findings": self.findings,
+            "hypotheses": self.hypotheses,
+            "decisions": self.decisions,
+            "evidence_index": self.evidence_index,
+            "coverage": self.coverage,
+            "execution_memory": self.execution_memory,
+            "history": self.history,
+        })
 
     @classmethod
     def from_payload(cls, payload: Any) -> "TaskState | None":
@@ -265,6 +311,32 @@ class TaskState:
                 return None
         if not isinstance(payload, dict):
             return None
+        if payload.get("schema") == TASK_STATE_SCHEMA:
+            core_data = payload.get("core")
+            extensions = payload.get("extensions")
+            if not isinstance(core_data, dict):
+                return None
+            extensions = extensions if isinstance(extensions, dict) else {}
+            coding_data = extensions.get("coding")
+            if not isinstance(coding_data, dict):
+                legacy = extensions.get("coding_legacy")
+                if isinstance(legacy, dict):
+                    restored = cls.from_payload(legacy)
+                    if restored is not None:
+                        _merge_shared_core_payload(restored, core_data)
+                    return restored
+                legacy_source = extensions.get("legacy_source")
+                if isinstance(legacy_source, dict):
+                    source = str(legacy_source.get("source") or "")
+                    migrated = migrate_legacy_task_state(
+                        legacy_source.get("payload"),
+                        source=source,
+                    ) if source in {"working_memory", "coding_context_state"} else None
+                    if migrated is not None:
+                        _merge_shared_core_payload(migrated, core_data)
+                    return migrated
+                coding_data = {}
+            payload = {**core_data, **coding_data}
         objective_data = payload.get("objective")
         if isinstance(objective_data, str):
             objective_data = {"summary": objective_data}
@@ -273,7 +345,10 @@ class TaskState:
         try:
             return cls(
                 objective=_coerce(Objective, objective_data),
-                constraints=_coerce_list(Constraint, payload.get("constraints")),
+                task_id=str(payload.get("task_id") or ""),
+                constraints=_coerce_constraints(payload.get("constraints")),
+                status=_task_status(payload.get("status"), phase=payload.get("phase")),
+                current_focus=_optional_text(payload.get("current_focus")),
                 phase=_phase(payload.get("phase")),
                 plan=_coerce_list(PlanItem, payload.get("plan")),
                 completed=_coerce_list(CompletedItem, payload.get("completed")),
@@ -281,8 +356,12 @@ class TaskState:
                 hypotheses=_coerce_list(Hypothesis, payload.get("hypotheses")),
                 decisions=_coerce_list(Decision, payload.get("decisions")),
                 pending_actions=_coerce_list(Action, payload.get("pending_actions")),
-                open_questions=_coerce_list(OpenQuestion, payload.get("open_questions")),
+                open_questions=_coerce_questions(payload.get("open_questions")),
                 blockers=_coerce_list(Blocker, payload.get("blockers")),
+                completion_basis=[
+                    str(item) for item in payload.get("completion_basis") or [] if item
+                ],
+                stop_reason=_optional_text(payload.get("stop_reason")),
                 evidence_index={
                     str(key): _coerce(EvidenceRef, value)
                     for key, value in _mapping(payload.get("evidence_index")).items()
@@ -483,6 +562,10 @@ def ensure_task_state(
 ) -> TaskState:
     existing = load_task_state(session)
     if existing is not None:
+        metadata = getattr(session, "metadata", {}) or {}
+        persisted = _payload_dict(metadata.get(TASK_STATE_METADATA_KEY))
+        if persisted is not None and persisted.get("schema") != TASK_STATE_SCHEMA:
+            save_task_state(session, existing)
         return existing
     metadata = getattr(session, "metadata", {}) or {}
     source = ""
@@ -777,8 +860,73 @@ def _status(value: Any) -> ItemStatus:
         return ItemStatus.PENDING
 
 
+def _task_status(value: Any, *, phase: Any = None) -> TaskStatus:
+    if value is None and str(phase or "") == TaskPhase.BLOCKED.value:
+        return TaskStatus.BLOCKED
+    try:
+        return TaskStatus(str(value or TaskStatus.ACTIVE))
+    except ValueError:
+        return TaskStatus.ACTIVE
+
+
+def _optional_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _merge_shared_core_payload(state: TaskState, payload: dict[str, Any]) -> None:
+    """Apply a core-only update to a restored legacy coding extension."""
+    objective = payload.get("objective")
+    if isinstance(objective, dict):
+        objective = objective.get("summary")
+    if objective is not None:
+        state.objective.summary = str(objective)
+    state.task_id = str(payload.get("task_id") or state.task_id)
+    state.version = max(1, int(payload.get("version") or state.version))
+    state.status = _task_status(payload.get("status"), phase=payload.get("phase"))
+    state.current_focus = _optional_text(payload.get("current_focus"))
+    state.completion_basis = [
+        str(item) for item in payload.get("completion_basis") or [] if item
+    ]
+    state.stop_reason = _optional_text(payload.get("stop_reason"))
+    state.artifact_refs = [
+        str(item) for item in payload.get("artifact_refs") or [] if item
+    ]
+    state.updated_at = str(payload.get("updated_at") or state.updated_at)
+    if "constraints" in payload:
+        state.constraints = _coerce_constraints(payload.get("constraints"))
+    if "completed" in payload:
+        state.completed = _coerce_list(CompletedItem, payload.get("completed"))
+    if "pending_actions" in payload:
+        state.pending_actions = _coerce_list(Action, payload.get("pending_actions"))
+    if "open_questions" in payload:
+        state.open_questions = _coerce_questions(payload.get("open_questions"))
+    if "blockers" in payload:
+        state.blockers = _coerce_list(Blocker, payload.get("blockers"))
+
+
 def _coerce_list(type_: type, value: Any) -> list[Any]:
     return [_coerce(type_, item) for item in value or [] if isinstance(item, dict)]
+
+
+def _coerce_constraints(value: Any) -> list[Constraint]:
+    return [
+        _coerce(Constraint, item)
+        if isinstance(item, dict)
+        else Constraint(f"core-constraint:{index}", str(item))
+        for index, item in enumerate(value or [])
+        if str(item).strip()
+    ]
+
+
+def _coerce_questions(value: Any) -> list[OpenQuestion]:
+    return [
+        _coerce(OpenQuestion, item)
+        if isinstance(item, dict)
+        else OpenQuestion(f"core-question:{index}", str(item))
+        for index, item in enumerate(value or [])
+        if str(item).strip()
+    ]
 
 
 def _coerce(type_: type, value: dict[str, Any]) -> Any:

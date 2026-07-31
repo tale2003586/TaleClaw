@@ -377,5 +377,5 @@ def test_frontend_uses_title_for_display_but_chat_id_for_identity():
     assert '`${session.title || ""} ${sessionKey(session)}' in sessions
     assert "setActiveId(String(session.chat_id || id))" in sessions
     assert "session.title || id" in shell
-    assert "sessions.active?.title || sessions.activeId" in chat
+    assert "active?.title || sessions.activeId" in chat
     assert "dangerouslySetInnerHTML" not in sessions + shell + chat

@@ -286,10 +286,10 @@ BASE_TOOLS = [
     function_tool(
         "read_artifact",
         (
-            "Read or search immutable text referenced by an artifact:// URI. Use this "
-            "when a user message or runtime prompt says that long content was externalized "
-            "to an artifact. Reads are paginated by character offset; continue with the "
-            "returned next_offset when truncated."
+            "Returns a bounded text range or exact-text search matches from an immutable "
+            "externalized artifact. Responses may contain next_offset when additional "
+            "content exists. The existence of an artifact reference does not by itself "
+            "indicate that its content is required by the current task."
         ),
         {
             "artifact_ref": {
@@ -627,6 +627,72 @@ TASK_TOOLS = [
             "and transitions. If validation fails, correct the arguments and retry."
         ),
         {
+            "base_version": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "TaskState version this patch was based on.",
+            },
+            "requested_status": {
+                "type": "string",
+                "enum": ["active", "blocked", "completed", "failed", "cancelled"],
+            },
+            "current_focus": {"type": "string"},
+            "completion_basis_add": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "stop_reason": {"type": "string"},
+            "completed_add": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "description": {"type": "string"},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["description"],
+                },
+            },
+            "pending_replace": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "description": {"type": "string"},
+                        "status": {"type": "string"},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["description"],
+                },
+            },
+            "open_questions_replace": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "question": {"type": "string"},
+                        "status": {"type": "string"},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["question"],
+                },
+            },
+            "blockers_replace": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "description": {"type": "string"},
+                        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                        "resolution_strategy": {"type": "string"},
+                    },
+                    "required": ["description"],
+                },
+            },
             "phase": {
                 "type": "string",
                 "enum": [
@@ -870,6 +936,75 @@ TASK_TOOLS = [
         ["task_id"],
     ),
 ]
+
+
+CORE_TASK_STATE_TOOL = function_tool(
+    "update_task_state",
+    (
+        "Applies an optimistic, runtime-validated patch to the shared task lifecycle and "
+        "semantic progress state. This schema contains no coding phase or code-specific fields."
+    ),
+    {
+        "base_version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "TaskState version this patch was based on.",
+        },
+        "current_focus": {"type": "string"},
+        "completed_add": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "description": {"type": "string"},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["description"],
+            },
+        },
+        "pending_replace": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "description": {"type": "string"},
+                    "status": {"type": "string"},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["description"],
+            },
+        },
+        "open_questions_replace": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "blockers_replace": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "description": {"type": "string"},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                    "resolution_strategy": {"type": "string"},
+                },
+                "required": ["description"],
+            },
+        },
+        "completion_basis_add": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "requested_status": {
+            "type": "string",
+            "enum": ["active", "blocked", "completed", "failed", "cancelled"],
+        },
+        "stop_reason": {"type": "string"},
+    },
+    ["base_version"],
+)
 
 UPDATE_TASK_STATE_TOOL = TASK_TOOLS[0]
 

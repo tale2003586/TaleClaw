@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronUp, CircleStop, Send, Sparkles } from "lucide-react";
-import { postJson } from "../api/client";
-import type { MessageDto, SessionDto, SessionResponse } from "../api/types";
+import { ChevronDown, ChevronUp, CircleStop, Paperclip, Send, Sparkles, X } from "lucide-react";
+import { postJson, uploadFormData } from "../api/client";
+import type { FileEntry, FilesResponse, MessageDto, SessionDto, SessionResponse } from "../api/types";
 import { useAppContext, useSessionsContext } from "../app/contexts";
 import { Button, EmptyState } from "../components/ui";
 import { SafeMarkdown } from "../components/chat/SafeMarkdown";
@@ -21,10 +21,14 @@ export default function ChatPage() {
   const [completedActivity, setCompletedActivity] = useState<ActivitySnapshot | null>(null);
   const [modeBusy, setModeBusy] = useState("");
   const [modeNotice, setModeNotice] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachmentBusy, setAttachmentBusy] = useState(false);
+  const [attachmentError, setAttachmentError] = useState("");
   const bottom = useRef<HTMLDivElement>(null);
   const messageList = useRef<HTMLDivElement>(null);
   const messageScroller = useRef<HTMLDivElement>(null);
   const composerInput = useRef<HTMLTextAreaElement>(null);
+  const attachmentInput = useRef<HTMLInputElement>(null);
   const shouldStickToBottom = useRef(true);
   const { active, busy, loadSession, loadOlderMessages, loadingHistory, newSession, reload, setActive } = sessions;
 
@@ -76,15 +80,43 @@ export default function ChatPage() {
     });
   }, [active?.message_page?.has_more, loadOlderMessages, loadingHistory]);
 
-  const send = () => {
-    const message = draft.trim();
-    if (!message || stream.status === "streaming" || raw) return;
+  const send = async () => {
+    const selectedFiles = [...attachments];
+    const message = draft.trim() || (selectedFiles.length ? "请分析附件内容。" : "");
+    if (!message || stream.status === "streaming" || attachmentBusy || raw) return;
     shouldStickToBottom.current = true;
     setDraft("");
+    setAttachments([]);
+    setAttachmentError("");
     setCompletedActivity(null);
-    setOptimistic([{ role: "user", content: message }]);
+    const display = selectedFiles.length ? `${message}\n\n附件：${selectedFiles.map((file) => file.name).join("、")}` : message;
+    setOptimistic([{ role: "user", content: display }]);
     if (composerInput.current) composerInput.current.style.height = "auto";
-    void stream.send(sessions.activeId, message, user.role === "admin" ? codingWorkspace : "");
+    try {
+      let paths: string[] = [];
+      if (selectedFiles.length) {
+        setAttachmentBusy(true);
+        const form = new FormData();
+        form.append("path", `chat-attachments/${uploadId()}`);
+        selectedFiles.forEach((file) => form.append("file", file));
+        const response = await uploadFormData<{ saved: FileEntry[]; files: FilesResponse }>("/api/files/upload", form);
+        paths = (response.saved || []).map((entry) => entry.path);
+        if (paths.length !== selectedFiles.length) throw new Error("部分附件上传失败");
+      }
+      await stream.send(sessions.activeId, message, user.role === "admin" ? codingWorkspace : "", paths);
+    } catch (reason) {
+      setOptimistic([]);
+      setAttachmentError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setAttachmentBusy(false);
+    }
+  };
+
+  const selectAttachments = (files: FileList | null) => {
+    const incoming = Array.from(files || []);
+    setAttachments((current) => [...current, ...incoming].slice(0, 5));
+    setAttachmentError(incoming.length + attachments.length > 5 ? "每条消息最多添加 5 个附件。" : "");
+    if (attachmentInput.current) attachmentInput.current.value = "";
   };
 
   const changeMode = async (command: string, label: string) => {
@@ -118,12 +150,16 @@ export default function ChatPage() {
       <div className="message-list" ref={messageList}>
         {active?.message_page?.has_more && <div className="message-history-loader"><Button disabled={loadingHistory} onClick={() => handleMessageScroll()}>{loadingHistory ? "正在加载更早消息…" : "向上滚动加载更早消息"}</Button></div>}
         {messages.length === 0 && !stream.text ? <EmptyState title="今天想先处理什么？" message="从一个具体任务开始，TaleClaw 会持续展示执行过程。" /> : messages.map((message, index) => <article className={`message ${message.role}`} key={message.seq == null ? `${message.role}-pending-${index}` : `message-${message.seq}`}><span className="message-role">{roleLabel(message)}</span><div><MessageContent message={message} activity={index === lastAssistantIndex && completedActivity?.sessionId === sessions.activeId ? completedActivity : null} /></div></article>)}
-        {(stream.status === "streaming" || stream.status === "stopping" || stream.text || stream.error) && <article className={`message assistant streaming ${stream.error ? "error" : ""}`}><span className="message-role">Agent</span><div><ActivityTimeline items={stream.activity} status={stream.status === "error" ? "error" : "running"} startedAt={stream.startedAt} finishedAt={stream.finishedAt} />{stream.text && <SafeMarkdown>{stream.text}</SafeMarkdown>}{stream.error && <p className="inline-error">{stream.error}</p>}</div></article>}
+        {(stream.status === "streaming" || stream.status === "stopping" || stream.text || stream.error) && <article className={`message assistant streaming ${stream.error ? "error" : ""}`}><span className="message-role">Agent</span><div><ActivityTimeline items={stream.activity} status={stream.status === "error" ? "error" : "running"} startedAt={stream.startedAt} finishedAt={stream.finishedAt} />{stream.progressText && <p className="attachment-progress">{stream.progressText}</p>}{stream.text && <SafeMarkdown>{stream.text}</SafeMarkdown>}{stream.error && <p className="inline-error">{stream.error}</p>}</div></article>}
         <div ref={bottom} />
       </div>
     </div>
-    <div className="composer-dock"><div className="composer"><textarea ref={composerInput} value={draft} disabled={raw || stream.status === "streaming"} onChange={(event) => { setDraft(event.target.value); event.currentTarget.style.height = "auto"; event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 190)}px`; }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send(); } }} placeholder={raw ? "只读会话" : "让 taleclaw 编写代码、诊断问题或分析系统……"} /><div><span>{stream.status === "streaming" ? "思考与执行中" : stream.status === "stopping" ? "正在停止" : raw ? "只读会话" : "Enter 发送 · Shift+Enter 换行"}</span>{stream.status === "streaming" ? <Button onClick={() => void stream.stop(sessions.activeId)}><CircleStop aria-hidden="true" size={14} />停止</Button> : <Button className="primary" onClick={send} disabled={!draft.trim() || raw}><Send aria-hidden="true" size={14} />发送</Button>}</div></div></div>
+    <div className="composer-dock"><div className="composer">{attachments.length > 0 && <div className="attachment-list">{attachments.map((file, index) => <span className="attachment-chip" key={`${file.name}-${file.size}-${index}`}><Paperclip aria-hidden="true" size={13} />{file.name}<button type="button" aria-label={`移除 ${file.name}`} onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X aria-hidden="true" size={12} /></button></span>)}</div>}{attachmentError && <p className="composer-error">{attachmentError}</p>}<textarea ref={composerInput} value={draft} disabled={raw || stream.status === "streaming" || attachmentBusy} onChange={(event) => { setDraft(event.target.value); event.currentTarget.style.height = "auto"; event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 190)}px`; }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} placeholder={raw ? "只读会话" : "输入问题，并可添加 PDF、Word、PPT 或图片附件……"} /><div><span>{attachmentBusy ? "正在上传附件" : stream.status === "streaming" ? "思考与执行中" : stream.status === "stopping" ? "正在停止" : raw ? "只读会话" : "附件将先经 MinerU 精准解析"}</span>{stream.status === "streaming" ? <Button onClick={() => void stream.stop(sessions.activeId)}><CircleStop aria-hidden="true" size={14} />停止</Button> : <div className="composer-actions"><Button aria-label="添加附件" disabled={raw || attachmentBusy} onClick={() => attachmentInput.current?.click()}><Paperclip aria-hidden="true" size={14} />附件</Button><input ref={attachmentInput} hidden multiple type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.png,.jpg,.jpeg,.jp2,.webp,.gif,.bmp" onChange={(event) => selectAttachments(event.target.files)} /><Button className="primary" onClick={() => void send()} disabled={(!draft.trim() && !attachments.length) || raw || attachmentBusy}><Send aria-hidden="true" size={14} />发送</Button></div>}</div></div></div>
   </div>;
+}
+
+function uploadId() {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 function MessageContent({ message, activity }: { message: MessageDto; activity?: ActivitySnapshot | null }) {

@@ -16,7 +16,13 @@ from runtime.context import ContextBundle
 from applications.coding.orchestration.task import TASKS
 from runtime.sessions import Session
 from tools.executor import ToolExecutor
-from tools.hooks import FileWriteScopeHook, ToolLoopGuardHook, ToolTraceHook
+from tools.hooks import (
+    ArtifactAccessGuardHook,
+    FileWriteScopeHook,
+    TaskStateLifecycleGuardHook,
+    ToolLoopGuardHook,
+    ToolTraceHook,
+)
 from tools.tool_registry import build_teammate_tool_registry
 
 
@@ -60,6 +66,8 @@ class TeammateManager:
         self.model = ""
         self.tool_executor = ToolExecutor([
             FileWriteScopeHook(),
+            TaskStateLifecycleGuardHook(),
+            ArtifactAccessGuardHook(),
             ToolLoopGuardHook(),
             ToolTraceHook(),
         ])
