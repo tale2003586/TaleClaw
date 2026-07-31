@@ -24,6 +24,24 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
+# Runtime tools used by coding agents and deployment diagnostics. Keep this
+# list in the image so container recreation does not discard ad-hoc installs.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        file \
+        git \
+        jq \
+        less \
+        openssh-client \
+        patch \
+        procps \
+        ripgrep \
+        unzip \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements*.txt ./
 RUN python -m pip install \
     --prefer-binary \

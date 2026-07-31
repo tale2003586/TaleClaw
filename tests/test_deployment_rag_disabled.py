@@ -20,6 +20,29 @@ class DeploymentRagDisabledTests(unittest.TestCase):
         self.assertIn("RAG_ENABLED=0", dockerfile)
         self.assertIn("requirements-rag.txt", dockerfile)
 
+    def test_dockerfile_installs_coding_runtime_tools(self) -> None:
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        installed_lines = {
+            line.strip().removesuffix("\\").strip()
+            for line in dockerfile.splitlines()
+        }
+
+        for package in (
+            "bash",
+            "ca-certificates",
+            "curl",
+            "file",
+            "git",
+            "jq",
+            "openssh-client",
+            "patch",
+            "procps",
+            "ripgrep",
+            "unzip",
+        ):
+            self.assertIn(package, installed_lines)
+        self.assertIn("rm -rf /var/lib/apt/lists/*", dockerfile)
+
     def test_compose_keeps_qdrant_behind_rag_profile(self) -> None:
         compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
         services = compose["services"]

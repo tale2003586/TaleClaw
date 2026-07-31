@@ -353,6 +353,20 @@ sudo docker compose ps
 sudo docker compose logs --tail=100 agent-console
 ```
 
+镜像内置 Coding Agent 常用的 `git`、`rg`、`curl`、`jq`、`file`、
+`patch` 和 `unzip`。首次升级到包含这些工具的版本时必须重新构建镜像，
+不能只重启旧容器：
+
+```bash
+sudo docker compose up -d --build --force-recreate agent-console
+sudo docker compose exec agent-console sh -lc \
+  'git --version && rg --version | sed -n "1p" && jq --version'
+```
+
+如果 `git status` 提示当前目录不是仓库，说明二进制已经安装，但目标工作区
+没有包含 `.git` 元数据。此时应把实际代码仓库挂载为独立 Coding workspace，
+不要为了获得 Git 历史而取消项目镜像的 `.dockerignore` 保护。
+
 在服务器本机检查登录页：
 
 ```bash
