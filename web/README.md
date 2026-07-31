@@ -24,6 +24,7 @@ Telegram 私聊接入见：[Telegram Gateway 部署说明](../docs/gateways/TELE
 - 会话侧栏支持删除 Web 会话，删除当前会话后会自动切换或新建会话
 - 文本分析页，AI 回复会和原文一起追加保存到 `storage/records/analysis.txt`
 - `/hybrid`、`/chat`、`/coding` 模式切换
+- 聊天附件先经 MinerU 精准解析，再将解析结果和用户问题一起交给 LLM
 
 快捷键：
 
@@ -56,7 +57,13 @@ WEB_ALLOW_REGISTRATION=1
 WEB_ALLOW_ANONYMOUS=0
 WEB_COOKIE_SECURE=0
 WEB_MAX_BODY_BYTES=52428800
+MINERU_API_TOKEN=你的 MinerU 精准解析 API Token
 ```
+
+MinerU 默认使用 `vlm`，并开启表格和公式识别；其他可选项见根目录
+`.env.example`。当前 Web 上传上限由 `WEB_MAX_BODY_BYTES` 控制，默认约
+50MB。如果需要使用 MinerU 精准 API 的更大文件额度，请在评估服务端内存后
+提高该值。
 
 单账号配置会被视为管理员账号。多人使用时，改成：
 

@@ -12,7 +12,8 @@
     "storage_list_files",
     "storage_read_file",
     "storage_write_file",
-    "tool_search"
+    "tool_search",
+    "update_task_state"
   ],
   "coding_visible": [
     "bash",

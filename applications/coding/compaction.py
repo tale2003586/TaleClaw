@@ -16,6 +16,12 @@ from runtime.context.dynamic_budget import (
     enforce_hard_token_guard,
 )
 from runtime.context.events import payload_checksum
+from runtime.task_state.models import TERMINAL_TASK_STATUSES, TaskStatus
+from runtime.task_state.patch import (
+    TaskStateCorePatch,
+    TaskStateValidationError,
+    validate_task_state_core_patch,
+)
 
 from .task_state import (
     Action,
@@ -37,7 +43,7 @@ from .task_state import (
 )
 
 
-class StateValidationError(ValueError):
+class StateValidationError(TaskStateValidationError):
     pass
 
 
@@ -154,8 +160,16 @@ class StatePatch:
     """An additive proposal.  It intentionally has no `state` field."""
 
     patch_id: str = ""
+    base_version: int | None = None
     source_event_ids: list[str] = field(default_factory=list)
     origin: str = "deterministic"
+    requested_status: TaskStatus | None = None
+    current_focus: str | None = None
+    completion_basis_add: list[str] = field(default_factory=list)
+    stop_reason: str | None = None
+    pending_replace: list[Action] | None = None
+    open_questions_replace: list[OpenQuestion] | None = None
+    blockers_replace: list[Blocker] | None = None
     phase: TaskPhase | None = None
     objective: Objective | None = None
     constraints: list[Constraint] = field(default_factory=list)
@@ -190,6 +204,10 @@ class StatePatch:
         # This prevents every empty constructor from sharing one accidental id.
         if self.phase is not None and not isinstance(self.phase, TaskPhase):
             self.phase = _coerce_phase(self.phase)
+        if self.requested_status is not None and not isinstance(
+            self.requested_status, TaskStatus
+        ):
+            self.requested_status = TaskStatus(str(self.requested_status))
 
     @classmethod
     def from_payload(cls, payload: Any) -> "StatePatch":
@@ -198,20 +216,59 @@ class StatePatch:
         if not isinstance(payload, dict):
             raise StateValidationError("semantic compactor must return a StatePatch or object")
         phase = payload.get("phase")
+        requested_status = payload.get("requested_status")
         complete_actions = _completion_transitions(payload.get("complete_actions"))
         resolve_questions = _completion_transitions(payload.get("resolve_questions"))
         resolve_hypotheses = _completion_transitions(payload.get("resolve_hypotheses"))
         return cls(
             patch_id=str(payload.get("patch_id") or ""),
+            base_version=(
+                int(payload["base_version"])
+                if payload.get("base_version") is not None
+                else None
+            ),
             source_event_ids=[str(value) for value in payload.get("source_event_ids") or []],
             origin=str(payload.get("origin") or "semantic"),
+            requested_status=(
+                TaskStatus(str(requested_status)) if requested_status else None
+            ),
+            current_focus=(
+                str(payload.get("current_focus") or "").strip()
+                if "current_focus" in payload
+                else None
+            ),
+            completion_basis_add=[
+                str(value) for value in payload.get("completion_basis_add") or [] if value
+            ],
+            stop_reason=(
+                str(payload.get("stop_reason") or "").strip()
+                if "stop_reason" in payload
+                else None
+            ),
+            pending_replace=(
+                _coerce_many(Action, payload.get("pending_replace"))
+                if "pending_replace" in payload
+                else None
+            ),
+            open_questions_replace=(
+                _coerce_many(OpenQuestion, payload.get("open_questions_replace"))
+                if "open_questions_replace" in payload
+                else None
+            ),
+            blockers_replace=(
+                _coerce_many(Blocker, payload.get("blockers_replace"))
+                if "blockers_replace" in payload
+                else None
+            ),
             phase=_coerce_phase(phase) if phase else None,
             objective=_coerce(Objective, payload.get("objective")),
             constraints=_coerce_many(Constraint, payload.get("constraints") or payload.get("update_constraints")),
             plan_items=_coerce_many(PlanItem, payload.get("plan_items") or payload.get("plan") or payload.get("add_plan_items")),
             completed=_coerce_many(
                 CompletedItem,
-                payload.get("completed") or payload.get("add_completed"),
+                payload.get("completed")
+                or payload.get("add_completed")
+                or payload.get("completed_add"),
             ),
             findings=_coerce_many(Finding, [
                 *(payload.get("findings") or []),
@@ -473,6 +530,33 @@ def validate_state_patch(
     # reject an otherwise valid task state merely because its serialized form is
     # large; prompt budgeting/compaction owns context size.
     del max_tokens
+    core_patch = TaskStateCorePatch(
+        base_version=patch.base_version,
+        current_focus=patch.current_focus,
+        completed_add=list(patch.completed),
+        pending_replace=(
+            list(patch.pending_replace) if patch.pending_replace is not None else None
+        ),
+        open_questions_replace=(
+            [item.question for item in patch.open_questions_replace]
+            if patch.open_questions_replace is not None
+            else None
+        ),
+        blockers_replace=(
+            list(patch.blockers_replace) if patch.blockers_replace is not None else None
+        ),
+        completion_basis_add=list(patch.completion_basis_add),
+        requested_status=patch.requested_status,
+        stop_reason=patch.stop_reason,
+    )
+    try:
+        validate_task_state_core_patch(state, core_patch)
+    except TaskStateValidationError as exc:
+        raise StateValidationError(str(exc)) from exc
+    if state.status in TERMINAL_TASK_STATUSES and _coding_patch_has_changes(patch):
+        raise StateValidationError(
+            f"terminal task state cannot be modified: {state.status}"
+        )
     _assign_patch_item_ids(patch)
     _assign_patch_id(patch)
     if patch.objective is not None:
@@ -558,6 +642,22 @@ def _assign_patch_item_ids(patch: StatePatch) -> None:
 
 def _apply_patch(state: TaskState, patch: StatePatch, *, validate: bool) -> TaskState:
     next_state = deepcopy(state)
+    if patch.current_focus is not None:
+        next_state.current_focus = patch.current_focus or None
+    next_state.completion_basis = list(dict.fromkeys([
+        *next_state.completion_basis,
+        *patch.completion_basis_add,
+    ]))
+    if patch.requested_status is not None:
+        next_state.status = patch.requested_status
+    if patch.stop_reason is not None:
+        next_state.stop_reason = patch.stop_reason or None
+    if patch.pending_replace is not None:
+        next_state.pending_actions = deepcopy(patch.pending_replace)
+    if patch.open_questions_replace is not None:
+        next_state.open_questions = deepcopy(patch.open_questions_replace)
+    if patch.blockers_replace is not None:
+        next_state.blockers = deepcopy(patch.blockers_replace)
     if patch.objective is not None:
         _record_history(next_state, "objective", "objective", next_state.objective, patch.objective, patch.patch_id)
         next_state.objective = deepcopy(patch.objective)
@@ -602,6 +702,39 @@ def _apply_patch(state: TaskState, patch: StatePatch, *, validate: bool) -> Task
     next_state.version += 1
     next_state.updated_at = _now()
     return next_state
+
+
+def _coding_patch_has_changes(patch: StatePatch) -> bool:
+    return bool(
+        patch.objective is not None
+        or patch.phase is not None
+        or patch.constraints
+        or patch.plan_items
+        or patch.completed
+        or patch.findings
+        or patch.hypotheses
+        or patch.decisions
+        or patch.pending_actions
+        or patch.open_questions
+        or patch.blockers
+        or patch.evidence
+        or patch.artifact_refs
+        or patch.coverage
+        or patch.plan_transitions
+        or patch.action_transitions
+        or patch.question_transitions
+        or patch.hypothesis_transitions
+        or patch.tool_call_fingerprints
+        or patch.failed_strategies
+        or patch.non_retryable_failures
+        or patch.result_hashes
+        or patch.observed_effects
+        or patch.files_inspected
+        or patch.symbols_inspected
+        or patch.files_modified
+        or patch.tests_run
+        or patch.areas_unchecked
+    )
 
 
 def _validate_patch_ids(state: TaskState, patch: StatePatch) -> None:

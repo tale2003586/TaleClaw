@@ -372,6 +372,11 @@ class ReasoningLoop:
                     final_answer=response.content or "",
                     step=reasoning_steps,
                 )
+                self._complete_shared_task_state(
+                    session,
+                    profile,
+                    final_answer=response.content or "",
+                )
                 if checkpoint_callback is not None:
                     checkpoint_callback(session)
                 after_turn(session)
@@ -383,12 +388,6 @@ class ReasoningLoop:
                 profile,
                 run_state=run_state,
                 trace_store=trace_store,
-                reasoning_step=reasoning_steps,
-            )
-            self._maybe_inject_task_state_update_reminder(
-                session,
-                profile,
-                response.tool_calls,
                 reasoning_step=reasoning_steps,
             )
             self._checkpoint_reasoning_step(
@@ -504,41 +503,42 @@ class ReasoningLoop:
                     "handled_by": "context_budget",
                 })
 
-    def _maybe_inject_task_state_update_reminder(
+    def _complete_shared_task_state(
         self,
         session,
         profile,
-        tool_calls,
         *,
-        reasoning_step: int,
+        final_answer: str,
     ) -> None:
         if not TASK_STATE_CONTEXT_ENABLED:
             return
-        if str(getattr(profile, "tool_mode", "") or "") != "coding":
-            return
-        names = [str(getattr(call, "name", "") or "") for call in tool_calls or []]
-        if not names or all(name == "update_task_state" for name in names):
-            return
-        session.add_message(
-            "user",
-            (
-                '<runtime-task-state-reminder source="runtime" instructions="true" '
-                f'step="{reasoning_step}">\n'
-                "Review the tool results from the preceding step. If they establish "
-                "a durable change to phase, evidence, findings, hypotheses, decisions, "
-                "pending actions, open questions, or constraints, call "
-                "update_task_state in this next response with only those changes. "
-                "You may call it alongside the next task tool. If no durable state "
-                "changed, continue without calling it. Never infer a state update from "
-                "a failed or unverified result.\n"
-                "</runtime-task-state-reminder>"
-            ),
-            metadata={
-                "kind": "runtime_task_state_update_reminder",
-                "source": "runtime-generated",
-                "step": reasoning_step,
-            },
+        from runtime.task_state import (
+            TaskStateCorePatch,
+            apply_task_state_core_patch,
+            load_task_state_core,
+            save_task_state_core,
         )
+        from runtime.task_state.models import TaskStatus
+
+        state = load_task_state_core(session)
+        if (
+            state is None
+            or state.status != TaskStatus.ACTIVE
+            or state.pending_actions
+            or state.blockers
+            or not str(final_answer or "").strip()
+        ):
+            return
+        patch = TaskStateCorePatch(
+            base_version=state.version,
+            current_focus="",
+            completion_basis_add=[
+                "A final assistant response was produced with no pending actions or blockers."
+            ],
+            requested_status=TaskStatus.COMPLETED,
+            stop_reason="assistant_final_message",
+        )
+        save_task_state_core(session, apply_task_state_core_patch(state, patch))
 
     def _reasoning_step(
         self,
@@ -1607,6 +1607,7 @@ class ReasoningLoop:
         if state is not None:
             state.stop_reason = reason_value
             state.stop_message = message
+        self._stop_shared_task_state(session, profile, reason_value)
         checkpoint_step = reasoning_step
         if checkpoint_step is None and run_state is not None:
             checkpoint_step = getattr(run_state, "reasoning_steps", 0)
@@ -1629,6 +1630,40 @@ class ReasoningLoop:
             "message_preview": event_preview(message),
         })
         after_turn(session)
+
+    def _stop_shared_task_state(self, session, profile, reason: str) -> None:
+        if not TASK_STATE_CONTEXT_ENABLED:
+            return
+        from runtime.task_state import (
+            TaskStateCorePatch,
+            apply_task_state_core_patch,
+            load_task_state_core,
+            save_task_state_core,
+        )
+        from runtime.task_state.models import TERMINAL_TASK_STATUSES, TaskStatus
+
+        state = load_task_state_core(session)
+        if state is None or state.status in TERMINAL_TASK_STATUSES:
+            return
+        if reason == StopReason.USER_CANCELLED.value:
+            requested = TaskStatus.CANCELLED
+        elif reason in {
+            StopReason.REASONING_STEP_LIMIT.value,
+            StopReason.EMPTY_MODEL_RESPONSE.value,
+        }:
+            requested = TaskStatus.FAILED
+        else:
+            requested = TaskStatus.BLOCKED
+        try:
+            updated = apply_task_state_core_patch(state, TaskStateCorePatch(
+                base_version=state.version,
+                current_focus="",
+                requested_status=requested,
+                stop_reason=reason,
+            ))
+        except ValueError:
+            return
+        save_task_state_core(session, updated)
 
     def _apply_reflection(
         self,
@@ -1817,7 +1852,14 @@ def _context_report_payload(report) -> dict:
 def _is_loop_guard_denial(result: ToolExecutionResult) -> bool:
     traces = list(result.pre_hook_trace or []) + list(result.post_hook_trace or [])
     return any(
-        item.hook_name == "tool_loop_guard" and item.decision == "deny"
+        item.decision == "deny"
+        and (
+            item.hook_name in {"tool_loop_guard", "task_state_lifecycle_guard"}
+            or (
+                item.hook_name == "artifact_access_guard"
+                and "no_progress_count=2" in item.reason
+            )
+        )
         for item in traces
     )
 

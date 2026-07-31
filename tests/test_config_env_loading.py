@@ -11,6 +11,47 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _dotenv_values(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+def test_env_example_uses_task_state_dynamic_budget_configuration() -> None:
+    values = _dotenv_values(ROOT / ".env.example")
+
+    assert {
+        "CODING_CONTEXT_STATE_ENABLED": "1",
+        "TASK_STATE_CONTEXT_ENABLED": "1",
+        "SEMANTIC_COMPACTION_ENABLED": "1",
+        "ARTIFACT_OFFLOADING_ENABLED": "1",
+        "DYNAMIC_PROMPT_BUDGET_ENABLED": "1",
+        "PROMPT_SOFT_COMPACTION_RATIO": "0.70",
+        "PROMPT_COMPACTION_TARGET_RATIO": "0.45",
+        "PROMPT_HARD_INPUT_RATIO": "0.92",
+        "PROMPT_SAFETY_MARGIN_TOKENS": "0",
+        "LONG_CONTENT_MAX_TOKENS": "4000",
+        "LONG_CONTENT_MAX_CHARS": "20000",
+        "LONG_CONTENT_MAX_BYTES": "64000",
+        "CONTEXT_ARTIFACT_ROOT": ".coding_applications/artifacts",
+        "SUBAGENT_MAX_REASONING_STEPS": "16",
+        "WORKING_MEMORY_CONTEXT_FLOOR": "1000",
+        "WORKSPACE_ROOTS": ".",
+        "DEFAULT_CODING_WORKSPACE": ".",
+    }.items() <= values.items()
+    assert {
+        "LLM_DEFAULT_PROVIDER",
+        "CODING_CONTEXT_COMPACTION_TRIGGER_TOKENS",
+        "CODING_CONTEXT_COMPACTION_TARGET_TOKENS",
+        "CODING_CONTEXT_RECENT_GROUPS",
+    }.isdisjoint(values)
+
+
 def test_config_loads_project_dotenv_before_evaluating_constants(tmp_path: Path) -> None:
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()

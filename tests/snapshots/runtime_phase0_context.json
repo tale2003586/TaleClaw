@@ -2,6 +2,7 @@
   "chat": {
     "roles": [
       "system",
+      "system",
       "user"
     ],
     "section_order": [
@@ -20,7 +21,8 @@
       "task_runtime_events",
       "inbox",
       "background_results",
-      "context_frame"
+      "context_frame",
+      "task_state_context"
     ],
     "section_rendered": {
       "system_profile": true,
@@ -38,14 +40,15 @@
       "task_runtime_events": false,
       "inbox": false,
       "background_results": false,
-      "context_frame": false
+      "context_frame": false,
+      "task_state_context": true
     },
-    "estimated_tokens": 337
+    "estimated_tokens": 607
   },
   "coding": {
     "roles": [
       "system",
-      "user",
+      "system",
       "user"
     ],
     "section_order": [
@@ -88,6 +91,6 @@
       "context_frame": false,
       "coding_context_state": true
     },
-    "estimated_tokens": 1038
+    "estimated_tokens": 1153
   }
 }

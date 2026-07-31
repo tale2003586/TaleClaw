@@ -132,7 +132,7 @@ class ToolRegistry:
 
     def schemas_for_mode(self, mode: str = "coding") -> list[dict]:
         return [
-            tool.schema
+            self._schema_for_mode(tool, mode)
             for tool in self._tools.values()
             if tool.enabled_for(mode)
         ]
@@ -140,10 +140,17 @@ class ToolRegistry:
     def schemas_for_turn(self, session, mode: str = "coding") -> list[dict]:
         visible_names = self.visible_names_for_turn(session, mode)
         return [
-            tool.schema
+            self._schema_for_mode(tool, mode)
             for name, tool in self._tools.items()
             if name in visible_names
         ]
+
+    def _schema_for_mode(self, tool: ToolSpec, mode: str) -> dict:
+        if tool.name == "update_task_state" and mode not in {"coding", "teammate"}:
+            from tools.schema import CORE_TASK_STATE_TOOL
+
+            return CORE_TASK_STATE_TOOL
+        return tool.schema
 
     def visible_names_for_turn(self, session, mode: str = "coding") -> set[str]:
         return self.policy.visible_tools(session, mode)
@@ -165,12 +172,12 @@ class ToolRegistry:
         if direct:
             lines.append("Visible now:")
             for name in direct:
-                lines.append(f"- {name}: {self._tool_description(name)}")
+                lines.append(f"- {name}: {self._tool_description(name, mode=mode)}")
         if deferred:
             lines.append("Available after unlock:")
             for name in deferred:
                 lines.append(
-                    f"- {name}: {self._tool_description(name)} "
+                    f"- {name}: {self._tool_description(name, mode=mode)} "
                     f"(unlock with tool_search select:{name})"
                 )
         lines.append("</tool_catalog>")
@@ -189,7 +196,7 @@ class ToolRegistry:
         trace_store=None,
         run_state=None,
         parent_span_id: str | None = None,
-    ) -> str:
+    ) -> Any:
         if name == "tool_search":
             return self._tool_search(args.get("query", ""), session=session, mode=mode)
 
@@ -223,6 +230,8 @@ class ToolRegistry:
             handler_args = dict(args)
             if tool.session_scoped or name in SESSION_SCOPED_TOOLS:
                 handler_args["_session"] = session
+            if _handler_accepts_keyword(tool.handler, "_mode"):
+                handler_args["_mode"] = mode
             if _handler_accepts_keyword(tool.handler, "_trace_store"):
                 handler_args["_trace_store"] = trace_store
             if _handler_accepts_keyword(tool.handler, "_run_state"):
@@ -299,7 +308,7 @@ class ToolRegistry:
             return f"Unknown tool: {name}"
         if name not in allowed:
             return f"Tool '{name}' is not allowed in {mode} mode."
-        function = self._tools[name].schema.get("function", {})
+        function = self._schema_for_mode(self._tools[name], mode).get("function", {})
         parameters = function.get("parameters", {})
         return "\n".join([
             f"Tool: {name}",
@@ -308,11 +317,11 @@ class ToolRegistry:
             json.dumps(parameters, indent=2, ensure_ascii=False),
         ])
 
-    def _tool_description(self, name: str) -> str:
+    def _tool_description(self, name: str, *, mode: str = "coding") -> str:
         tool = self._tools.get(name)
         if tool is None:
             return ""
-        return tool.schema["function"].get("description", "")
+        return self._schema_for_mode(tool, mode)["function"].get("description", "")
 
 
 def _handler_accepts_keyword(handler: Callable[..., Any], name: str) -> bool:
@@ -495,6 +504,7 @@ def _modes_for_tool(name: str) -> set[str]:
     }
 
     bot_tools = {
+        "update_task_state",
         "load_skill",
         "storage_list_files",
         "storage_read_file",
@@ -526,4 +536,6 @@ def _modes_for_tool(name: str) -> set[str]:
         enabled.update({"bot", "coding", "teammate"})
     if name == "read_artifact":
         enabled.update({"bot", "coding", "teammate"})
+    if name == "update_task_state":
+        enabled.update({"bot", "hybrid"})
     return enabled

@@ -46,6 +46,17 @@ class ToolExecutionResult:
     post_hook_trace: list[HookTraceItem] = field(default_factory=list)
 
 
+class ToolHandlerOutput(str):
+    """String-compatible handler output carrying runtime-only metadata."""
+
+    metadata: dict[str, Any]
+
+    def __new__(cls, output: str, *, metadata: dict[str, Any] | None = None):
+        instance = super().__new__(cls, str(output))
+        instance.metadata = dict(metadata or {})
+        return instance
+
+
 class ToolHook:
     name: str = "hook"
 
@@ -130,12 +141,14 @@ class ToolExecutor:
             ))
 
         try:
-            output = invoker(request.tool_name, arguments)
+            handler_output = invoker(request.tool_name, arguments)
+            output = str(handler_output)
             result = ToolExecutionResult(
                 status="success",
                 output=output,
                 final_arguments=arguments,
                 duration_ms=_elapsed_ms(started),
+                metadata=dict(getattr(handler_output, "metadata", {}) or {}),
                 pre_hook_trace=pre_traces,
             )
         except Exception as e:

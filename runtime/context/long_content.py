@@ -128,9 +128,8 @@ class LongContentDetector:
     ) -> str:
         instruction = _extract_instruction(original, self.instruction_chars)
         descriptor = (
-            f"Large content was externalized to {ref.storage_uri} "
-            f"({ref.name}; {assessment.token_count} tokens, {assessment.byte_count} bytes). "
-            "Use read_artifact with this URI to inspect the complete content or search it."
+            f"Externalized content metadata: {ref.storage_uri} "
+            f"({ref.name}; {assessment.token_count} tokens, {assessment.byte_count} bytes)."
         )
         return f"{instruction}\n\n{descriptor}\nartifact_ref: {ref.artifact_id}"
 
@@ -153,12 +152,12 @@ def _extract_instruction(text: str, limit: int) -> str:
     """Keep a human instruction only when the prefix looks like prose, not data."""
     stripped = text.lstrip()
     if not stripped or stripped[:1] in "{[":
-        return "The supplied structured content is available by artifact reference."
+        return "Structured content is available by artifact reference."
     first_paragraph = stripped.split("\n\n", 1)[0].strip()
     first_line = first_paragraph.splitlines()[0].strip() if first_paragraph else ""
     candidate = first_paragraph if len(first_paragraph) <= limit else first_line
     if not candidate or len(candidate) > limit or _looks_like_log_line(candidate):
-        return "The supplied large content is available by artifact reference."
+        return "Large content is available by artifact reference."
     return candidate[:limit].rstrip()
 
 

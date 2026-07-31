@@ -12,6 +12,7 @@ ALWAYS_ON_TOOLS = {
 
 PRELOADED_TOOLS_BY_MODE = {
     "bot": {
+        "update_task_state",
         "load_skill",
         "read_artifact",
         "storage_list_files",
@@ -21,6 +22,11 @@ PRELOADED_TOOLS_BY_MODE = {
         "sandbox_read_file",
         "sandbox_write_file",
         "publish_artifact",
+    },
+    "hybrid": {
+        "update_task_state",
+        "load_skill",
+        "read_artifact",
     },
     "coding": {
         "update_task_state",

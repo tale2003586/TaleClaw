@@ -192,6 +192,7 @@ export interface TraceStep { number: number; events: TraceEvent[] }
 
 export type ChatStreamEvent =
   | { type: "delta"; text?: string }
+  | { type: "status"; status?: string; text?: string }
   | ({ type: "event" } & Record<string, unknown>)
   | ({ type: "complete" } & Record<string, unknown>)
   | { type: "error"; error?: string };

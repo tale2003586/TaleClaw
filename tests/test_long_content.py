@@ -39,7 +39,8 @@ def test_character_and_byte_guards_cover_large_json_and_logs(tmp_path) -> None:
     log_result = detector.externalize("log line\n" + "z" * 30, artifact_type="tool_result")
 
     assert json_result.assessment.reasons == ("character_guard", "byte_guard")
-    assert json_result.content.startswith("The supplied structured content")
+    assert json_result.content.startswith("Structured content is available")
+    assert "Use read_artifact" not in json_result.content
     assert json_result.artifact_ref is not None
     assert log_result.assessment.is_long
     assert log_result.artifact_ref is not None
