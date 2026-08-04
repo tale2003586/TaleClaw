@@ -13,6 +13,7 @@ from tools.executor import ToolExecutor
 from tools.handlers import configure_subagent_runner, make_lead_handlers
 from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry, build_lead_tool_registry
+from tools.spec import ToolSpec
 
 
 class ContextBuilder:
@@ -95,11 +96,11 @@ def _registry() -> ToolRegistry:
         "spawn_teammate",
         "tool_search",
     ]:
-        registry.register(
-            function_tool(name, f"{name} tool", {}, []),
-            lambda **kwargs: "ok",
-            allowed_agents={"coding"},
-        )
+        registry.register(ToolSpec(
+            schema=function_tool(name, f"{name} tool", {}, []),
+            handler=lambda **kwargs: "ok",
+            allowed_modes=frozenset({"coding"}),
+        ))
     return registry
 
 

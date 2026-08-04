@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from applications.coding.compaction import (
+from applications.coding.state_updates import (
     DeterministicEventExtractor,
     StatePatch,
     StateValidationError,
@@ -85,7 +85,7 @@ class TaskStateCoreTests(unittest.TestCase):
         migrated = migrate_coding_context_state_payload(legacy_context)
         self.assertEqual(["verified"], [item.id for item in migrated.findings])
         self.assertEqual(["unsupported"], [item.id for item in migrated.hypotheses])
-        self.assertEqual("read_file", migrated.execution_memory.do_not_repeat[0]["tool"])
+        self.assertFalse(hasattr(migrated, "execution_memory"))
 
     def test_extractor_emits_evidence_and_coverage_without_inventing_findings(self) -> None:
         patch = DeterministicEventExtractor().extract([
@@ -183,7 +183,7 @@ class TaskStateCoreTests(unittest.TestCase):
         )
         invalid = StatePatch(action_transitions=[])
         invalid.action_transitions.append(
-            __import__("applications.coding.compaction", fromlist=["ItemTransition"]).ItemTransition(
+            __import__("applications.coding.state_updates", fromlist=["ItemTransition"]).ItemTransition(
                 "action:1", ItemStatus.IN_PROGRESS
             )
         )

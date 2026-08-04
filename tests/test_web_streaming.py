@@ -246,11 +246,13 @@ class StreamingHttpTests(unittest.TestCase):
                 user_id,
                 user_role,
                 workspace_root=None,
+                thinking_enabled=False,
                 on_text,
             ):
                 self.request = (session_id, content)
                 self.user = (user_id, user_role)
                 self.workspace_root = workspace_root
+                self.thinking_enabled = thinking_enabled
                 on_text("你")
                 on_text("好")
                 return "你好"
@@ -276,6 +278,7 @@ class StreamingHttpTests(unittest.TestCase):
         self.assertEqual(("default", "hello"), agent_service.request)
         self.assertEqual(("local", "admin"), agent_service.user)
         self.assertEqual("/tmp/project", agent_service.workspace_root)
+        self.assertFalse(agent_service.thinking_enabled)
         self.assertEqual("web:local:default", agent_service.session_key)
         self.assertTrue(agent_service.unsubscribed)
         self.assertEqual(["event", "delta", "delta", "complete"], [event["type"] for event in events])

@@ -26,9 +26,6 @@ def test_env_example_uses_task_state_dynamic_budget_configuration() -> None:
     values = _dotenv_values(ROOT / ".env.example")
 
     assert {
-        "CODING_CONTEXT_STATE_ENABLED": "1",
-        "TASK_STATE_CONTEXT_ENABLED": "1",
-        "SEMANTIC_COMPACTION_ENABLED": "1",
         "ARTIFACT_OFFLOADING_ENABLED": "1",
         "DYNAMIC_PROMPT_BUDGET_ENABLED": "1",
         "PROMPT_SOFT_COMPACTION_RATIO": "0.70",

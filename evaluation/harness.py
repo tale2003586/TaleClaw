@@ -364,7 +364,7 @@ class CodingBenchmarkHarness:
     def _provider_for_task(self, task: BenchmarkTask):
         if self.runner_mode == "scripted":
             return ScriptedProvider(task.script), "scripted-coding-benchmark"
-        from runtime.bootstrap import get_model_pool
+        from applications.bootstrap import get_model_pool
 
         model_pool = get_model_pool()
         return model_pool.routed_provider("coding"), model_pool.model_for("coding")
@@ -375,7 +375,7 @@ class CodingBenchmarkHarness:
                 "provider": "ScriptedProvider",
                 "model": "scripted-coding-benchmark",
             }
-        from runtime.bootstrap import get_model_pool
+        from applications.bootstrap import get_model_pool
 
         model_pool = get_model_pool()
 
@@ -486,7 +486,9 @@ def _tool_registry_for(allowed_tools: list[str]):
     for name in allowed_tools:
         tool = registry._tools.get(name)
         if tool is not None:
-            tool.always_on = True
+            from tools.spec import ToolInjection
+
+            tool.injection = ToolInjection.ALWAYS
     return registry
 
 

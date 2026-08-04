@@ -9,6 +9,7 @@ from applications.coding import session as coding_application_module
 from applications.coding.session import TaskSessionFactory
 from tools import handlers
 from tools.tool_registry import ToolRegistry
+from tools.spec import ToolSpec
 from memory.command_service import MemoryCommandService
 from memory.index_sync import MemoryIndexSynchronizer
 from memory.semantic_retrieval import SemanticMemoryRetrievalService
@@ -32,16 +33,18 @@ def _tool_schema(name: str) -> dict:
 
 def _memory_registry() -> ToolRegistry:
     registry = ToolRegistry()
-    registry.register(
-        _tool_schema("memorize"),
-        handlers.MEMORY_HANDLERS["memorize"],
-        allowed_agents={"bot", "coding"},
-    )
-    registry.register(
-        _tool_schema("recall_memory"),
-        handlers.MEMORY_HANDLERS["recall_memory"],
-        allowed_agents={"bot", "coding"},
-    )
+    registry.register(ToolSpec(
+        schema=_tool_schema("memorize"),
+        handler=handlers.MEMORY_HANDLERS["memorize"],
+        allowed_modes=frozenset({"bot", "coding"}),
+        session_scoped=True,
+    ))
+    registry.register(ToolSpec(
+        schema=_tool_schema("recall_memory"),
+        handler=handlers.MEMORY_HANDLERS["recall_memory"],
+        allowed_modes=frozenset({"bot", "coding"}),
+        session_scoped=True,
+    ))
     return registry
 
 

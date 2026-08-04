@@ -1,5 +1,6 @@
 from plugins.base import Plugin, ToolRegistration, TurnResult
 from tools.schema import function_tool
+from tools.spec import ToolInjection, ToolRisk
 
 
 class StatusCommandsPlugin(Plugin):
@@ -14,9 +15,11 @@ class StatusCommandsPlugin(Plugin):
                     {},
                 ),
                 handler=self.runtime_status,
-                risk="low",
-                allowed_agents={"bot", "coding"},
-                always_on=True,
+                risk=ToolRisk.LOW,
+                allowed_modes=frozenset({"bot", "coding"}),
+                injection=ToolInjection.ALWAYS,
+                idempotent=True,
+                side_effect=False,
                 session_scoped=True,
                 source="plugin:status_commands",
             )

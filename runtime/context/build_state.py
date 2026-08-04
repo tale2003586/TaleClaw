@@ -28,9 +28,6 @@ class BuildState:
     memory_block: str
     raw_memory_block: str
     budgeted_memory: BudgetedText
-    working_memory_block: str
-    raw_working_memory_block: str
-    budgeted_working_memory: BudgetedText
     retrieved_history_block: str
     raw_retrieved_history_block: str
     budgeted_retrieved_history: BudgetedText

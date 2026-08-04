@@ -130,7 +130,7 @@ def test_context_reconstructs_artifact_access_summary_after_history_compaction(t
     )
 
     rendered = "\n".join(str(item.get("content") or "") for item in context.messages)
-    assert '<task-state source="runtime-generated" instructions="false"' in rendered
+    assert '<task-state source="runtime-generated" instructions="false"' not in rendered
     assert '<artifact-access-state source="runtime-generated" instructions="false">' in rendered
     assert '"covered_ranges":[[0,200]]' in rendered
 

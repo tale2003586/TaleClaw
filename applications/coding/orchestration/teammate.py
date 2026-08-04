@@ -36,7 +36,7 @@ class TeammateContextBuilder:
     def __init__(self, name: str) -> None:
         self.name = name
 
-    def build(self, *, session, profile) -> ContextBundle:
+    def build(self, *, session, profile, **kwargs) -> ContextBundle:
         inbox = BUS.read_inbox(self.name)
         for msg in inbox:
             PROTOCOLS.notify_message(msg)
@@ -78,7 +78,7 @@ class TeammateManager:
     def _ensure_model_defaults(self) -> None:
         if self.provider is not None and self.model:
             return
-        from runtime.bootstrap import get_model_pool
+        from applications.bootstrap import get_model_pool
 
         self.model_pool = get_model_pool()
         self.provider = self.model_pool.routed_provider("teammate")
@@ -289,12 +289,13 @@ class TeammateManager:
             execution_policy_factory=standard_execution_policies,
         )
         runner.reset_turn_state(session)
-        runner.run_turn(
+        runner.run(
             session=session,
             spec=spec,
-            build_context=lambda session, profile: context_builder.build(
+            build_context=lambda session, profile, **kwargs: context_builder.build(
                 session=session,
                 profile=profile,
+                **kwargs,
             ),
             after_turn=lambda session: session.touch(),
             after_tool_calls=lambda _session, _response, execution: (

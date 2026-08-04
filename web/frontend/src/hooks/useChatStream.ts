@@ -12,7 +12,7 @@ export function useChatStream(onComplete: (session: SessionDto | null, reply: st
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [startedAt, setStartedAt] = useState(0); const [finishedAt, setFinishedAt] = useState(0);
   const controller = useRef<AbortController | null>(null);
-  const send = useCallback(async (sessionId: string, message: string, workspaceRoot = "", attachments: string[] = []) => {
+  const send = useCallback(async (sessionId: string, message: string, workspaceRoot = "", attachments: string[] = [], thinkingEnabled = false) => {
     controller.current?.abort(); const abort = new AbortController(); controller.current = abort;
     const requestStartedAt = performance.now();
     setStatus("streaming"); setText(""); setError(""); setProgressText(attachments.length ? "正在准备附件解析…" : ""); setActivity([]); setStartedAt(requestStartedAt); setFinishedAt(0);
@@ -20,7 +20,7 @@ export function useChatStream(onComplete: (session: SessionDto | null, reply: st
     let accumulated = "";
     let activityItems: ActivityItem[] = [];
     try {
-      await streamNdjson<ChatStreamEvent>("/api/chat/stream", { session_id: sessionId, message, attachments, ...(workspaceRoot ? { workspace_root: workspaceRoot } : {}) }, (event) => {
+      await streamNdjson<ChatStreamEvent>("/api/chat/stream", { session_id: sessionId, message, attachments, thinking_enabled: thinkingEnabled, ...(workspaceRoot ? { workspace_root: workspaceRoot } : {}) }, (event) => {
         if (event.type === "delta") { accumulated += event.text || ""; setText(accumulated); setProgressText(""); }
         else if (event.type === "status") setProgressText(event.text || "");
         else if (event.type === "event") {

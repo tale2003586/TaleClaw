@@ -23,7 +23,6 @@ from config import (
     REPO_MAP_DEFAULT_MAX_DEPTH,
     REPO_MAP_MAX_CHARS,
     REPO_MAP_MAX_FILE_BYTES,
-    WORKING_MEMORY_CHECKPOINT_ENABLED,
     WORKDIR,
 )
 from runtime.context.artifacts import ArtifactNotFoundError, ArtifactStore
@@ -40,10 +39,6 @@ from agents.subagent.orchestration_state import (
 )
 from memory.store import MemoryStore
 from runtime.workspace import safe_workspace_path, workspace_root_for_session
-from runtime.working_memory import (
-    checkpoint_subtask_results,
-    checkpoint_subtasks_dispatched,
-)
 from applications.coding.orchestration.protocols import PROTOCOLS
 from skill_runtime import SKILL_LOADER
 from applications.coding.orchestration.task import TASKS
@@ -2557,7 +2552,7 @@ def _update_task_state(**kwargs):
         mode = str(getattr(kwargs.get("_session"), "active_agent", "") or "")
     if mode not in {"coding", "teammate"}:
         return _update_task_state_core(**kwargs)
-    from applications.coding.compaction import StatePatch, reduce_task_state
+    from applications.coding.state_updates import StatePatch, reduce_task_state
     from applications.coding.task_state import (
         ensure_task_state,
         load_task_state,
@@ -2893,9 +2888,11 @@ def _run_parallel_subagent_tasks(
 
 
 def _checkpoint_subtasks_dispatched(session, tasks: list[dict]) -> None:
-    if not WORKING_MEMORY_CHECKPOINT_ENABLED or session is None:
+    if session is None:
         return
-    checkpoint_subtasks_dispatched(session, tasks)
+    append_event = getattr(session, "append_event", None)
+    if callable(append_event):
+        append_event("subagents_dispatched", {"tasks": list(tasks)})
 
 
 def _checkpoint_subtask_results(
@@ -2903,9 +2900,14 @@ def _checkpoint_subtask_results(
     tasks: list[dict],
     results: list[dict],
 ) -> None:
-    if not WORKING_MEMORY_CHECKPOINT_ENABLED or session is None:
+    if session is None:
         return
-    checkpoint_subtask_results(session, tasks, results)
+    append_event = getattr(session, "append_event", None)
+    if callable(append_event):
+        append_event("subagents_completed", {
+            "tasks": list(tasks),
+            "results": list(results),
+        })
 
 
 def _trace_subagent_rejection(

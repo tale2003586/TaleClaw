@@ -71,7 +71,7 @@ class ReasoningLoopTokenGateTests(unittest.TestCase):
         loop.run(
             session=session,
             profile=SimpleNamespace(tool_mode="bot"),
-            build_context=lambda session, profile: SimpleNamespace(messages=list(session.messages), report=None),
+            build_context=lambda session, profile, **kwargs: SimpleNamespace(messages=list(session.messages), report=None),
             resolve_provider=lambda session, profile: (provider, "tiny-model"),
             after_turn=lambda session: None,
             run_state=RunState(),
@@ -99,7 +99,7 @@ class ReasoningLoopTokenGateTests(unittest.TestCase):
             loop.run(
                 session=session,
                 profile=SimpleNamespace(tool_mode="bot"),
-                build_context=lambda session, profile: SimpleNamespace(
+                build_context=lambda session, profile, **kwargs: SimpleNamespace(
                     messages=list(session.messages),
                     report=None,
                 ),
@@ -134,7 +134,7 @@ class ReasoningLoopTokenGateTests(unittest.TestCase):
             loop.run(
                 session=session,
                 profile=SimpleNamespace(tool_mode="bot"),
-                build_context=lambda session, profile: SimpleNamespace(
+                build_context=lambda session, profile, **kwargs: SimpleNamespace(
                     messages=list(session.messages),
                     report=None,
                 ),

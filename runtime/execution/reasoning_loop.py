@@ -1,16 +1,15 @@
 """Model and tool reasoning lifecycle."""
 
-import inspect
 import json
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Callable
 
 from runtime.execution.policy_set import ExecutionPolicies
+from runtime.execution.recovery import RecoveryAction, RecoveryController
 from runtime.execution.failure_reasons import (
     INCOMPLETE_STEP_LIMIT_PREFIX,
-    REASONING_LOOP_STOP_MESSAGE_KEY,
-    REASONING_LOOP_STOP_REASON_KEY,
+    StopDecision,
     StopReason,
 )
 from runtime.execution.message_sanitizer import (
@@ -30,7 +29,6 @@ from config import (
     PROMPT_HARD_INPUT_RATIO,
     PROMPT_SAFETY_MARGIN_TOKENS,
     PROMPT_SOFT_COMPACTION_RATIO,
-    TASK_STATE_CONTEXT_ENABLED,
 )
 from runtime.context.events import ContextEventType
 from runtime.context.dynamic_budget import (
@@ -96,6 +94,7 @@ class ReasoningLoop:
         max_tokens: int = 8000,
         max_reasoning_steps: int = DEFAULT_MAX_REASONING_STEPS,
         policies: ExecutionPolicies | None = None,
+        recovery_controller: RecoveryController | None = None,
     ) -> None:
         self.tools = tools
         self.tool_executor = tool_executor
@@ -104,8 +103,8 @@ class ReasoningLoop:
         policies = policies or ExecutionPolicies.minimal(self.max_reasoning_steps)
         self.web_search_policy = policies.web_search
         self.finishing_policy = policies.finishing
-        self.working_memory_policy = policies.working_memory
         self.tool_batch_policy = policies.tool_batch
+        self.recovery_controller = recovery_controller or RecoveryController()
 
     def run(
         self,
@@ -138,7 +137,7 @@ class ReasoningLoop:
                 })
                 self._stop_turn(
                     session,
-                    self.working_memory_policy.partial_summary(session),
+                    _partial_result_summary(session),
                     reason=StopReason.USER_CANCELLED,
                     profile=profile,
                     after_turn=after_turn,
@@ -151,6 +150,9 @@ class ReasoningLoop:
                 return
 
             reasoning_steps += 1
+            execution_state = getattr(run_context, "state", None)
+            if execution_state is not None:
+                execution_state.reasoning_step = reasoning_steps
             if self._reasoning_budget_exceeded(session, reasoning_steps):
                 self._trace(trace_store, run_state, "reasoning_budget_exceeded", {
                     "attempted_step": reasoning_steps,
@@ -162,7 +164,7 @@ class ReasoningLoop:
                         "本轮已停止：工具推理步骤超过上限 "
                         f"({self.max_reasoning_steps})，已触发循环保护。"
                     ),
-                    reason=StopReason.REASONING_STEP_LIMIT,
+                    reason=StopReason.HARD_BUDGET_EXCEEDED,
                     profile=profile,
                     after_turn=after_turn,
                     on_text=on_text,
@@ -297,7 +299,7 @@ class ReasoningLoop:
                     run_state,
                     REASONING_STEP_COMPLETED,
                     {
-                        "reason": StopReason.EMPTY_MODEL_RESPONSE.value,
+                        "reason": StopReason.NON_RETRYABLE_FAILURE.value,
                         "tool_call_count": 0,
                         "attempt": empty_model_responses,
                     },
@@ -312,7 +314,7 @@ class ReasoningLoop:
                     self._stop_turn(
                         session,
                         "本轮已停止：模型连续返回空回复且没有工具调用。",
-                        reason=StopReason.EMPTY_MODEL_RESPONSE,
+                        reason=StopReason.NON_RETRYABLE_FAILURE,
                         profile=profile,
                         after_turn=after_turn,
                         on_text=on_text,
@@ -333,7 +335,7 @@ class ReasoningLoop:
                     ),
                     metadata={
                         "kind": "runtime_retry",
-                        "reason": StopReason.EMPTY_MODEL_RESPONSE.value,
+                        "reason": StopReason.NON_RETRYABLE_FAILURE.value,
                     },
                 )
                 continue
@@ -367,16 +369,17 @@ class ReasoningLoop:
                     "step": reasoning_steps,
                     "reason": "assistant_final_message",
                 })
-                self.working_memory_policy.complete(
-                    session,
-                    final_answer=response.content or "",
-                    step=reasoning_steps,
-                )
                 self._complete_shared_task_state(
                     session,
                     profile,
                     final_answer=response.content or "",
                 )
+                if execution_state is not None:
+                    execution_state.stop_decision = StopDecision(
+                        reason=StopReason.COMPLETED,
+                        message=response.content or "",
+                        task_state_version=_task_state_version(session),
+                    )
                 if checkpoint_callback is not None:
                     checkpoint_callback(session)
                 after_turn(session)
@@ -425,31 +428,41 @@ class ReasoningLoop:
                 after_turn(session)
                 return
             if execution.loop_guard_denied:
-                if reflection_agent is not None:
-                    if self._apply_reflection(
-                        reflection_agent,
-                        session=session,
-                        profile=profile,
-                        response=response,
-                        execution=execution,
-                        reasoning_steps=reasoning_steps,
-                        after_turn=after_turn,
-                        on_text=on_text,
-                        run_state=run_state,
-                        trace_store=trace_store,
-                        checkpoint_callback=checkpoint_callback,
-                        force=True,
-                        trigger="loop_guard_denied",
-                    ):
-                        return
-                    self._trace(trace_store, run_state, "loop_guard_reflection_continue", {
+                decision = None
+                if execution_state is not None:
+                    provider, model = resolve_provider(session, profile)
+                    decision = self.recovery_controller.duplicate_tool_call(
+                        calls=response.tool_calls,
+                        specs=[
+                            self.tools.spec_for(str(getattr(call, "name", "")))
+                            for call in response.tool_calls
+                        ],
+                        state=execution_state,
+                        provider=provider,
+                        model=model,
+                    )
+                if decision is not None and decision.action is RecoveryAction.CORRECT_ONCE:
+                    session.add_message(
+                        "user",
+                        (
+                            '<runtime-recovery kind="duplicate_tool_call" retry="final">\n'
+                            + decision.instruction
+                            + "\nDo not repeat the denied call unchanged.\n</runtime-recovery>"
+                        ),
+                        metadata={
+                            "kind": "runtime_recovery",
+                            "incident_id": decision.incident_id,
+                        },
+                    )
+                    self._trace(trace_store, run_state, "recovery.correct_once", {
+                        "incident_id": decision.incident_id,
                         "step": reasoning_steps,
                     })
                     continue
                 self._stop_turn(
                     session,
-                    "本轮已停止：模型重复调用同一工具，已触发循环保护。请调整请求后重试。",
-                    reason=StopReason.REPEATED_TOOL_CALL,
+                    "本轮已停止：重复工具调用无法安全恢复。",
+                    reason=(decision.reason if decision is not None else StopReason.NO_PROGRESS),
                     profile=profile,
                     after_turn=after_turn,
                     on_text=on_text,
@@ -470,7 +483,7 @@ class ReasoningLoop:
                             f"`{tool_name}`。请切换到允许该工具的模式，"
                             "或让助手使用 `tool_search` 选择当前模式可用的工具。"
                         ),
-                        reason=StopReason.UNAVAILABLE_TOOL_LOOP,
+                        reason=StopReason.TOOL_UNAVAILABLE,
                         profile=profile,
                         after_turn=after_turn,
                         on_text=on_text,
@@ -510,7 +523,7 @@ class ReasoningLoop:
         *,
         final_answer: str,
     ) -> None:
-        if not TASK_STATE_CONTEXT_ENABLED:
+        if str(getattr(profile, "tool_mode", "") or "") not in {"coding", "teammate"}:
             return
         from runtime.task_state import (
             TaskStateCorePatch,
@@ -727,6 +740,10 @@ class ReasoningLoop:
                 tools=tools,
                 max_tokens=request_max_tokens,
                 on_text=on_text,
+                thinking_enabled=bool(
+                    getattr(getattr(self, "run_context", None), "state", None)
+                    and getattr(self.run_context.state, "thinking_enabled", False)
+                ) or bool(getattr(profile, "thinking_enabled", False)),
             )
         except Exception as exc:
             route_attempts = getattr(exc, "attempts", None)
@@ -789,6 +806,15 @@ class ReasoningLoop:
             "usage": _usage_payload(getattr(response, "usage", None)),
             "provider_metadata": getattr(response, "provider_metadata", {}) or {},
         }
+        execution_state = getattr(getattr(self, "run_context", None), "state", None)
+        if execution_state is not None:
+            usage = completed_payload["usage"]
+            for key in ("input_tokens", "output_tokens", "total_tokens"):
+                value = usage.get(key)
+                if value is not None:
+                    execution_state.usage[key] = (
+                        int(execution_state.usage.get(key, 0) or 0) + int(value)
+                    )
         self._trace(
             trace_store,
             run_state,
@@ -826,18 +852,19 @@ class ReasoningLoop:
         note: str = "",
         checkpoint_callback: Callable | None = None,
     ) -> None:
-        self.working_memory_policy.checkpoint(
-            session,
-            profile,
-            step=step,
-            phase=phase,
-            message_count=message_count,
-            assistant_summary=assistant_summary,
-            tool_calls=tool_calls,
-            tool_results=tool_results,
-            note=note,
-            checkpoint_callback=checkpoint_callback,
-        )
+        append_event = getattr(session, "append_event", None)
+        if callable(append_event):
+            append_event("run_checkpoint", {
+                "step": step,
+                "phase": phase,
+                "message_count": message_count,
+                "assistant_summary": str(assistant_summary or "")[:1000],
+                "tool_calls": list(tool_calls or []),
+                "tool_results": list(tool_results or []),
+                "note": note,
+            })
+        if checkpoint_callback is not None:
+            checkpoint_callback(session)
 
     def _after_reasoning_step(self, session, response) -> None:
         if response.raw_message:
@@ -1601,24 +1628,22 @@ class ReasoningLoop:
                 "reason": reason_value,
             },
         )
-        session.metadata[REASONING_LOOP_STOP_REASON_KEY] = reason_value
-        session.metadata[REASONING_LOOP_STOP_MESSAGE_KEY] = message
         state = getattr(getattr(self, "run_context", None), "state", None)
+        task_state_version = self._stop_shared_task_state(session, profile, reason_value)
         if state is not None:
-            state.stop_reason = reason_value
-            state.stop_message = message
-        self._stop_shared_task_state(session, profile, reason_value)
-        checkpoint_step = reasoning_step
-        if checkpoint_step is None and run_state is not None:
-            checkpoint_step = getattr(run_state, "reasoning_steps", 0)
-        self.working_memory_policy.stop(
-            session,
-            profile,
-            reason=reason_value,
-            message=message,
-            step=checkpoint_step,
-            checkpoint_callback=checkpoint_callback,
-        )
+            state.stop_decision = StopDecision(
+                reason=_coerce_stop_reason(reason),
+                message=message,
+                recovery_attempted=state.recovery_attempts > 0,
+                recoverable=_coerce_stop_reason(reason) in {
+                    StopReason.WAITING_USER,
+                    StopReason.TOOL_UNAVAILABLE,
+                    StopReason.PARTIAL_RESULT_ACCEPTED,
+                },
+                task_state_version=task_state_version,
+            )
+        if checkpoint_callback is not None:
+            checkpoint_callback(session)
         if on_text is not None:
             on_text(message)
         if run_state is not None:
@@ -1631,9 +1656,9 @@ class ReasoningLoop:
         })
         after_turn(session)
 
-    def _stop_shared_task_state(self, session, profile, reason: str) -> None:
-        if not TASK_STATE_CONTEXT_ENABLED:
-            return
+    def _stop_shared_task_state(self, session, profile, reason: str) -> int | None:
+        if str(getattr(profile, "tool_mode", "") or "") not in {"coding", "teammate"}:
+            return None
         from runtime.task_state import (
             TaskStateCorePatch,
             apply_task_state_core_patch,
@@ -1644,12 +1669,12 @@ class ReasoningLoop:
 
         state = load_task_state_core(session)
         if state is None or state.status in TERMINAL_TASK_STATUSES:
-            return
+            return getattr(state, "version", None)
         if reason == StopReason.USER_CANCELLED.value:
             requested = TaskStatus.CANCELLED
         elif reason in {
-            StopReason.REASONING_STEP_LIMIT.value,
-            StopReason.EMPTY_MODEL_RESPONSE.value,
+            StopReason.HARD_BUDGET_EXCEEDED.value,
+            StopReason.NON_RETRYABLE_FAILURE.value,
         }:
             requested = TaskStatus.FAILED
         else:
@@ -1662,8 +1687,9 @@ class ReasoningLoop:
                 stop_reason=reason,
             ))
         except ValueError:
-            return
+            return state.version
         save_task_state_core(session, updated)
+        return updated.version
 
     def _apply_reflection(
         self,
@@ -1914,6 +1940,43 @@ def _is_empty_response(response) -> bool:
     return False
 
 
+def _partial_result_summary(session) -> str:
+    lines = [
+        "本轮已按用户请求停止。已经开始的工具调用已在完整边界结束。",
+    ]
+    for message in reversed(getattr(session, "messages", []) or []):
+        if not isinstance(message, dict):
+            continue
+        if str(message.get("role") or "") not in {"assistant", "tool"}:
+            continue
+        content = str(message.get("content") or "").strip()
+        if content:
+            lines.extend(["", "最近可用进展：", content[:1200]])
+            break
+    else:
+        lines.extend(["", "目前还没有可汇总的模型输出或工具结果。"])
+    return "\n".join(lines)
+
+
+def _coerce_stop_reason(reason: str | StopReason) -> StopReason:
+    if isinstance(reason, StopReason):
+        return reason
+    try:
+        return StopReason(str(reason))
+    except ValueError:
+        return StopReason.NON_RETRYABLE_FAILURE
+
+
+def _task_state_version(session) -> int | None:
+    try:
+        from runtime.task_state import load_task_state_core
+
+        state = load_task_state_core(session)
+    except (ImportError, ValueError, TypeError):
+        return None
+    return getattr(state, "version", None)
+
+
 def _response_tool_calls_payload(response) -> list[dict]:
     payload = []
     for call in getattr(response, "tool_calls", []) or []:
@@ -1969,23 +2032,7 @@ def _call_build_context(
     profile,
     **kwargs,
 ):
-    call_kwargs = {
-        name: value
-        for name, value in kwargs.items()
-        if _accepts_keyword(build_context, name)
-    }
-    return build_context(session, profile, **call_kwargs)
-
-
-def _accepts_keyword(fn, name: str) -> bool:
-    try:
-        signature = inspect.signature(fn)
-    except (TypeError, ValueError):
-        return False
-    for parameter in signature.parameters.values():
-        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
-            return True
-    return name in signature.parameters
+    return build_context(session, profile, **kwargs)
 
 
 def _int_metadata(session, key: str, default: int) -> int:

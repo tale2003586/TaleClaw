@@ -3,7 +3,7 @@ import logging
 
 from dotenv import load_dotenv
 
-from runtime.bootstrap import build_runtime
+from applications.bootstrap import build_runtime
 from gateway.feishu import FeishuGateway
 
 

@@ -6,6 +6,7 @@ from runtime.context import (
     ArtifactStore,
     ContextBuilder,
     ContextMemoryService,
+    EventCompactor,
     LongContentDetector,
     PromptAssetsService,
 )
@@ -14,12 +15,11 @@ from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
 from runtime.context.events import ContextEventType, thaw
 from runtime.execution.loop_policies import standard_execution_policies
 from applications.coding.context_state import build_coding_context_view
-from applications.coding.compaction import SemanticCompactor
 from applications.coding.task_state import ensure_task_state
-from runtime.execution.failure_reasons import REASONING_LOOP_STOP_REASON_KEY
 from runtime.runtime import get_last_assistant_text
 from runtime.agent_spec import AgentSpec
 from runtime.runtime import RunContext, Runtime
+from runtime.extensions import RuntimeExtensions
 from applications.coding.handoff import (
     CODING_CONVERSATION_SUMMARY_METADATA_KEY,
     CODING_HANDOFF_METADATA_KEY,
@@ -42,8 +42,6 @@ from config import (
     LONG_CONTENT_MAX_CHARS,
     LONG_CONTENT_MAX_TOKENS,
     WORKDIR,
-    WORKING_MEMORY_CHECKPOINT_ENABLED,
-    TASK_STATE_CONTEXT_ENABLED,
 )
 from memory.store import MemoryStore
 from memory.commands import MemoryContext
@@ -53,9 +51,8 @@ from .conclusions import TaskConclusionExtractor
 from .memory_lifecycle import TaskMemoryLifecycle
 from .promotion import TaskMemoryPromoter, PromotionResult
 from .session import TaskSessionFactory, TaskSessionRecord
+from .context_contributor import CodingRuntimeContributor
 from user_scope import explicit_user_id_for_session, user_role_for_session
-from runtime.working_memory import inherit_working_memory, sync_working_memory
-from runtime.working_memory import render_working_memory_block
 from skill_runtime import SKILL_LOADER
 
 
@@ -102,15 +99,15 @@ class CodingApplication:
             provider=conclusion_provider,
             model=conclusion_model,
         )
-        self.artifact_writer = TaskArtifactWriter()
         compaction_provider, compaction_model = _pipeline_model_for(
             base_pipeline,
             "summary",
         )
-        self.semantic_compactor = SemanticCompactor(
+        self.event_compactor = EventCompactor(
             provider=compaction_provider,
             model=compaction_model,
         )
+        self.artifact_writer = TaskArtifactWriter()
 
     def run_coding_task(
         self,
@@ -169,13 +166,6 @@ class CodingApplication:
                 for ref in request_artifact_refs
             ],
         )
-        if WORKING_MEMORY_CHECKPOINT_ENABLED and not TASK_STATE_CONTEXT_ENABLED:
-            inherit_working_memory(
-                source_session=parent_session,
-                target_session=record.session,
-                objective=user_text,
-                task_id=record.task_id,
-            )
         if run_state is not None:
             record.session.metadata["parent_run_id"] = run_state.run_id
             self.workspace_resolver.bind_session(record.session, workspace)
@@ -240,7 +230,7 @@ class CodingApplication:
             ),
         )
         resolved_agent = agent_spec or AgentSpec.from_profile(profile)
-        task_pipeline.run(
+        run_result = task_pipeline.run(
             resolved_agent,
             user_text,
             RunContext(
@@ -250,18 +240,18 @@ class CodingApplication:
                 checkpoint_callback=lambda session: self.sessions.save(session),
                 run_state=run_state,
                 trace_store=trace_store,
+                extensions=RuntimeExtensions(
+                    context_contributors=(CodingRuntimeContributor(),),
+                ),
             ),
         )
 
         reply = get_last_assistant_text(record.session.messages)
-        stop_reason = record.session.metadata.get(REASONING_LOOP_STOP_REASON_KEY)
-        record.session.metadata["status"] = "stopped" if stop_reason else "completed"
+        stop_reason = run_result.execution.stop_reason
+        record.session.metadata["status"] = (
+            "stopped" if stop_reason and stop_reason != "completed" else "completed"
+        )
         record.session.metadata["task_reply"] = reply
-        if WORKING_MEMORY_CHECKPOINT_ENABLED and not TASK_STATE_CONTEXT_ENABLED:
-            sync_working_memory(
-                source_session=record.session,
-                target_session=parent_session,
-            )
 
         extraction = self.conclusion_extractor.extract(
             user_request=user_text,
@@ -376,16 +366,10 @@ class CodingApplication:
             ),
             memory_service=ContextMemoryService(
                 memory_store=task_memory,
-                working_memory_renderer=render_working_memory_block,
             ),
             coding_context_view_builder=partial(
                 build_coding_context_view,
-                semantic_compactor=self.semantic_compactor,
-                compaction_persister=(
-                    self.sessions.compact
-                    if callable(getattr(self.sessions, "compact", None))
-                    else None
-                ),
+                event_compactor=self.event_compactor,
             ),
             context_providers=DEFAULT_CONTEXT_PROVIDERS,
         )

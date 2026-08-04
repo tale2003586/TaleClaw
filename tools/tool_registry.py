@@ -1,17 +1,9 @@
-from dataclasses import dataclass, field
-import inspect
 import json
 from typing import Callable, Any
 
-from tools.policy import (
-    ALWAYS_ON_TOOLS,
-    DEFERRED_TOOLS,
-    PRELOADED_TOOLS_BY_MODE,
-    UNLOCKED_TOOLS_KEY,
-    ToolPolicy,
-)
-from tools.governance import ToolGovernanceMetadata, governance_for_tool
-SESSION_SCOPED_TOOLS = {
+from tools.policy import UNLOCKED_TOOLS_KEY, ToolPolicy
+from tools.spec import ToolInjection, ToolRisk, ToolSpec, ToolStateEffect
+_SESSION_SCOPED_TOOLS = {
     "update_task_state",
     "bash",
     "list_files",
@@ -45,62 +37,19 @@ SESSION_SCOPED_TOOLS = {
 }
 
 
-@dataclass
-class ToolSpec:
-    name: str
-    schema: dict
-    handler: Callable[..., str]
-    risk: str = "normal"
-    allowed_agents: set[str] | None = None
-    source: str = "local"
-    always_on: bool = False
-    session_scoped: bool = False
-    admin_only: bool = False
-    governance: ToolGovernanceMetadata = field(default_factory=ToolGovernanceMetadata)
-
-    def enabled_for(self, mode: str, session=None) -> bool:
-        if self.allowed_agents is not None and mode not in self.allowed_agents:
-            return False
-        if self.admin_only and session is not None:
-            metadata = getattr(session, "metadata", {}) or {}
-            return metadata.get("user_role", "admin") == "admin"
-        return True
-
-
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
         self.policy = ToolPolicy(self)
 
-    def register(
-        self,
-        schema: dict,
-        handler: Callable[..., str],
-        *,
-        risk: str = "normal",
-        allowed_agents: set[str] | None = None,
-        source: str = "local",
-        always_on: bool = False,
-        session_scoped: bool = False,
-        admin_only: bool = False,
-        governance: ToolGovernanceMetadata | None = None,
-    ) -> None:
-        name = schema["function"]["name"]
-        self._tools[name] = ToolSpec(
-            name=name,
-            schema=schema,
-            handler=handler,
-            risk=risk,
-            allowed_agents=allowed_agents,
-            source=source,
-            always_on=always_on,
-            session_scoped=session_scoped,
-            admin_only=admin_only,
-            governance=governance or ToolGovernanceMetadata(),
-        )
+    def register(self, spec: ToolSpec) -> None:
+        self._tools[spec.name] = spec
 
     def unregister(self, name: str) -> None:
         self._tools.pop(name, None)
+
+    def spec_for(self, name: str) -> ToolSpec | None:
+        return self._tools.get(name)
 
     def catalog(self, *, mode: str | None = None) -> list[dict[str, Any]]:
         items = []
@@ -109,15 +58,13 @@ class ToolRegistry:
                 continue
             items.append({
                 "name": tool.name,
-                "description": tool.schema["function"].get("description", ""),
-                "risk": tool.risk,
+                "description": tool.description,
+                "risk": tool.risk.value,
                 "source": tool.source,
-                "allowed_agents": (
-                    sorted(tool.allowed_agents)
-                    if tool.allowed_agents is not None
-                    else None
-                ),
-                "always_on": tool.always_on,
+                "allowed_modes": sorted(tool.allowed_modes),
+                "injection": tool.injection.value,
+                "idempotent": tool.idempotent,
+                "side_effect": tool.side_effect,
             })
         return sorted(items, key=lambda item: item["name"])
 
@@ -127,7 +74,7 @@ class ToolRegistry:
         for tool in self._tools.values():
             if mode is not None and not tool.enabled_for(mode):
                 continue
-            items.append({"name": tool.name, **tool.governance.to_dict()})
+            items.append({"name": tool.name, **tool.governance_dict()})
         return sorted(items, key=lambda item: item["name"])
 
     def schemas_for_mode(self, mode: str = "coding") -> list[dict]:
@@ -213,7 +160,7 @@ class ToolRegistry:
             if (
                 trace_store is not None
                 and run_state is not None
-                and tool.governance != ToolGovernanceMetadata()
+                and tool.requires_audit
             ):
                 try:
                     trace_store.append_event(
@@ -221,22 +168,22 @@ class ToolRegistry:
                         "tool.governance.observed",
                         {
                             "tool_name": name,
-                            **tool.governance.to_dict(),
+                            **tool.governance_dict(),
                         },
                         parent_span_id=parent_span_id,
                     )
                 except Exception:
                     pass
             handler_args = dict(args)
-            if tool.session_scoped or name in SESSION_SCOPED_TOOLS:
+            if tool.session_scoped:
                 handler_args["_session"] = session
-            if _handler_accepts_keyword(tool.handler, "_mode"):
+            if "_mode" in tool.runtime_parameters:
                 handler_args["_mode"] = mode
-            if _handler_accepts_keyword(tool.handler, "_trace_store"):
+            if "_trace_store" in tool.runtime_parameters:
                 handler_args["_trace_store"] = trace_store
-            if _handler_accepts_keyword(tool.handler, "_run_state"):
+            if "_run_state" in tool.runtime_parameters:
                 handler_args["_run_state"] = run_state
-            if _handler_accepts_keyword(tool.handler, "_parent_span_id"):
+            if "_parent_span_id" in tool.runtime_parameters:
                 handler_args["_parent_span_id"] = parent_span_id
             return tool.handler(**handler_args)
         except Exception as e:
@@ -324,17 +271,6 @@ class ToolRegistry:
         return self._schema_for_mode(tool, mode)["function"].get("description", "")
 
 
-def _handler_accepts_keyword(handler: Callable[..., Any], name: str) -> bool:
-    try:
-        signature = inspect.signature(handler)
-    except (TypeError, ValueError):
-        return False
-    for parameter in signature.parameters.values():
-        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
-            return True
-    return name in signature.parameters
-
-
 from .schema import LEAD_TOOLS, SEARCH_TOOLS, TEAMMATE_TOOLS
 from .handlers import make_lead_handlers, make_teammate_handlers
 
@@ -353,14 +289,11 @@ def build_lead_tool_registry(team=None, *, artifact_store=None) -> ToolRegistry:
         if handler is None and name != "tool_search":
             continue
 
-        registry.register(
+        registry.register(_builtin_spec(
             schema,
             handler or (lambda **kw: "tool_search is handled by ToolRegistry."),
-            risk=_risk_for_tool(name),
-            allowed_agents=_modes_for_tool(name),
             source="lead",
-            governance=governance_for_tool(name),
-        )
+        ))
 
     return registry
 
@@ -374,19 +307,16 @@ def build_teammate_tool_registry(name: str, *, artifact_store=None) -> ToolRegis
         handler = handlers.get(tool_name)
         if handler is None and tool_name != "tool_search":
             continue
-        registry.register(
+        registry.register(_builtin_spec(
             schema,
             handler or (lambda **kw: "tool_search is handled by ToolRegistry."),
-            risk=_risk_for_tool(tool_name),
-            allowed_agents=_modes_for_tool(tool_name),
             source=f"teammate:{name}",
-            governance=governance_for_tool(tool_name),
-        )
+        ))
 
     return registry
 
 
-def _risk_for_tool(name: str) -> str:
+def _risk_for_tool(name: str) -> ToolRisk:
     if name in {
         "bash",
         "write_file",
@@ -395,7 +325,7 @@ def _risk_for_tool(name: str) -> str:
         "git_add",
         "git_commit",
     }:
-        return "high"
+        return ToolRisk.HIGH
     if name in {
         "list_files",
         "rg",
@@ -419,10 +349,68 @@ def _risk_for_tool(name: str) -> str:
         "task_get",
         "check_background",
     }:
-        return "low"
+        return ToolRisk.LOW
     if name == "tool_search":
-        return "low"
-    return "normal"
+        return ToolRisk.LOW
+    return ToolRisk.NORMAL
+
+
+_NON_IDEMPOTENT_TOOLS = {
+    "bash", "write_file", "edit_file", "storage_write_file",
+    "sandbox_write_file", "publish_artifact", "git_add", "git_commit",
+    "memorize", "update_task_state", "task_create", "task_update",
+    "claim_task", "background_run", "task", "parallel_tasks",
+    "spawn_teammate", "broadcast", "send_message", "shutdown_request",
+    "shutdown_response", "plan_approval", "plan_approval_request",
+}
+
+_ALWAYS_TOOLS = {"recall_memory", "memorize", "tool_search"}
+_DEFERRED_TOOLS = {
+    "bash", "write_file", "edit_file", "background_run", "git_add",
+    "git_commit", "spawn_teammate", "list_teammates", "broadcast",
+    "shutdown_request", "shutdown_status", "plan_approval", "claim_task",
+}
+
+
+def _builtin_spec(schema: dict, handler: Callable[..., str], *, source: str) -> ToolSpec:
+    name = str(schema["function"]["name"])
+    non_idempotent = name in _NON_IDEMPOTENT_TOOLS
+    if name in _ALWAYS_TOOLS:
+        injection = ToolInjection.ALWAYS
+    elif name in _DEFERRED_TOOLS:
+        injection = ToolInjection.DEFERRED
+    else:
+        injection = ToolInjection.PRELOADED
+    state_effect = ToolStateEffect.NONE
+    policy_tag = ""
+    if name == "memorize":
+        state_effect = ToolStateEffect.AGENT_STATE
+        policy_tag = "memory.write"
+    elif name == "recall_memory":
+        policy_tag = "memory.read"
+    elif non_idempotent:
+        state_effect = ToolStateEffect.EXTERNAL
+    return ToolSpec(
+        schema=schema,
+        handler=handler,
+        allowed_modes=frozenset(_modes_for_tool(name)),
+        risk=_risk_for_tool(name),
+        idempotent=not non_idempotent,
+        side_effect=non_idempotent,
+        state_effect=state_effect,
+        injection=injection,
+        source=source,
+        session_scoped=name in _SESSION_SCOPED_TOOLS,
+        policy_tag=policy_tag,
+        runtime_parameters=frozenset(
+            ({"_mode"} if name == "update_task_state" else set())
+            | (
+                {"_trace_store", "_run_state", "_parent_span_id"}
+                if name in {"task", "parallel_tasks"}
+                else set()
+            )
+        ),
+    )
 
 
 def _modes_for_tool(name: str) -> set[str]:

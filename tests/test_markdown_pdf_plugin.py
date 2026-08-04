@@ -28,8 +28,8 @@ class MarkdownPdfPluginTests(unittest.TestCase):
             registration = self._plugin(Path(tmp)).tools()[0]
 
         self.assertEqual("markdown_to_pdf", registration.schema["function"]["name"])
-        self.assertEqual({"bot", "coding"}, registration.allowed_agents)
-        self.assertTrue(registration.always_on)
+        self.assertEqual({"bot", "coding"}, set(registration.allowed_modes))
+        self.assertEqual("always", registration.injection.value)
         self.assertEqual("normal", registration.risk)
 
     def test_rejects_path_outside_workspace(self) -> None:

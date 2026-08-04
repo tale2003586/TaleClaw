@@ -30,28 +30,19 @@ from agents.subagent.trace import (
     trace_subagent_completed,
     trace_subagent_started,
 )
-from applications.coding.compaction import SemanticCompactor
 from applications.coding.context_state import build_coding_context_view
 from config import (
     SUBAGENT_MAX_REASONING_STEPS,
-    TASK_STATE_CONTEXT_ENABLED,
-    WORKING_MEMORY_CHECKPOINT_ENABLED,
 )
-from runtime.context import ContextBuilder
+from runtime.context import ContextBuilder, EventCompactor
 from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
 from runtime.execution.failure_reasons import (
-    REASONING_LOOP_STOP_REASON_KEY,
     StopReason,
 )
 from runtime.runtime import get_last_assistant_text
 from runtime.agent_spec import AgentSpec, SpawnPolicy, ToolSet
 from runtime.runtime import RunContext, Runtime
 from runtime.execution.child_run import ChildRun
-from runtime.working_memory import (
-    inherit_working_memory,
-    load_working_memory,
-    save_working_memory,
-)
 from runtime.sessions import Session
 from tools.tool_registry import ToolRegistry
 
@@ -133,7 +124,7 @@ class TaskSubagentRunner:
                 description=description,
             )
             agent_spec = profile
-            summary = pipeline.run(
+            run_result = pipeline.run(
                 agent_spec,
                 prompt,
                 RunContext(
@@ -144,9 +135,10 @@ class TaskSubagentRunner:
                     trace_parent_span_id=span_id,
                     state=child_run.execution_state(),
                 ),
-            ).output
-            stop_reason = _stop_reason(session)
-            truncated = stop_reason == StopReason.REASONING_STEP_LIMIT.value
+            )
+            summary = run_result.output
+            stop_reason = run_result.execution.stop_reason or None
+            truncated = stop_reason == StopReason.HARD_BUDGET_EXCEEDED.value
             summary_text = summary or get_last_assistant_text(session.messages)
             if truncated:
                 recovered_summary = self._summarize_after_step_limit(
@@ -226,7 +218,7 @@ class TaskSubagentRunner:
                 tool_count=count_tool_calls(session.messages),
                 error=error,
                 truncated=False,
-                stop_reason=_stop_reason(session),
+                stop_reason=None,
                 findings=[],
                 incomplete=True,
                 failure_reason=failure.reason,
@@ -268,7 +260,7 @@ class TaskSubagentRunner:
             "context_providers": DEFAULT_CONTEXT_PROVIDERS,
             "coding_context_view_builder": partial(
                 build_coding_context_view,
-                semantic_compactor=SemanticCompactor(
+                event_compactor=EventCompactor(
                     provider=compaction_provider,
                     model=compaction_model,
                 ),
@@ -297,7 +289,7 @@ class TaskSubagentRunner:
             _step_limit_summary_prompt(self.max_reasoning_steps),
             metadata={
                 "kind": "subagent_step_limit_summary_request",
-                "reason": StopReason.REASONING_STEP_LIMIT.value,
+                "reason": StopReason.HARD_BUDGET_EXCEEDED.value,
             },
         )
         try:
@@ -331,7 +323,7 @@ class TaskSubagentRunner:
             content,
             metadata={
                 "kind": "subagent_step_limit_summary",
-                "reason": StopReason.REASONING_STEP_LIMIT.value,
+                "reason": StopReason.HARD_BUDGET_EXCEEDED.value,
             },
         )
         session.metadata["subagent_step_limit_summary_used"] = True
@@ -339,20 +331,13 @@ class TaskSubagentRunner:
 
     def _filtered_tools(self, agent_type: str) -> ToolRegistry:
         allowed = SUBTASK_TOOL_WHITELIST.get(agent_type, set())
+        from dataclasses import replace
+
         registry = ToolRegistry()
         for name, tool in self.base_pipeline.agent_runner.tools._tools.items():
             if name not in allowed:
                 continue
-            registry.register(
-                tool.schema,
-                tool.handler,
-                risk=tool.risk,
-                allowed_agents=set(tool.allowed_agents) if tool.allowed_agents else None,
-                source=f"subagent:{agent_type}",
-                always_on=tool.always_on,
-                session_scoped=tool.session_scoped,
-                admin_only=tool.admin_only,
-            )
+            registry.register(replace(tool, source=f"subagent:{agent_type}"))
         return registry
 
     def _profile(self, agent_type: str) -> AgentSpec:
@@ -398,29 +383,6 @@ class TaskSubagentRunner:
             active_agent="coding",
             metadata=metadata,
         )
-        if (
-            WORKING_MEMORY_CHECKPOINT_ENABLED
-            and not TASK_STATE_CONTEXT_ENABLED
-            and parent_session is not None
-        ):
-            inherit_working_memory(
-                source_session=parent_session,
-                target_session=session,
-                objective=prompt,
-                task_id=session.id,
-                include_pending_units=False,
-            )
-            memory = load_working_memory(session)
-            if memory is not None:
-                memory.task_id = session.id
-                memory.objective = prompt
-                memory.archived_findings["inherited_parent_working_memory"] = {
-                    "parent_session_id": getattr(parent_session, "id", ""),
-                    "description": description,
-                    "agent_type": agent_type,
-                    "mode": "snapshot",
-                }
-                save_working_memory(session, memory)
         session.add_message(
             "user",
             subtask_prompt(prompt=prompt, agent_type=agent_type, description=description),
@@ -434,11 +396,6 @@ def _normalize_agent_type(agent_type: str | None) -> str | None:
     if value not in SUBTASK_TOOL_WHITELIST:
         return None
     return value
-
-
-def _stop_reason(session: Session) -> str | None:
-    value = (getattr(session, "metadata", {}) or {}).get(REASONING_LOOP_STOP_REASON_KEY)
-    return str(value) if value else None
 
 
 def _step_limit_summary_prompt(max_steps: int) -> str:

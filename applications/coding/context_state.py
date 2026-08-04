@@ -1,35 +1,32 @@
 """TaskState prompt rendering and event-window compaction for coding sessions.
 
-`CodingContextState` is a read-only checkpoint snapshot. All mutable task facts
+`CodingContextSnapshot` is a read-only projection. All mutable task facts
 live in :mod:`applications.coding.task_state`.
 """
 
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
 import time
-from typing import Any, Callable, Sequence
+from typing import Any, Sequence
 
 from config import (
     CONTEXT_PRESSURE_WINDOW_TOKENS,
     PROMPT_COMPACTION_TARGET_RATIO,
     PROMPT_SOFT_COMPACTION_RATIO,
-    SEMANTIC_COMPACTION_ENABLED,
 )
 from runtime.context.dynamic_budget import PromptBudgetExceeded, select_complete_groups
-from runtime.context.events import ContextEvent, ContextEventType, payload_checksum, thaw
+from runtime.context.events import ContextEvent, ContextEventType, thaw
+from runtime.context.snapshots import (
+    ContextSnapshot,
+    ContextSnapshotManager,
+    EventCompactor,
+    active_context_snapshot,
+)
 from runtime.token_estimator import estimate_tokens
 
-from .compaction import (
-    CompactionCoordinator,
-    CompactionError,
-    ContextCheckpoint,
-    SemanticCompactor,
-    StateValidationError,
-)
 from .task_state import (
     Objective,
     TaskState,
@@ -39,11 +36,7 @@ from .task_state import (
 )
 
 
-CODING_CONTEXT_STATE_METADATA_KEY = "coding_context_state"
-CODING_CONTEXT_STATE_VERSION = 2
-DEFAULT_COMPACTION_TRIGGER_TOKENS = 0  # deprecated compatibility value
-DEFAULT_COMPACTION_TARGET_TOKENS = 0  # deprecated compatibility value
-DEFAULT_RECENT_GROUPS = 0  # deprecated; selection is token-driven
+CODING_CONTEXT_SNAPSHOT_VERSION = 3
 
 
 def _now() -> str:
@@ -60,10 +53,10 @@ class MessageGroup:
 
 
 @dataclass(frozen=True)
-class CodingContextState:
+class CodingContextSnapshot:
     """Small renderer/checkpoint metadata, never a second task state."""
 
-    version: int = CODING_CONTEXT_STATE_VERSION
+    version: int = CODING_CONTEXT_SNAPSHOT_VERSION
     task_id: str = ""
     task_state_version: int = 1
     generation: int = 0
@@ -73,11 +66,12 @@ class CodingContextState:
     prompt_tail_start_index: int = 0
     compacted_until_index: int = 0
     last_compaction: dict[str, Any] | None = None
+    summary: str = ""
     metrics: dict[str, Any] = field(default_factory=dict)
     updated_at: str = field(default_factory=_now)
 
     @classmethod
-    def from_payload(cls, payload: Any) -> "CodingContextState | None":
+    def from_payload(cls, payload: Any) -> "CodingContextSnapshot | None":
         if isinstance(payload, str):
             try:
                 payload = json.loads(payload)
@@ -94,7 +88,7 @@ class CodingContextState:
 
 @dataclass(frozen=True)
 class CodingContextView:
-    state: CodingContextState
+    state: CodingContextSnapshot
     task_state: TaskState
     state_message: dict[str, Any]
     recent_messages: list[dict[str, Any]]
@@ -105,21 +99,22 @@ class CodingContextView:
     reduction: dict[str, Any] | None
 
 
-def load_coding_context_state(session) -> CodingContextState | None:
-    metadata = getattr(session, "metadata", {}) or {}
-    return CodingContextState.from_payload(metadata.get(CODING_CONTEXT_STATE_METADATA_KEY))
-
-
-def save_coding_context_state(session, state: CodingContextState) -> CodingContextState:
-    metadata = getattr(session, "metadata", None)
-    if not isinstance(metadata, dict):
-        metadata = {}
-        session.metadata = metadata
-    metadata[CODING_CONTEXT_STATE_METADATA_KEY] = state.to_dict()
-    touch = getattr(session, "touch", None)
-    if callable(touch):
-        touch()
-    return state
+def load_coding_context_snapshot(session) -> CodingContextSnapshot | None:
+    active = active_context_snapshot(session)
+    if active is None:
+        return None
+    return CodingContextSnapshot(
+        task_id=str(getattr(session, "id", "") or ""),
+        task_state_version=active.source_task_state_version,
+        generation=active.generation,
+        compacted_until_event_id=active.covered_event_end_id,
+        source_event_start_id=active.covered_event_start_id,
+        source_event_end_id=active.covered_event_end_id,
+        prompt_tail_start_index=_message_tail_after_archive(session),
+        compacted_until_index=active.covered_event_end_seq,
+        last_compaction=active.to_dict(),
+        summary=active.summary,
+    )
 
 
 def build_coding_context_view(
@@ -128,26 +123,20 @@ def build_coding_context_view(
     objective: str,
     active_turn_start_index: int | None,
     static_messages: list[dict[str, Any]],
-    threshold_tokens: int = 0,
-    target_tokens: int = 0,
-    keep_recent_groups: int = 0,
     usable_input_tokens: int | None = None,
-    semantic_compactor: SemanticCompactor | None = None,
-    compaction_persister: Callable[..., Any] | None = None,
+    event_compactor: EventCompactor | None = None,
 ) -> CodingContextView:
     """Build one ephemeral prompt view from TaskState and the active event tail.
 
-    Fixed threshold/target/recent arguments remain accepted so older callers do
-    not break, but they are intentionally ignored.
+    Threshold and target values are derived from the active model budget.
     """
 
-    del threshold_tokens, target_tokens, keep_recent_groups
     backfill = getattr(session, "_backfill_legacy_messages", None)
     if callable(backfill):
         backfill()
     messages = [dict(item) for item in (getattr(session, "messages", []) or [])]
     start = max(0, min(int(active_turn_start_index or 0), len(messages)))
-    previous_snapshot = load_coding_context_state(session)
+    previous_snapshot = load_coding_context_snapshot(session)
     tail_start = max(
         start,
         min(
@@ -222,8 +211,7 @@ def build_coding_context_view(
                 session,
                 task_state=task_state,
                 before_message_index=kept_start,
-                semantic_compactor=semantic_compactor,
-                compaction_persister=compaction_persister,
+                event_compactor=event_compactor,
             )
             compaction_duration_ms = max(
                 0,
@@ -252,7 +240,7 @@ def build_coding_context_view(
                     "soft_trigger_tokens": soft_trigger,
                     "target_tokens": target,
                     "generation": checkpoint.generation,
-                    "compacted_until_event_id": checkpoint.compacted_until_event_id,
+                    "compacted_until_event_id": checkpoint.covered_event_end_id,
                 }
 
     after_tokens = estimate_tokens([*static_messages, state_message, *recent_messages])
@@ -265,8 +253,11 @@ def build_coding_context_view(
         "task_state_tokens": estimate_tokens([state_message]),
         "recent_tail_tokens": estimate_tokens(recent_messages),
         "compaction_generation": snapshot.generation,
-        "compacted_event_count": len(
-            (snapshot.last_compaction or {}).get("source_event_ids", [])
+        "compacted_event_count": max(
+            0,
+            int((snapshot.last_compaction or {}).get("covered_event_end_seq") or 0)
+            - int((snapshot.last_compaction or {}).get("covered_event_start_seq") or 0)
+            + (1 if snapshot.last_compaction else 0),
         ),
         "compaction_duration_ms": compaction_duration_ms,
         "usable_input_tokens": int(
@@ -276,13 +267,12 @@ def build_coding_context_view(
         "soft_compaction_trigger_tokens": soft_trigger,
         "compaction_target_tokens": target,
     }
-    snapshot = CodingContextState(**{
+    snapshot = CodingContextSnapshot(**{
         **snapshot.to_dict(),
         "metrics": metrics,
         "updated_at": _now(),
     })
     save_task_state(session, task_state)
-    save_coding_context_state(session, snapshot)
     return CodingContextView(
         state=snapshot,
         task_state=task_state,
@@ -299,9 +289,9 @@ def build_coding_context_view(
 def render_coding_context_state_message(
     state: TaskState,
     *,
-    snapshot: CodingContextState | None = None,
+    snapshot: CodingContextSnapshot | None = None,
 ) -> dict[str, Any]:
-    snapshot = snapshot or CodingContextState(task_state_version=state.version)
+    snapshot = snapshot or CodingContextSnapshot(task_state_version=state.version)
     payload = state.to_dict()
     # Historical replacement details remain checkpointed but do not consume
     # every prompt. Current superseded status is already represented by items.
@@ -310,9 +300,15 @@ def render_coding_context_state_message(
     coding = extensions.get("coding") if isinstance(extensions, dict) else None
     if isinstance(coding, dict):
         coding.pop("history", None)
+    compacted_summary = (
+        "<context-snapshot>\n" + snapshot.summary + "\n</context-snapshot>\n"
+        if snapshot.summary
+        else ""
+    )
     content = (
         '<coding-context-state source="runtime-generated" trust="context-only" '
         f'instructions="false" version="{state.version}" generation="{snapshot.generation}">\n'
+        + compacted_summary
         + json.dumps(payload, ensure_ascii=False, indent=2, default=str)
         + "\n</coding-context-state>"
     )
@@ -377,85 +373,38 @@ def _compact_events(
     *,
     task_state: TaskState,
     before_message_index: int,
-    semantic_compactor: SemanticCompactor | None,
-    compaction_persister: Callable[..., Any] | None,
-) -> tuple[TaskState, ContextCheckpoint] | None:
+    event_compactor: EventCompactor | None,
+) -> tuple[TaskState, ContextSnapshot] | None:
     events = _events_before_message_index(session, before_message_index)
     if not events:
         return None
-    staged: dict[str, Any] = {}
-    coordinator = CompactionCoordinator(
-        checkpoint_writer=lambda checkpoint: staged.update(checkpoint=checkpoint),
-        completion_writer=lambda event: staged.update(completion=event),
-        archive_callback=lambda ids: staged.update(archive_ids=list(ids)),
-        semantic_compactor=(
-            semantic_compactor
-            if SEMANTIC_COMPACTION_ENABLED
-            else SemanticCompactor()
-        ),
+    compactor = event_compactor or EventCompactor()
+    event_payloads = [event.to_dict() for event in events]
+    manager = ContextSnapshotManager(
+        prepare_writer=getattr(session, "_context_snapshot_prepare", None),
+        activation_writer=getattr(session, "_context_snapshot_activate", None),
+        archive_writer=getattr(session, "_context_snapshot_archive", None),
     )
-    previous_boundary = _snapshot(session, task_state).compacted_until_event_id or None
     try:
-        result = coordinator.compact(
-            state=task_state,
-            events=events,
-            compacted_until_event_id=previous_boundary,
+        output = compactor.compact(
+            task_state=task_state,
+            events=event_payloads,
+            covered_start_seq=events[0].seq,
+            covered_end_seq=events[-1].seq,
         )
-    except CompactionError as exc:
-        _record_compaction_failure(session, exc)
-        return None
-    if result.checkpoint is None:
-        return None
-    checkpoint_payload = {
-        "task_state": result.state.to_dict(),
-        "context_checkpoint": result.checkpoint.to_dict(),
-    }
-    boundary_seq = _event_seq(session, result.compacted_until_event_id)
-    previous_metadata = deepcopy(getattr(session, "metadata", {}) or {})
-    previous_event_log = list(getattr(session, "event_log", []) or [])
-    previous_archive_boundary = int(getattr(session, "archive_boundary_seq", 0) or 0)
-    previous_checkpoints = deepcopy(getattr(session, "checkpoints", []) or [])
-    previous_last_compacted = getattr(session, "last_compacted", None)
-    try:
-        save_task_state(session, result.state)
-        if compaction_persister is not None:
-            compaction_persister(
-                session=session,
-                checkpoint=checkpoint_payload,
-                archive_boundary_seq=boundary_seq,
-                metadata={"context_checkpoint": result.checkpoint.to_dict()},
-            )
-        else:
-            session.append_event(
-                ContextEventType.TASK_STATE_CHECKPOINT,
-                {"checkpoint": result.checkpoint.to_dict()},
-            )
-            session.append_event(
-                ContextEventType.COMPACTION_COMPLETED,
-                staged.get("completion") or {},
-            )
-            session.set_archive_boundary(boundary_seq)
-            session.checkpoints.insert(0, {
-                "checkpoint_id": f"memory:{result.checkpoint.checksum[:16]}",
-                "archive_boundary_seq": boundary_seq,
-                "completion_event_id": "",
-                "created_at": result.checkpoint.created_at,
-                "state": checkpoint_payload,
-                "state_sha256": payload_checksum(checkpoint_payload),
-                "metadata": {},
-            })
+        prepared = manager.prepare(
+            session,
+            output=output,
+            events=events,
+            source_task_state_version=task_state.version,
+            evidence_refs=list(getattr(task_state, "evidence_index", {}) or {}),
+            artifact_refs=list(getattr(task_state, "artifact_refs", []) or []),
+        )
+        active = manager.activate(session, prepared.snapshot_id)
     except Exception as exc:
-        session.metadata = previous_metadata
-        session.event_log = previous_event_log
-        session.archive_boundary_seq = previous_archive_boundary
-        session.checkpoints = previous_checkpoints
-        session.last_compacted = previous_last_compacted
-        refresh = getattr(session, "_refresh_active_event_window", None)
-        if callable(refresh):
-            refresh()
         _record_compaction_failure(session, exc)
         return None
-    return result.state, result.checkpoint
+    return task_state, active
 
 
 def _snapshot(
@@ -463,42 +412,22 @@ def _snapshot(
     task_state: TaskState,
     *,
     prompt_tail_start_index: int = 0,
-    checkpoint: ContextCheckpoint | None = None,
-) -> CodingContextState:
-    existing = load_coding_context_state(session)
-    latest_checkpoint = checkpoint
-    if latest_checkpoint is None:
-        for item in list(getattr(session, "checkpoints", []) or []):
-            payload = item.get("state") if isinstance(item, dict) else None
-            raw = payload.get("context_checkpoint") if isinstance(payload, dict) else None
-            if isinstance(raw, dict):
-                latest_checkpoint = ContextCheckpoint(
-                    generation=int(raw.get("generation") or 0),
-                    state_version=int(raw.get("state_version") or raw.get("task_state_version") or 1),
-                    source_event_ids=[str(value) for value in raw.get("source_event_ids") or []],
-                    compacted_until_event_id=str(raw.get("compacted_until_event_id") or ""),
-                    artifact_refs=[str(value) for value in raw.get("artifact_refs") or []],
-                    checksum=str(raw.get("checksum") or ""),
-                    created_at=str(raw.get("created_at") or ""),
-                )
-                break
-    generation = latest_checkpoint.generation if latest_checkpoint else (existing.generation if existing else 0)
-    boundary = latest_checkpoint.compacted_until_event_id if latest_checkpoint else (
-        str(getattr(session, "archive_boundary_event_id", "") or "")
-        or (existing.compacted_until_event_id if existing else "")
-    )
-    source_ids = latest_checkpoint.source_event_ids if latest_checkpoint else []
-    return CodingContextState(
+    checkpoint: ContextSnapshot | None = None,
+) -> CodingContextSnapshot:
+    latest_checkpoint = checkpoint or active_context_snapshot(session)
+    generation = latest_checkpoint.generation if latest_checkpoint else 0
+    boundary = latest_checkpoint.covered_event_end_id if latest_checkpoint else ""
+    return CodingContextSnapshot(
         task_id=str(getattr(session, "id", "") or ""),
         task_state_version=task_state.version,
         generation=generation,
         compacted_until_event_id=boundary,
-        source_event_start_id=source_ids[0] if source_ids else "",
-        source_event_end_id=source_ids[-1] if source_ids else "",
+        source_event_start_id=(latest_checkpoint.covered_event_start_id if latest_checkpoint else ""),
+        source_event_end_id=(latest_checkpoint.covered_event_end_id if latest_checkpoint else ""),
         prompt_tail_start_index=prompt_tail_start_index,
         compacted_until_index=int(getattr(session, "archive_boundary_seq", 0) or 0),
         last_compaction=(latest_checkpoint.to_dict() if latest_checkpoint else None),
-        metrics=dict(existing.metrics or {}) if existing else {},
+        summary=(latest_checkpoint.summary if latest_checkpoint else ""),
     )
 
 
@@ -533,7 +462,7 @@ def _first_selected_index(groups: list[MessageGroup], selected: list[dict[str, A
     return groups[suffix_start].start if groups else 0
 
 
-def _events_before_message_index(session, index: int) -> list[dict[str, Any]]:
+def _events_before_message_index(session, index: int) -> list[ContextEvent]:
     result = []
     archive_boundary = int(getattr(session, "archive_boundary_seq", 0) or 0)
     active_events = getattr(session, "active_event_window", None)
@@ -554,8 +483,24 @@ def _events_before_message_index(session, index: int) -> list[dict[str, Any]]:
             message_index = _matching_message_index(session, message)
         if message_index is not None and int(message_index) >= index:
             continue
-        result.append(event.to_dict())
+        result.append(event)
     return result
+
+
+def _message_tail_after_archive(session) -> int:
+    boundary = int(getattr(session, "archive_boundary_seq", 0) or 0)
+    indexes = []
+    for event in list(getattr(session, "event_log", []) or []):
+        if event.seq > boundary:
+            break
+        payload = thaw(event.payload)
+        message_index = payload.get("legacy_message_index")
+        message = payload.get("message")
+        if message_index is None and isinstance(message, dict):
+            message_index = _matching_message_index(session, message)
+        if message_index is not None:
+            indexes.append(int(message_index))
+    return max(indexes, default=-1) + 1
 
 
 def _matching_message_index(session, target: dict[str, Any]) -> int | None:
@@ -691,11 +636,7 @@ def _record_compaction_failure(session, error: Exception) -> None:
     if not isinstance(metrics, dict):
         metrics = {}
     causes = _exception_chain(error)
-    key = (
-        "state_patch_validation_failures"
-        if any(isinstance(item, StateValidationError) for item in causes)
-        else "semantic_compaction_failures"
-    )
+    key = "context_snapshot_failures"
     metrics[key] = int(metrics.get(key, 0) or 0) + 1
     if any(isinstance(item, PromptBudgetExceeded) for item in causes):
         metrics["hard_budget_blocks"] = int(

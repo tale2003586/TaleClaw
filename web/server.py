@@ -173,6 +173,7 @@ class AgentService:
         workspace_root: str | None = None,
         display_content: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        thinking_enabled: bool = False,
         timeout: int = 180,
     ) -> str:
         return self.ask_stream(
@@ -183,6 +184,7 @@ class AgentService:
             workspace_root=workspace_root,
             display_content=display_content,
             attachments=attachments,
+            thinking_enabled=thinking_enabled,
             timeout=timeout,
         )
 
@@ -196,6 +198,7 @@ class AgentService:
         workspace_root: str | None = None,
         display_content: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        thinking_enabled: bool = False,
         on_text: Callable[[str], None] | None = None,
         timeout: int = 1800,
     ) -> str:
@@ -212,6 +215,7 @@ class AgentService:
                 workspace_root=workspace_root,
                 display_content=display_content,
                 attachments=attachments,
+                thinking_enabled=thinking_enabled,
                 on_text=on_text,
                 reply_timeout=_env_int("WEB_AGENT_REPLY_TIMEOUT_SECONDS", timeout),
             ),
@@ -247,7 +251,7 @@ class AgentService:
         cb: Callable[[dict[str, Any]], None],
     ) -> Callable[[], None]:
         self.ensure_started()
-        trace_store = getattr(getattr(self._runtime, "loop", None), "trace_store", None)
+        trace_store = getattr(getattr(self._runtime, "coordinator", None), "trace_store", None)
         if trace_store is None or not hasattr(trace_store, "subscribe"):
             return lambda: None
         return trace_store.subscribe(session_key, cb)
@@ -277,7 +281,7 @@ class AgentService:
         loop.close()
 
     async def _start_async(self) -> None:
-        from runtime.bootstrap import build_runtime
+        from applications.bootstrap import build_runtime
 
         self._runtime = build_runtime()
         self._session_locks = {}
@@ -292,7 +296,7 @@ class AgentService:
         if self._runtime is None:
             return
         await self._runtime.stop()
-        sessions = getattr(getattr(self._runtime, "loop", None), "sessions", None)
+        sessions = getattr(getattr(self._runtime, "coordinator", None), "sessions", None)
         if sessions is not None:
             sessions.close()
 
@@ -311,6 +315,7 @@ class AgentService:
         workspace_root: str | None = None,
         display_content: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        thinking_enabled: bool = False,
         on_text: Callable[[str], None] | None = None,
         reply_timeout: int = 180,
     ) -> str:
@@ -332,6 +337,7 @@ class AgentService:
                 metadata["display_content"] = str(display_content)
             if attachments:
                 metadata["attachments"] = [dict(item) for item in attachments]
+            metadata["thinking_enabled"] = bool(thinking_enabled)
             try:
                 await self._runtime.run_message(
                     content=content,
@@ -367,7 +373,11 @@ class AgentService:
             raise RuntimeError("Agent runtime is not started.")
 
         async with self._lock_for_session(session_id):
-            sessions = getattr(getattr(self._runtime, "loop", None), "sessions", None)
+            sessions = getattr(
+                getattr(self._runtime, "coordinator", None),
+                "sessions",
+                None,
+            )
             if sessions is None:
                 raise RuntimeError("Agent session manager is not available.")
             return sessions.delete(session_id)
@@ -1309,6 +1319,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "runtime": "lazy",
                 "has_env_file": (ROOT / ".env").exists(),
                 "has_deepseek_key": bool(os.environ.get("DEEPSEEK_API_KEY")),
+                "thinking_supported": _thinking_supported(),
             })
             return
 
@@ -1586,6 +1597,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             message = str(payload.get("message", "")).strip()
             session_id = str(payload.get("session_id", "default")).strip() or "default"
             workspace_root = str(payload.get("workspace_root", "")).strip() or None
+            thinking_enabled = payload.get("thinking_enabled", False)
+            if not isinstance(thinking_enabled, bool):
+                raise ValueError("thinking_enabled must be a boolean")
+            if thinking_enabled and not _thinking_supported():
+                raise ValueError("thinking_enabled is unavailable for configured model profiles")
             user = self._current_user()
             if not message:
                 self._send_json({"error": "message is required"}, status=HTTPStatus.BAD_REQUEST)
@@ -1597,6 +1613,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 user_id=user.user_id,
                 user_role=user.role,
                 workspace_root=workspace_root,
+                thinking_enabled=thinking_enabled,
             )
             self._send_json({
                 "reply": reply,
@@ -1607,6 +1624,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                     message_limit=40,
                 ),
             })
+        except ValueError as exc:
+            self._send_json(
+                {"error": str(exc), "error_type": type(exc).__name__},
+                status=HTTPStatus.BAD_REQUEST,
+            )
         except Exception as exc:
             traceback.print_exc()
             self._send_json(
@@ -1710,6 +1732,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             message = str(payload.get("message", "")).strip()
             session_id = str(payload.get("session_id", "default")).strip() or "default"
             workspace_root = str(payload.get("workspace_root", "")).strip() or None
+            thinking_enabled = payload.get("thinking_enabled", False)
+            if not isinstance(thinking_enabled, bool):
+                raise ValueError("thinking_enabled must be a boolean")
+            if thinking_enabled and not _thinking_supported():
+                raise ValueError("thinking_enabled is unavailable for configured model profiles")
             attachment_paths = payload.get("attachments") or []
             if not isinstance(attachment_paths, list) or not all(isinstance(item, str) for item in attachment_paths):
                 raise ValueError("attachments must be a list of storage paths")
@@ -1768,6 +1795,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     user_id=user.user_id,
                     user_role=user.role,
                     workspace_root=workspace_root,
+                    thinking_enabled=thinking_enabled,
                     on_text=lambda text: events.put({"type": "delta", "text": text}),
                 )
                 if display_content is not None:
@@ -2243,6 +2271,25 @@ def _env_int(name: str, default: int) -> int:
     value = os.getenv(name)
     if value is None or value == "":
         return int(default)
+
+
+def _thinking_supported() -> bool:
+    truthy = {"1", "true", "yes", "on"}
+    for name, value in os.environ.items():
+        if name.endswith("_SUPPORTS_THINKING") and value.strip().lower() in truthy:
+            prefix = name.removesuffix("_SUPPORTS_THINKING")
+            if os.environ.get(f"{prefix}_THINKING_PARAM", "").strip():
+                return True
+    try:
+        profiles = json.loads(os.environ.get("LLM_PROVIDERS_JSON", "{}") or "{}")
+    except json.JSONDecodeError:
+        return False
+    return any(
+        isinstance(profile, dict)
+        and profile.get("supports_thinking") is True
+        and bool(str(profile.get("thinking_param") or "").strip())
+        for profile in (profiles.values() if isinstance(profiles, dict) else ())
+    )
     try:
         return int(value)
     except ValueError:

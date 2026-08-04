@@ -15,7 +15,7 @@ const USER_MESSAGE_PREVIEW_LINES = 8;
 
 export default function ChatPage() {
   const sessions = useSessionsContext();
-  const { user, codingWorkspace } = useAppContext();
+  const { user, codingWorkspace, health } = useAppContext();
   const [draft, setDraft] = useState("");
   const [optimistic, setOptimistic] = useState<MessageDto[]>([]);
   const [completedActivity, setCompletedActivity] = useState<ActivitySnapshot | null>(null);
@@ -24,6 +24,7 @@ export default function ChatPage() {
   const [attachments, setAttachments] = useState<File[]>([]);
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachmentError, setAttachmentError] = useState("");
+  const [thinkingEnabled, setThinkingEnabled] = useState(false);
   const bottom = useRef<HTMLDivElement>(null);
   const messageList = useRef<HTMLDivElement>(null);
   const messageScroller = useRef<HTMLDivElement>(null);
@@ -103,7 +104,7 @@ export default function ChatPage() {
         paths = (response.saved || []).map((entry) => entry.path);
         if (paths.length !== selectedFiles.length) throw new Error("部分附件上传失败");
       }
-      await stream.send(sessions.activeId, message, user.role === "admin" ? codingWorkspace : "", paths);
+      await stream.send(sessions.activeId, message, user.role === "admin" ? codingWorkspace : "", paths, thinkingEnabled);
     } catch (reason) {
       setOptimistic([]);
       setAttachmentError(reason instanceof Error ? reason.message : String(reason));
@@ -154,7 +155,7 @@ export default function ChatPage() {
         <div ref={bottom} />
       </div>
     </div>
-    <div className="composer-dock"><div className="composer">{attachments.length > 0 && <div className="attachment-list">{attachments.map((file, index) => <span className="attachment-chip" key={`${file.name}-${file.size}-${index}`}><Paperclip aria-hidden="true" size={13} />{file.name}<button type="button" aria-label={`移除 ${file.name}`} onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X aria-hidden="true" size={12} /></button></span>)}</div>}{attachmentError && <p className="composer-error">{attachmentError}</p>}<textarea ref={composerInput} value={draft} disabled={raw || stream.status === "streaming" || attachmentBusy} onChange={(event) => { setDraft(event.target.value); event.currentTarget.style.height = "auto"; event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 190)}px`; }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} placeholder={raw ? "只读会话" : "输入问题，并可添加 PDF、Word、PPT 或图片附件……"} /><div><span>{attachmentBusy ? "正在上传附件" : stream.status === "streaming" ? "思考与执行中" : stream.status === "stopping" ? "正在停止" : raw ? "只读会话" : "附件将先经 MinerU 精准解析"}</span>{stream.status === "streaming" ? <Button onClick={() => void stream.stop(sessions.activeId)}><CircleStop aria-hidden="true" size={14} />停止</Button> : <div className="composer-actions"><Button aria-label="添加附件" disabled={raw || attachmentBusy} onClick={() => attachmentInput.current?.click()}><Paperclip aria-hidden="true" size={14} />附件</Button><input ref={attachmentInput} hidden multiple type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.png,.jpg,.jpeg,.jp2,.webp,.gif,.bmp" onChange={(event) => selectAttachments(event.target.files)} /><Button className="primary" onClick={() => void send()} disabled={(!draft.trim() && !attachments.length) || raw || attachmentBusy}><Send aria-hidden="true" size={14} />发送</Button></div>}</div></div></div>
+    <div className="composer-dock"><div className="composer">{attachments.length > 0 && <div className="attachment-list">{attachments.map((file, index) => <span className="attachment-chip" key={`${file.name}-${file.size}-${index}`}><Paperclip aria-hidden="true" size={13} />{file.name}<button type="button" aria-label={`移除 ${file.name}`} onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X aria-hidden="true" size={12} /></button></span>)}</div>}{attachmentError && <p className="composer-error">{attachmentError}</p>}<textarea ref={composerInput} value={draft} disabled={raw || stream.status === "streaming" || attachmentBusy} onChange={(event) => { setDraft(event.target.value); event.currentTarget.style.height = "auto"; event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 190)}px`; }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} placeholder={raw ? "只读会话" : "输入问题，并可添加 PDF、Word、PPT 或图片附件……"} /><div><span>{attachmentBusy ? "正在上传附件" : stream.status === "streaming" ? "思考与执行中" : stream.status === "stopping" ? "正在停止" : raw ? "只读会话" : "附件将先经 MinerU 精准解析"}</span>{stream.status === "streaming" ? <Button onClick={() => void stream.stop(sessions.activeId)}><CircleStop aria-hidden="true" size={14} />停止</Button> : <div className="composer-actions"><Button title={health.thinking_supported ? "启用模型深度思考" : "当前模型不支持"} disabled={!health.thinking_supported || raw || attachmentBusy} className={thinkingEnabled ? "active" : ""} onClick={() => setThinkingEnabled((value) => !value)}>深度思考</Button><Button aria-label="添加附件" disabled={raw || attachmentBusy} onClick={() => attachmentInput.current?.click()}><Paperclip aria-hidden="true" size={14} />附件</Button><input ref={attachmentInput} hidden multiple type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.png,.jpg,.jpeg,.jp2,.webp,.gif,.bmp" onChange={(event) => selectAttachments(event.target.files)} /><Button className="primary" onClick={() => void send()} disabled={(!draft.trim() && !attachments.length) || raw || attachmentBusy}><Send aria-hidden="true" size={14} />发送</Button></div>}</div></div></div>
   </div>;
 }
 

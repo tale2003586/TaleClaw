@@ -11,6 +11,7 @@ export interface HealthResponse {
   coding_workspace: string;
   user: CurrentUser;
   runtime: string;
+  thinking_supported?: boolean;
 }
 
 export interface RuntimeHealthResponse {

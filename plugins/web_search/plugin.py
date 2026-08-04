@@ -3,6 +3,7 @@ import json
 from plugins.base import Plugin, ToolRegistration
 from plugins.web_search.client import TavilySearchClient
 from tools.schema import function_tool
+from tools.spec import ToolInjection, ToolRisk
 
 
 class WebSearchPlugin(Plugin):
@@ -42,9 +43,11 @@ class WebSearchPlugin(Plugin):
                     ["query"],
                 ),
                 handler=self.search,
-                risk="low",
-                allowed_agents={"bot", "coding"},
-                always_on=True,
+                risk=ToolRisk.LOW,
+                allowed_modes=frozenset({"bot", "coding"}),
+                injection=ToolInjection.ALWAYS,
+                idempotent=True,
+                side_effect=False,
                 source="plugin:web_search",
             )
         ]

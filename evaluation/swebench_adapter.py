@@ -279,7 +279,7 @@ def run_swebench_instance(
     )
     _emit(progress, "workspace_prepared", {"workspace": str(workspace)})
 
-    from runtime.bootstrap import get_model_pool
+    from applications.bootstrap import get_model_pool
 
     model_pool = get_model_pool()
     provider = model_pool.routed_provider("coding")

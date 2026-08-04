@@ -5,6 +5,7 @@ from typing import Any
 
 from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry
+from tools.spec import ToolInjection, ToolSpec
 
 
 @dataclass
@@ -29,16 +30,16 @@ def registry_with_tool(
     always_on: bool = True,
 ) -> ToolRegistry:
     registry = ToolRegistry()
-    registry.register(
-        function_tool(
+    registry.register(ToolSpec(
+        schema=function_tool(
             name,
             f"Deterministic {name} test tool.",
             {"value": {"type": "integer"}},
             [],
         ),
-        handler,
-        allowed_agents=modes,
+        handler=handler,
+        allowed_modes=frozenset(modes or {"bot", "coding", "teammate"}),
         admin_only=admin_only,
-        always_on=always_on,
-    )
+        injection=ToolInjection.ALWAYS if always_on else ToolInjection.DEFERRED,
+    ))
     return registry

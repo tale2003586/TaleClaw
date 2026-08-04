@@ -99,6 +99,31 @@ class SessionStore:
                 ON context_checkpoints (session_id, archive_boundary_seq DESC, created_at DESC)
                 """)
             )
+            self._conn.execute(
+                sql(self.config, """
+                CREATE TABLE IF NOT EXISTS context_snapshots (
+                    snapshot_id              TEXT PRIMARY KEY,
+                    session_id               TEXT NOT NULL,
+                    status                   TEXT NOT NULL,
+                    generation               BIGINT NOT NULL,
+                    covered_event_start_seq  BIGINT NOT NULL,
+                    covered_event_end_seq    BIGINT NOT NULL,
+                    source_task_state_version BIGINT NOT NULL,
+                    source_hash              TEXT NOT NULL,
+                    archive_completed        BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at               TEXT NOT NULL,
+                    updated_at               TEXT NOT NULL,
+                    snapshot_json            TEXT NOT NULL,
+                    FOREIGN KEY (session_id) REFERENCES sessions(id)
+                )
+                """)
+            )
+            self._conn.execute(
+                sql(self.config, """
+                CREATE INDEX IF NOT EXISTS idx_context_snapshots_session_generation
+                ON context_snapshots (session_id, generation DESC)
+                """)
+            )
             self._migrate_agent_identity()
 
     def _migrate_agent_identity(self) -> None:
@@ -180,6 +205,15 @@ class SessionStore:
                 """),
                 (session_id,),
             ).fetchall()
+            snapshot_rows = self._conn.execute(
+                sql(self.config, """
+                SELECT snapshot_json
+                FROM context_snapshots
+                WHERE session_id = ?
+                ORDER BY generation ASC, created_at ASC
+                """),
+                (session_id,),
+            ).fetchall()
 
         checkpoints = []
         for checkpoint in checkpoint_rows:
@@ -198,6 +232,18 @@ class SessionStore:
                 "metadata": json.loads(row_get(checkpoint, "metadata_json", "{}") or "{}"),
             })
 
+        context_snapshots = [
+            json.loads(row_get(item, "snapshot_json", "{}") or "{}")
+            for item in snapshot_rows
+        ]
+        active_snapshot = next(
+            (
+                str(item.get("snapshot_id") or "")
+                for item in reversed(context_snapshots)
+                if item.get("status") == "active"
+            ),
+            "",
+        )
         return {
             "id": row_get(row, "id"),
             "active_agent": row_get(row, "active_agent"),
@@ -220,8 +266,13 @@ class SessionStore:
                 )
                 for event in event_rows
             ],
-            "archive_boundary_seq": checkpoints[0]["archive_boundary_seq"] if checkpoints else 0,
+            "archive_boundary_seq": _restored_archive_boundary(
+                checkpoints,
+                context_snapshots,
+            ),
             "checkpoints": checkpoints,
+            "context_snapshots": context_snapshots,
+            "active_snapshot_id": active_snapshot,
         }
 
     def load_session_page(
@@ -476,6 +527,90 @@ class SessionStore:
         })
         return dict(session.checkpoints[0])
 
+    def prepare_context_snapshot(self, session: Any, snapshot: Any) -> dict[str, Any]:
+        """Durably store PREPARED without moving the active/archive pointers."""
+        payload = snapshot.to_dict() if hasattr(snapshot, "to_dict") else dict(snapshot)
+        if payload.get("status") != "prepared":
+            raise ValueError("only PREPARED snapshots can be persisted")
+        snapshot_json = canonical_json(payload)
+        with self._lock, self._conn.transaction():
+            self._upsert_session(session)
+            self.last_event_insert_count = self._append_new_events(session)
+            self._conn.execute(
+                sql(self.config, """
+                INSERT INTO context_snapshots (
+                    snapshot_id, session_id, status, generation,
+                    covered_event_start_seq, covered_event_end_seq,
+                    source_task_state_version, source_hash, archive_completed,
+                    created_at, updated_at, snapshot_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(snapshot_id) DO NOTHING
+                """),
+                (
+                    payload["snapshot_id"], session.id, payload["status"],
+                    payload["generation"], payload["covered_event_start_seq"],
+                    payload["covered_event_end_seq"],
+                    payload["source_task_state_version"], payload["source_hash"],
+                    bool(payload.get("archive_completed")), payload["created_at"],
+                    payload["updated_at"], snapshot_json,
+                ),
+            )
+        self._conn.commit()
+        return payload
+
+    def activate_context_snapshot(self, session: Any, snapshot: Any) -> dict[str, Any]:
+        """Atomically switch ACTIVE; covered source events remain unarchived."""
+        payload = snapshot.to_dict() if hasattr(snapshot, "to_dict") else dict(snapshot)
+        if payload.get("status") != "active":
+            raise ValueError("activation requires an ACTIVE snapshot payload")
+        with self._lock, self._conn.transaction():
+            self._conn.execute(
+                sql(self.config, """
+                UPDATE context_snapshots
+                SET status = 'superseded',
+                    snapshot_json = REPLACE(snapshot_json, '"status":"active"', '"status":"superseded"')
+                WHERE session_id = ? AND status = 'active' AND snapshot_id <> ?
+                """),
+                (session.id, payload["snapshot_id"]),
+            )
+            self._conn.execute(
+                sql(self.config, """
+                UPDATE context_snapshots
+                SET status = ?, updated_at = ?, snapshot_json = ?
+                WHERE snapshot_id = ? AND session_id = ? AND status IN ('prepared', 'active')
+                """),
+                (
+                    "active", payload["updated_at"], canonical_json(payload),
+                    payload["snapshot_id"], session.id,
+                ),
+            )
+            self._upsert_session(session)
+            self.last_event_insert_count = self._append_new_events(session)
+        self._conn.commit()
+        return payload
+
+    def archive_context_snapshot(self, session: Any, snapshot: Any) -> dict[str, Any]:
+        """Persist the idempotent archive completion after activation."""
+        payload = snapshot.to_dict() if hasattr(snapshot, "to_dict") else dict(snapshot)
+        if payload.get("status") != "active" or not payload.get("archive_completed"):
+            raise ValueError("archive completion requires an ACTIVE snapshot")
+        with self._lock, self._conn.transaction():
+            self._conn.execute(
+                sql(self.config, """
+                UPDATE context_snapshots
+                SET archive_completed = ?, updated_at = ?, snapshot_json = ?
+                WHERE snapshot_id = ? AND session_id = ? AND status = 'active'
+                """),
+                (
+                    True, payload["updated_at"], canonical_json(payload),
+                    payload["snapshot_id"], session.id,
+                ),
+            )
+            self._upsert_session(session)
+            self.last_event_insert_count = self._append_new_events(session)
+        self._conn.commit()
+        return payload
+
     # Naming aliases keep the storage boundary discoverable to callers during
     # the migration away from message-list compaction.
     save_compaction = compact_session
@@ -596,6 +731,10 @@ class SessionStore:
     def delete_session(self, session_id: str) -> bool:
         with self._lock:
             self._conn.execute(
+                sql(self.config, "DELETE FROM context_snapshots WHERE session_id = ?"),
+                (session_id,),
+            )
+            self._conn.execute(
                 sql(self.config, "DELETE FROM context_checkpoints WHERE session_id = ?"),
                 (session_id,),
             )
@@ -617,3 +756,23 @@ class SessionStore:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+
+def _restored_archive_boundary(
+    checkpoints: list[dict[str, Any]],
+    context_snapshots: list[dict[str, Any]],
+) -> int:
+    checkpoint_boundary = max(
+        (int(item.get("archive_boundary_seq") or 0) for item in checkpoints),
+        default=0,
+    )
+    snapshot_boundary = max(
+        (
+            int(item.get("covered_event_end_seq") or 0)
+            for item in context_snapshots
+            if item.get("status") == "active"
+            and bool(item.get("archive_completed"))
+        ),
+        default=0,
+    )
+    return max(checkpoint_boundary, snapshot_boundary)

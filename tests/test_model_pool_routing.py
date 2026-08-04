@@ -393,7 +393,17 @@ class RuntimeModelRoutingTests(unittest.TestCase):
         session = Session(id="task:test", active_agent="coding")
         session.add_message("user", "edit code")
 
-        reply = pipeline.run_turn(session, SimpleNamespace(tool_mode="coding"))
+        from runtime.agent_spec import AgentSpec, ModelPolicy, ToolSet
+        from runtime.runtime import RunContext
+        reply = pipeline.run(
+            AgentSpec(
+                name="coding",
+                tool_set=ToolSet(mode="coding"),
+                model_policy=ModelPolicy(purpose="coding"),
+            ),
+            "route coding",
+            RunContext(session=session),
+        ).output
 
         self.assertEqual("reply from coding", reply)
         self.assertEqual("coding-model", model_pool.providers["coding"].calls[0]["model"])
@@ -455,6 +465,9 @@ class FakeTools:
 
 
 class FakeContextBuilder:
+    def build_prefix(self, profile, *, session, active_turn_start_index):
+        return None
+
     def build(self, **kwargs):
         return SimpleNamespace(messages=kwargs["session"].messages)
 

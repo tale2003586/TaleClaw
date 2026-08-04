@@ -6,6 +6,7 @@ from pathlib import Path
 from plugins.base import Plugin, ToolRegistration
 from plugins.markdown_pdf.renderer import render_markdown_pdf
 from tools.schema import function_tool
+from tools.spec import ToolInjection, ToolRisk, ToolStateEffect
 from user_scope import explicit_user_id_for_session, storage_root_for_session
 
 
@@ -58,9 +59,12 @@ class MarkdownPdfPlugin(Plugin):
                     ["input_path"],
                 ),
                 handler=self.markdown_to_pdf,
-                risk="normal",
-                allowed_agents={"bot", "coding"},
-                always_on=True,
+                risk=ToolRisk.NORMAL,
+                allowed_modes=frozenset({"bot", "coding"}),
+                injection=ToolInjection.ALWAYS,
+                idempotent=False,
+                side_effect=True,
+                state_effect=ToolStateEffect.EXTERNAL,
                 session_scoped=True,
                 source="plugin:markdown_pdf",
             )

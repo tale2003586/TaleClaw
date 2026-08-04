@@ -101,7 +101,7 @@ async def run_task(args: argparse.Namespace, workspace: Path, started: float) ->
     # Import after configure_env so config.py sees workspace constants from the
     # extension. initialize_runtime_environment() then loads .env, so re-apply
     # per-task feature toggles before build_runtime reads dynamic env flags.
-    from runtime import bootstrap
+    from applications import bootstrap
 
     bootstrap.initialize_runtime_environment()
     configure_env(args, workspace)
@@ -119,7 +119,7 @@ async def run_task(args: argparse.Namespace, workspace: Path, started: float) ->
 
     try:
         await pin_mode(runtime, args.mode, session_id, metadata)
-        await runtime.run_message(
+        completed_run = await runtime.run_message(
             content=args.task,
             channel="vscode",
             chat_id=session_id,
@@ -127,9 +127,8 @@ async def run_task(args: argparse.Namespace, workspace: Path, started: float) ->
             metadata=metadata,
             on_text=chunks.append,
         )
-        session = runtime.loop.sessions.get_or_create(f"vscode:{session_id}")
-        run_id = str(session.metadata.get("last_run_id") or "")
-        run_dir = runtime.loop.trace_store.run_dir(run_id) if run_id else None
+        run_id = str(getattr(completed_run, "run_id", "") or "")
+        run_dir = runtime.coordinator.trace_store.run_dir(run_id) if run_id else None
         run_state = read_json(run_dir / "run_state.json") if run_dir else {}
         metrics = read_json(run_dir / "metrics.json") if run_dir else {}
         report_payload = read_json(run_dir / "report.json") if run_dir else {}
@@ -153,7 +152,6 @@ async def run_task(args: argparse.Namespace, workspace: Path, started: float) ->
                 "mode": args.mode,
                 "rag_enabled": args.rag_enabled == "1",
                 "context_budget_enabled": args.context_budget_enabled == "1",
-                "working_memory_enabled": args.working_memory_enabled == "1",
                 "tool_loop_guard_enabled": args.tool_loop_guard_enabled == "1",
                 "max_reasoning_steps": args.max_reasoning_steps,
                 "subagent_max_reasoning_steps": args.subagent_max_reasoning_steps,
@@ -177,23 +175,21 @@ def configure_env(args: argparse.Namespace, workspace: Path) -> None:
     os.environ["HISTORY_VECTOR_ENABLED"] = args.rag_enabled
     os.environ["MEMORY_VECTOR_ENABLED"] = args.rag_enabled
     os.environ["CONTEXT_ENABLE_SECTION_BUDGET"] = args.context_budget_enabled
-    os.environ["WORKING_MEMORY_CHECKPOINT_ENABLED"] = args.working_memory_enabled
-    os.environ["WORKING_MEMORY_RESUME_ENABLED"] = args.working_memory_enabled
     os.environ["TOOL_LOOP_GUARD_ENABLED"] = args.tool_loop_guard_enabled
 
 
 def apply_runtime_overrides(runtime: Any, args: argparse.Namespace) -> None:
     max_steps = max(1, int(args.max_reasoning_steps))
-    pipeline = getattr(runtime.loop, "pipeline", None)
+    pipeline = getattr(runtime.coordinator, "runtime", None)
     agent_runner = getattr(pipeline, "agent_runner", None)
     if agent_runner is not None:
         agent_runner.max_reasoning_steps = max_steps
-    task_runner = getattr(runtime.loop, "coding_application", None)
+    task_runner = getattr(runtime.coordinator, "coding_application", None)
     base_pipeline = getattr(task_runner, "base_pipeline", None)
     base_agent_runner = getattr(base_pipeline, "agent_runner", None)
     if base_agent_runner is not None:
         base_agent_runner.max_reasoning_steps = max_steps
-    subagent_runner = getattr(runtime.loop, "subagent_runner", None)
+    subagent_runner = getattr(runtime.coordinator, "subagent_runner", None)
     if subagent_runner is not None:
         subagent_runner.max_reasoning_steps = max(1, int(args.subagent_max_reasoning_steps))
 

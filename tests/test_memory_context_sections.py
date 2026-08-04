@@ -40,21 +40,17 @@ def semantic_fixture():
     return repository, retrieval
 
 
-def test_semantic_context_is_rendered_separately_from_working_memory() -> None:
+def test_semantic_context_has_no_working_memory_channel() -> None:
     _, retrieval = semantic_fixture()
     service = ContextMemoryService(
         semantic_memory_retriever=retrieval,
-        working_memory_renderer=lambda session: "<working_memory>current task</working_memory>",
     )
     session = Session(id="web:alice:a", metadata={"user_id": "alice"})
 
     semantic = service.build_memory_block(session, current_request="concise")
-    working = service.build_working_memory_block(session)
-
     assert semantic.startswith("<semantic_memory>")
     assert "Prefer concise answers" in semantic
     assert "working_memory" not in semantic
-    assert working == "<working_memory>current task</working_memory>"
 
 
 def test_semantic_provider_uses_independent_budget() -> None:
@@ -69,18 +65,11 @@ def test_semantic_provider_uses_independent_budget() -> None:
                 floor_chars=20,
                 strategy="head_tail",
             ),
-            "working_memory": SectionBudgetRule(
-                name="working_memory",
-                budget_chars=100,
-                floor_chars=20,
-                strategy="head_tail",
-            ),
         },
     )
 
     class Builder:
-        def _build_working_memory_block(self, session, profile):
-            return ""
+        pass
 
     builder = Builder()
     builder.memory_service = service

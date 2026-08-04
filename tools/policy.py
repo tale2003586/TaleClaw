@@ -3,106 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-
-ALWAYS_ON_TOOLS = {
-    "recall_memory",
-    "memorize",
-    "tool_search",
-}
-
-PRELOADED_TOOLS_BY_MODE = {
-    "bot": {
-        "update_task_state",
-        "load_skill",
-        "read_artifact",
-        "storage_list_files",
-        "storage_read_file",
-        "storage_write_file",
-        "sandbox_list_files",
-        "sandbox_read_file",
-        "sandbox_write_file",
-        "publish_artifact",
-    },
-    "hybrid": {
-        "update_task_state",
-        "load_skill",
-        "read_artifact",
-    },
-    "coding": {
-        "update_task_state",
-        "bash",
-        "read_artifact",
-        "edit_file",
-        "list_files",
-        "rg",
-        "grep",
-        "nl",
-        "repo_map",
-        "code_outline",
-        "read_file",
-        "read_files",
-        "write_file",
-        "git_status",
-        "git_diff",
-        "git_log",
-        "git_branch",
-        "load_skill",
-        "task_create",
-        "task_update",
-        "task_list",
-        "task_get",
-        "task",
-        "parallel_tasks",
-        "claim_task",
-        "check_background",
-        "read_inbox",
-        "compact",
-    },
-    "teammate": {
-        "update_task_state",
-        "list_files",
-        "read_artifact",
-        "rg",
-        "grep",
-        "nl",
-        "repo_map",
-        "code_outline",
-        "read_file",
-        "read_files",
-        "git_status",
-        "git_diff",
-        "git_log",
-        "git_branch",
-        "load_skill",
-        "task_create",
-        "task_update",
-        "task_list",
-        "task_get",
-        "claim_task",
-        "check_background",
-        "send_message",
-        "read_inbox",
-        "idle",
-        "shutdown_response",
-        "plan_approval_request",
-    },
-}
-
-DEFERRED_TOOLS = {
-    "bash",
-    "write_file",
-    "edit_file",
-    "background_run",
-    "git_add",
-    "git_commit",
-    "spawn_teammate",
-    "list_teammates",
-    "broadcast",
-    "shutdown_request",
-    "shutdown_status",
-    "plan_approval",
-    "claim_task",
-}
+from tools.spec import ToolInjection
 
 UNLOCKED_TOOLS_KEY = "unlocked_tools"
 
@@ -128,18 +29,12 @@ class ToolPolicy:
     ) -> set[str]:
         allowed = self._allowed_names(session=session, mode=mode)
         metadata = getattr(session, "metadata", {}) or {}
-
         unlocked = set(metadata.get(UNLOCKED_TOOLS_KEY, []))
-        visible = (
-            ALWAYS_ON_TOOLS
-            | {
-                name
-                for name, tool in self.registry._tools.items()
-                if tool.always_on
-            }
-            | PRELOADED_TOOLS_BY_MODE.get(mode, set())
-            | unlocked
-        )
+        visible = {
+            name
+            for name, tool in self.registry._tools.items()
+            if tool.injection in {ToolInjection.ALWAYS, ToolInjection.PRELOADED}
+        } | unlocked
         return visible & allowed
 
     def can_execute(

@@ -8,7 +8,7 @@ from typing import Any
 class RuntimeServices:
     """Shared TaleClaw Kernel services.
 
-    AgentLoop is intentionally absent: it is an application execution strategy,
+    TurnCoordinator is intentionally absent: it is an application service,
     not a Kernel service.
     """
 

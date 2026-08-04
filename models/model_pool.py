@@ -75,6 +75,8 @@ class ModelProfile:
     output_reserve_tokens: int | None = None
     tokenizer_model: str = ""
     bpe_tokenizer_enabled: bool = False
+    supports_thinking: bool = False
+    thinking_param: str = ""
     fallbacks: tuple[str, ...] = ()
 
 
@@ -168,6 +170,8 @@ class ModelPool:
                 output_reserve_tokens=profile.output_reserve_tokens,
                 tokenizer_model=profile.tokenizer_model,
                 bpe_tokenizer_enabled=profile.bpe_tokenizer_enabled,
+                supports_thinking=profile.supports_thinking,
+                thinking_param=profile.thinking_param,
             )
         return self._providers[profile.name]
 
@@ -748,6 +752,34 @@ def _profile_from_mapping(
         ),
         default=False,
     )
+    supports_thinking = _profile_bool_setting(
+        raw,
+        ("supports_thinking",),
+        env,
+        _provider_env_names(
+            profile_name,
+            provider,
+            selected_match=selected_match,
+            suffix="SUPPORTS_THINKING",
+        ),
+        default=False,
+    )
+    thinking_param = (
+        str(raw.get("thinking_param") or "").strip()
+        or _first_env(
+            env,
+            _provider_env_names(
+                profile_name,
+                provider,
+                selected_match=selected_match,
+                suffix="THINKING_PARAM",
+            ),
+        )
+    )
+    if supports_thinking and not thinking_param:
+        raise RuntimeError(
+            f"Model profile '{profile_name}' supports_thinking requires thinking_param."
+        )
     fallbacks = _parse_profile_list(raw.get("fallbacks", ()))
 
     return ModelProfile(
@@ -765,6 +797,8 @@ def _profile_from_mapping(
         output_reserve_tokens=output_reserve_tokens,
         tokenizer_model=tokenizer_model,
         bpe_tokenizer_enabled=bpe_tokenizer_enabled,
+        supports_thinking=supports_thinking,
+        thinking_param=thinking_param,
         fallbacks=fallbacks,
     )
 

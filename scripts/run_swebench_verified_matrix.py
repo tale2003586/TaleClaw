@@ -235,14 +235,12 @@ def default_config() -> dict[str, Any]:
                 "name": "budget-on",
                 "env": {
                     "CONTEXT_ENABLE_SECTION_BUDGET": "1",
-                    "WORKING_MEMORY_RESUME_ENABLED": "1",
                 },
                 "harness": {
                     "max_reasoning_steps": 80,
                 },
                 "dimensions": {
                     "context_budget": "on",
-                    "working_memory_resume": "on",
                 },
             }
         ],
@@ -270,29 +268,12 @@ def template_config() -> dict[str, Any]:
         "enabled": True,
         "env": {
             "CONTEXT_ENABLE_SECTION_BUDGET": "0",
-            "WORKING_MEMORY_RESUME_ENABLED": "1",
         },
         "harness": {
             "max_reasoning_steps": 80,
         },
         "dimensions": {
             "context_budget": "off",
-            "working_memory_resume": "on",
-        },
-    })
-    config["feature_sets"].append({
-        "name": "working-memory-resume-off",
-        "enabled": False,
-        "env": {
-            "CONTEXT_ENABLE_SECTION_BUDGET": "1",
-            "WORKING_MEMORY_RESUME_ENABLED": "0",
-        },
-        "harness": {
-            "max_reasoning_steps": 80,
-        },
-        "dimensions": {
-            "context_budget": "on",
-            "working_memory_resume": "off",
         },
     })
     config["agents"].append({

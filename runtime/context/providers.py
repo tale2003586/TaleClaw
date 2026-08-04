@@ -90,8 +90,6 @@ class HistoryContextProvider:
 class MemoryContext:
     raw_memory: str
     budgeted_memory: Any
-    raw_working_memory: str
-    budgeted_working_memory: Any
 
 
 class MemoryContextProvider:
@@ -114,10 +112,6 @@ class MemoryContextProvider:
             if include_memory
             else ""
         )
-        raw_working = builder._build_working_memory_block(
-            session,
-            profile=profile,
-        )
         memory_budget_name = (
             "semantic_memory"
             if raw_memory.lstrip().startswith("<semantic_memory>")
@@ -126,11 +120,6 @@ class MemoryContextProvider:
         return MemoryContext(
             raw_memory=raw_memory,
             budgeted_memory=builder.budgeter.apply(memory_budget_name, raw_memory),
-            raw_working_memory=raw_working,
-            budgeted_working_memory=builder.budgeter.apply(
-                "working_memory",
-                raw_working,
-            ),
         )
 
 
@@ -209,8 +198,7 @@ class EmptyMemoryContextProvider:
 
     def provide(self, builder, **kwargs) -> MemoryContext:
         empty = builder.budgeter.apply("memory", "")
-        working = builder.budgeter.apply("working_memory", "")
-        return MemoryContext("", empty, "", working)
+        return MemoryContext("", empty)
 
 
 class EmptyRetrievalContextProvider:

@@ -1,20 +1,12 @@
 import unittest
 from types import SimpleNamespace
 
-from applications.coding.context_state import (
-    CODING_CONTEXT_STATE_METADATA_KEY,
-    build_coding_context_view,
-)
-from runtime.context import ContextBuilder
-from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
-
 from runtime.context.dynamic_budget import (
     PromptBudgetExceeded,
     calculate_dynamic_prompt_budget,
     enforce_hard_token_guard,
     select_complete_groups,
 )
-from runtime.sessions.session import Session
 
 
 class _Provider:
@@ -72,37 +64,6 @@ class DynamicPromptBudgetTests(unittest.TestCase):
         )
         roles = [message["role"] for message in selected]
         self.assertEqual(["assistant", "tool", "user"], roles)
-
-    def test_routed_model_budget_reaches_coding_context_assembly(self) -> None:
-        observed = []
-        for window in (16_000, 32_000):
-            session = Session(
-                id=f"task:window-{window}",
-                active_agent="coding",
-            )
-            session.add_message("user", "inspect the current context budget")
-            ContextBuilder(
-                context_providers=DEFAULT_CONTEXT_PROVIDERS,
-                coding_context_view_builder=build_coding_context_view,
-            ).build(
-                session=session,
-                profile=SimpleNamespace(system_prompt="base", tool_mode="coding"),
-                active_turn_start_index=0,
-                model_provider=_Provider(window),
-                model_tools=[{
-                    "type": "function",
-                    "function": {"name": "read", "parameters": {}},
-                }],
-                reserved_output_tokens=500,
-            )
-            observed.append(
-                session.metadata[CODING_CONTEXT_STATE_METADATA_KEY]["metrics"][
-                    "usable_input_tokens"
-                ]
-            )
-
-        self.assertGreater(observed[1], observed[0])
-
 
 if __name__ == "__main__":
     unittest.main()

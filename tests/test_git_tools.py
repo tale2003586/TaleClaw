@@ -69,9 +69,9 @@ class GitToolTests(unittest.TestCase):
         session = _session_for(Path("/tmp/project"))
 
         visible = registry.visible_names_for_turn(session, "coding")
-        self.assertIn("bash", visible)
-        self.assertIn("edit_file", visible)
-        self.assertIn("write_file", visible)
+        self.assertNotIn("bash", visible)
+        self.assertNotIn("edit_file", visible)
+        self.assertNotIn("write_file", visible)
         self.assertIn("list_files", visible)
         self.assertIn("read_files", visible)
         self.assertIn("git_status", visible)

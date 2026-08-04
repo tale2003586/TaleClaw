@@ -8,7 +8,7 @@ from applications.coding.task_state import Objective, TaskPhase, TaskState, load
 from applications.coding.task_state import ensure_task_state
 from runtime.context.builder import ContextBuilder
 from runtime.context import ArtifactStore, LongContentDetector
-from runtime.agent_loop import AgentLoop
+from applications.turn_coordinator import TurnCoordinator as AgentLoop
 from runtime.messaging.events import InboundMessage
 from runtime.sessions import Session
 from runtime.task_state import (
@@ -25,7 +25,7 @@ def _profile(mode: str):
     return SimpleNamespace(system_prompt="base", tool_mode=mode)
 
 
-def test_chat_context_creates_and_restores_compact_task_state_core() -> None:
+def test_chat_context_does_not_create_task_state_core() -> None:
     session = Session("chat:core")
     session.add_message("user", "回答 123")
     builder = ContextBuilder()
@@ -34,15 +34,10 @@ def test_chat_context_creates_and_restores_compact_task_state_core() -> None:
     state = load_task_state_core(session)
     second = builder.build(session=session, profile=_profile("bot"))
 
-    assert state is not None
-    assert state.objective == "回答 123"
-    assert state.status == TaskStatus.ACTIVE
-    assert session.metadata["task_state"]["schema_version"] == 2
-    assert sum("<task-state " in item["content"] for item in first.messages) == 1
-    assert sum("<task-state " in item["content"] for item in second.messages) == 1
-    state_message = next(item for item in first.messages if "<task-state " in item["content"])
-    assert state_message["role"] == "system"
-    assert state_message["metadata"]["instructions"] is False
+    assert state is None
+    assert "task_state" not in session.metadata
+    assert all("<task-state " not in item["content"] for item in first.messages)
+    assert all("<task-state " not in item["content"] for item in second.messages)
 
 
 def test_hybrid_uses_core_schema_without_coding_phase() -> None:
@@ -59,15 +54,7 @@ def test_hybrid_uses_core_schema_without_coding_phase() -> None:
     assert "current_focus" in properties
     assert "phase" not in properties
 
-    state = load_task_state_core(session)
-    output = registry.execute(
-        "update_task_state",
-        {"base_version": state.version, "current_focus": "直接回答"},
-        session=session,
-        mode="hybrid",
-    )
-    assert '"status": "updated"' in output
-    assert load_task_state_core(session).current_focus == "直接回答"
+    assert load_task_state_core(session) is None
 
 
 def test_coding_task_state_is_shared_core_with_coding_extension_and_old_payload() -> None:
@@ -169,7 +156,7 @@ def test_attachment_metadata_is_separate_and_instruction_free(tmp_path) -> None:
     loop = AgentLoop(
         bus=None,
         sessions=None,
-        pipeline=None,
+        runtime=None,
         router=None,
         long_content_detector=detector,
     )

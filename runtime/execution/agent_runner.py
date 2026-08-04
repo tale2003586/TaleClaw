@@ -1,11 +1,13 @@
 """Agent execution adapter."""
 
+from types import SimpleNamespace
 from typing import Callable
 
 from runtime.agent_spec import AgentSpec
 from runtime.ports import ContextPort, ModelPort, ToolExecutorPort, ToolPort
 from runtime.execution.reasoning_loop import DEFAULT_MAX_REASONING_STEPS, ReasoningLoop
 from runtime.execution.policy_set import ExecutionPolicies
+from runtime.execution.state import RunExecutionState
 
 
 class AgentRunner:
@@ -40,7 +42,7 @@ class AgentRunner:
             execution_policy_factory or ExecutionPolicies.minimal
         )
 
-    def run_turn(
+    def run(
         self,
         *,
         session,
@@ -56,6 +58,13 @@ class AgentRunner:
         trace_parent_span_id: str | None = None,
         run_context=None,
     ) -> None:
+        if run_context is None:
+            execution_state = RunExecutionState(
+                run_id=str(getattr(run_state, "run_id", "") or ""),
+                messages=getattr(session, "messages", []),
+            )
+            execution_state.reset(web_search_limit=0)
+            run_context = SimpleNamespace(state=execution_state)
         context_builder = build_context or self._build_context
         turn_finished = after_turn or self._touch_session
         effective_max_steps = spec.max_reasoning_steps or self.max_reasoning_steps
@@ -109,10 +118,10 @@ class AgentRunner:
             raise RuntimeError("AgentRunner has no provider or model_pool.")
         return self.provider, self.model
 
-    def _build_context(self, session, profile):
+    def _build_context(self, session, profile, **kwargs):
         if self.context_builder is None:
             raise RuntimeError("AgentRunner has no context_builder.")
-        return self.context_builder.build(session=session, profile=profile)
+        return self.context_builder.build(session=session, profile=profile, **kwargs)
 
     def _touch_session(self, session) -> None:
         session.touch()

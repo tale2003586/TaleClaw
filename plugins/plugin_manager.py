@@ -49,16 +49,7 @@ class PluginManager:
         self.loaded_names.append(plugin.name)
 
         for tool in plugin.tools():
-            self.tool_registry.register(
-                tool.schema,
-                tool.handler,
-                risk=tool.risk,
-                allowed_agents=tool.allowed_agents,
-                source=tool.source,
-                always_on=tool.always_on,
-                session_scoped=tool.session_scoped,
-                admin_only=tool.admin_only,
-            )
+            self.tool_registry.register(tool)
             self._tool_names.append(tool.schema["function"]["name"])
 
         self._tool_hooks.extend(plugin.tool_hooks())
