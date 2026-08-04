@@ -3,18 +3,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tools.executor import ToolHook
-
-
-@dataclass
-class ToolRegistration:
-    schema: dict
-    handler: Callable[..., str]
-    risk: str = "normal"
-    allowed_agents: set[str] | None = None
-    always_on: bool = False
-    session_scoped: bool = False
-    admin_only: bool = False
-    source: str = "plugin"
+from tools.spec import ToolSpec as ToolRegistration
 
 
 @dataclass

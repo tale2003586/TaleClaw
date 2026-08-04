@@ -27,7 +27,9 @@ class FakeRuntime:
         self.submitted = []
         self.run_count = 0
         self.started = False
-        self.loop = SimpleNamespace(sessions=SimpleNamespace(close=lambda: None))
+        self.coordinator = SimpleNamespace(
+            sessions=SimpleNamespace(close=lambda: None)
+        )
 
     def start(self):
         self.started = True

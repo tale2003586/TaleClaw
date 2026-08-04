@@ -15,6 +15,7 @@ from runtime.context.retrieval import ContextRetrievalService
 from runtime.trace.summary import build_trace_summary_payload
 from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry
+from tools.spec import ToolInjection, ToolSpec
 
 
 class FakeIndex:
@@ -246,12 +247,15 @@ class SecurityRagObservabilityTests(unittest.TestCase):
                 "parent_span_id": _parent_span_id,
             })
 
-        registry.register(
-            function_tool("trace_probe", "Trace probe.", {}, []),
-            handler,
-            allowed_agents={"coding"},
-            always_on=True,
-        )
+        registry.register(ToolSpec(
+            schema=function_tool("trace_probe", "Trace probe.", {}, []),
+            handler=handler,
+            allowed_modes=frozenset({"coding"}),
+            injection=ToolInjection.ALWAYS,
+            runtime_parameters=frozenset({
+                "_trace_store", "_run_state", "_parent_span_id",
+            }),
+        ))
 
         output = registry.execute(
             "trace_probe",

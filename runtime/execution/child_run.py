@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import uuid
 
-from runtime.runtime import RunExecutionState
+from runtime.execution.state import RunExecutionState
 
 
 @dataclass(frozen=True)

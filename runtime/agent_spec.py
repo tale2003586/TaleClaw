@@ -72,6 +72,7 @@ class AgentSpec:
     role: str = ""
     max_tokens: int | None = None
     max_reasoning_steps: int | None = None
+    thinking_enabled: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
     instructions: str = ""
     model_policy: ModelPolicy | None = None

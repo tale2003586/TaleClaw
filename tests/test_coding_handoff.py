@@ -7,7 +7,7 @@ from applications.coding.runner import CodingApplication
 from applications.coding.session import TaskSessionFactory
 from memory.store import MemoryStore
 from models.provider import LLMResponse
-from runtime.agent_loop import AgentLoop
+from applications.turn_coordinator import TurnCoordinator as AgentLoop
 from applications.coding.handoff import (
     CODING_HANDOFF_METADATA_KEY,
     CODING_TASK_SUMMARY_METADATA_KEY,
@@ -181,7 +181,7 @@ class CodingSessionHandoffTests(unittest.TestCase):
         loop = AgentLoop(
             bus=None,
             sessions=None,
-            pipeline=None,
+            runtime=None,
             router=None,
             coding_application=FakeCodingApplication(),
         )

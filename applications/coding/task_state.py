@@ -216,20 +216,6 @@ class CoverageState:
 
 
 @dataclass
-class ExecutionMemory:
-    observed_tools: list[dict[str, Any]] = field(default_factory=list)
-    do_not_repeat: list[dict[str, Any]] = field(default_factory=list)
-    tool_call_fingerprints: list[str] = field(default_factory=list)
-    failed_strategies: list[dict[str, Any]] = field(default_factory=list)
-    non_retryable_failures: list[dict[str, Any]] = field(default_factory=list)
-    result_hashes: list[str] = field(default_factory=list)
-    observed_effects: list[dict[str, Any]] = field(default_factory=list)
-    step_checkpoints: list[dict[str, Any]] = field(default_factory=list)
-    last_step: int = 0
-    compaction_generation: int = 0
-
-
-@dataclass
 class StateHistoryEntry:
     id: str
     category: str
@@ -262,7 +248,6 @@ class TaskState(TaskStateCore):
     decisions: list[Decision] = field(default_factory=list)
     evidence_index: dict[str, EvidenceRef] = field(default_factory=dict)
     coverage: CoverageState = field(default_factory=CoverageState)
-    execution_memory: ExecutionMemory = field(default_factory=ExecutionMemory)
     history: list[StateHistoryEntry] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -298,7 +283,6 @@ class TaskState(TaskStateCore):
             "decisions": self.decisions,
             "evidence_index": self.evidence_index,
             "coverage": self.coverage,
-            "execution_memory": self.execution_memory,
             "history": self.history,
         })
 
@@ -369,7 +353,6 @@ class TaskState(TaskStateCore):
                 },
                 artifact_refs=[str(item) for item in payload.get("artifact_refs") or [] if item],
                 coverage=_coerce(CoverageState, payload.get("coverage") or {}),
-                execution_memory=_coerce(ExecutionMemory, payload.get("execution_memory") or {}),
                 history=_coerce_list(StateHistoryEntry, payload.get("history")),
                 version=max(1, int(payload.get("version") or TASK_STATE_VERSION)),
                 updated_at=str(payload.get("updated_at") or _now()),
@@ -417,14 +400,8 @@ def migrate_working_memory_payload(
             status=_status(item.get("state") or item.get("status")),
             priority=_text(item.get("priority"), 8) or "P1",
         ))
-    for checkpoint in data.get("step_checkpoints") or []:
-        if isinstance(checkpoint, dict):
-            state.execution_memory.last_step = max(
-                state.execution_memory.last_step, int(checkpoint.get("step") or 0)
-            )
-    state.execution_memory.observed_tools = [
-        dict(item) for item in data.get("observed_calls") or [] if isinstance(item, dict)
-    ][-30:]
+    # Legacy execution traces intentionally stay in the event log.  Migration
+    # only promotes durable task semantics into TaskState.
     findings = data.get("archived_findings") or {}
     if isinstance(findings, dict):
         for key, value in findings.items():
@@ -490,9 +467,6 @@ def migrate_coding_context_state_payload(
         for index, value in enumerate(data.get("open_questions") or [])
         if _text(value, 600)
     ]
-    state.execution_memory.do_not_repeat = [
-        dict(item) for item in data.get("do_not_repeat") or [] if isinstance(item, dict)
-    ][-36:]
     state.coverage = CoverageState(entries=[
         CoverageEntry(
             id=str(item.get("id") or _stable_id("coverage", item)),
@@ -952,19 +926,6 @@ def _coerce(type_: type, value: dict[str, Any]) -> Any:
             ranges_read=[str(item) for item in data.get("ranges_read") or []],
             samples_checked=[str(item) for item in data.get("samples_checked") or []],
             areas_unchecked=[str(item) for item in data.get("areas_unchecked") or []],
-        )
-    if type_ is ExecutionMemory:
-        return ExecutionMemory(
-            observed_tools=[dict(item) for item in data.get("observed_tools") or [] if isinstance(item, dict)],
-            do_not_repeat=[dict(item) for item in data.get("do_not_repeat") or [] if isinstance(item, dict)],
-            tool_call_fingerprints=[str(item) for item in data.get("tool_call_fingerprints") or []],
-            failed_strategies=[dict(item) for item in data.get("failed_strategies") or [] if isinstance(item, dict)],
-            non_retryable_failures=[dict(item) for item in data.get("non_retryable_failures") or [] if isinstance(item, dict)],
-            result_hashes=[str(item) for item in data.get("result_hashes") or []],
-            observed_effects=[dict(item) for item in data.get("observed_effects") or [] if isinstance(item, dict)],
-            step_checkpoints=[dict(item) for item in data.get("step_checkpoints") or [] if isinstance(item, dict)],
-            last_step=int(data.get("last_step") or 0),
-            compaction_generation=int(data.get("compaction_generation") or 0),
         )
     return type_(**{key: value for key, value in data.items() if key in type_.__dataclass_fields__})
 

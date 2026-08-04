@@ -32,6 +32,8 @@ class Session:
     prompt_messages: list[dict[str, Any]] = field(default_factory=list)
     archive_boundary_seq: int = 0
     checkpoints: list[dict[str, Any]] = field(default_factory=list)
+    context_snapshots: list[dict[str, Any]] = field(default_factory=list)
+    active_snapshot_id: str = ""
 
     def __post_init__(self) -> None:
         self.messages = [dict(message) for message in self.messages]
@@ -70,6 +72,8 @@ class Session:
             prompt_messages=deepcopy(thaw(self.prompt_messages), memo),
             archive_boundary_seq=self.archive_boundary_seq,
             checkpoints=deepcopy(thaw(self.checkpoints), memo),
+            context_snapshots=deepcopy(thaw(self.context_snapshots), memo),
+            active_snapshot_id=self.active_snapshot_id,
         )
         memo[id(self)] = snapshot
         return snapshot
@@ -282,6 +286,8 @@ class SessionManager:
                     event_log=loaded.get("event_log", []),
                     archive_boundary_seq=loaded.get("archive_boundary_seq", 0),
                     checkpoints=loaded.get("checkpoints", []),
+                    context_snapshots=loaded.get("context_snapshots", []),
+                    active_snapshot_id=loaded.get("active_snapshot_id", ""),
                 )
                 for fact in artifact_facts:
                     session.append_event(
@@ -379,6 +385,18 @@ class SessionManager:
         # Runtime-only adapter used by lazy state migrations. It is not part of
         # Session metadata and is therefore never serialized as task state.
         session._context_checkpoint_persister = self.compact
+        session._context_snapshot_prepare = self.prepare_context_snapshot
+        session._context_snapshot_activate = self.activate_context_snapshot
+        session._context_snapshot_archive = self.archive_context_snapshot
+
+    def prepare_context_snapshot(self, session: Session, snapshot) -> dict[str, Any]:
+        return self._store.prepare_context_snapshot(session, snapshot)
+
+    def activate_context_snapshot(self, session: Session, snapshot) -> dict[str, Any]:
+        return self._store.activate_context_snapshot(session, snapshot)
+
+    def archive_context_snapshot(self, session: Session, snapshot) -> dict[str, Any]:
+        return self._store.archive_context_snapshot(session, snapshot)
 
 
 def _externalize_untracked_legacy_messages(

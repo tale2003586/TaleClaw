@@ -16,6 +16,7 @@ from tests.postgres_utils import temporary_postgres_schema
 from tools import handlers
 from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry, build_lead_tool_registry
+from tools.spec import ToolInjection, ToolSpec
 from web import server
 
 
@@ -150,13 +151,13 @@ class MultiUserIsolationTests(unittest.TestCase):
         route = AgentRouter().route(user_session, "/coding")
 
         registry = ToolRegistry()
-        registry.register(
-            function_tool("server_admin", "admin operation", {}),
-            lambda **kwargs: "ok",
-            allowed_agents={"bot"},
-            always_on=True,
+        registry.register(ToolSpec(
+            schema=function_tool("server_admin", "admin operation", {}),
+            handler=lambda **kwargs: "ok",
+            allowed_modes=frozenset({"bot"}),
+            injection=ToolInjection.ALWAYS,
             admin_only=True,
-        )
+        ))
 
         self.assertEqual("bot", user_session.active_agent)
         self.assertTrue(route.switched)

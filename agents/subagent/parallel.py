@@ -13,9 +13,7 @@ from agents.subagent.failure import (
 )
 from agents.subagent.prompting import output_schema_for
 from agents.subagent.retry import annotate_retry_result, should_auto_retry
-from config import WORKING_MEMORY_CHECKPOINT_ENABLED
 from runtime.execution.failure_reasons import StopReason
-from runtime.working_memory import checkpoint_subtask_results
 
 
 MAX_PARALLEL_SUBTASKS = 8
@@ -81,7 +79,7 @@ def run_parallel_tasks(
                     f"TimeoutError: {failure.message}",
                     failure=failure,
                     truncated=True,
-                    stop_reason=StopReason.TIMEOUT.value,
+                    stop_reason=StopReason.HARD_BUDGET_EXCEEDED.value,
                 )
                 continue
             results[index] = _result_from_future(future, bounded_tasks[index])
@@ -234,7 +232,7 @@ def _run_once_with_timeout(
             f"TimeoutError: {failure.message}",
             failure=failure,
             truncated=True,
-            stop_reason=StopReason.TIMEOUT.value,
+            stop_reason=StopReason.HARD_BUDGET_EXCEEDED.value,
             retry_count=retry_count,
         )
     except Exception as exc:
@@ -307,6 +305,11 @@ def _checkpoint_parent_session(
     tasks: list[dict[str, Any]],
     results: list[dict[str, Any]],
 ) -> None:
-    if not WORKING_MEMORY_CHECKPOINT_ENABLED or parent_session is None:
+    if parent_session is None:
         return
-    checkpoint_subtask_results(parent_session, tasks, results)
+    append_event = getattr(parent_session, "append_event", None)
+    if callable(append_event):
+        append_event("subagents_completed", {
+            "tasks": list(tasks),
+            "results": list(results),
+        })

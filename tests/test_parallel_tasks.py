@@ -76,7 +76,7 @@ class ParallelTasksTests(unittest.TestCase):
         self.assertFalse(results[0]["success"])
         self.assertIn("TimeoutError", results[0]["error"])
         self.assertEqual(SubagentFailureReason.TIMEOUT.value, results[0]["failure_reason"])
-        self.assertEqual("timeout", results[0]["stop_reason"])
+        self.assertEqual("hard_budget_exceeded", results[0]["stop_reason"])
         self.assertTrue(results[0]["recoverable"])
 
 

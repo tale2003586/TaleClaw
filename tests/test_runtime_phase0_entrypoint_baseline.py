@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from runtime.messaging.events import InboundMessage
 from runtime.messaging.user_bus import MessageBus
 from tests.fakes import make_agent_spec
-from runtime.agent_loop import AgentLoop
+from applications.turn_coordinator import TurnCoordinator as AgentLoop
 from runtime.sessions import Session
 
 
@@ -76,7 +76,7 @@ def test_default_single_agent_run_once_consumes_and_publishes_user_bus():
     assert sessions.session.metadata["user_id"] == "u1"
     assert sessions.session.metadata["user_role"] == "admin"
     assert "active_run_id" not in sessions.session.metadata
-    assert "last_run_id" in sessions.session.metadata
+    assert "last_run_id" not in sessions.session.metadata
 
 
 def test_run_inbound_bypasses_inbound_queue_but_still_publishes_outbound():

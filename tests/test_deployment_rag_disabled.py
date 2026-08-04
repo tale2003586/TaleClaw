@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import yaml
 
-from runtime import bootstrap
+from applications import bootstrap
 
 
 ROOT = Path(__file__).resolve().parent.parent

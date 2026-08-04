@@ -95,12 +95,6 @@ class ContextBudgeter:
                     floor_chars=_env_int("CONTEXT_SEMANTIC_MEMORY_FLOOR", 500),
                     strategy="head_tail",
                 ),
-                "working_memory": SectionBudgetRule(
-                    name="working_memory",
-                    budget_chars=_env_int("WORKING_MEMORY_CONTEXT_BUDGET", 4000),
-                    floor_chars=_env_int("WORKING_MEMORY_CONTEXT_FLOOR", 1000),
-                    strategy="head_tail",
-                ),
                 "retrieved_history": SectionBudgetRule(
                     name="retrieved_history",
                     budget_chars=_env_int_any(

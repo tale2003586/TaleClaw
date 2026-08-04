@@ -76,7 +76,7 @@ def build_security_query_rewrite_provider_from_env(
     from models.model_task_runner import ModelTaskRunner
     from runtime.agent_spec import AgentSpec
     if model_pool is None:
-        from runtime.bootstrap import get_model_pool
+        from applications.bootstrap import get_model_pool
 
         model_pool = get_model_pool()
 
@@ -145,7 +145,7 @@ def build_security_route_classifier_from_env(
     from models.model_task_runner import ModelTaskRunner
     from runtime.agent_spec import AgentSpec
     if model_pool is None:
-        from runtime.bootstrap import get_model_pool
+        from applications.bootstrap import get_model_pool
 
         model_pool = get_model_pool()
 

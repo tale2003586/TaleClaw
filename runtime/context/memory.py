@@ -1,4 +1,4 @@
-"""Durable and working-memory context rendering."""
+"""Durable memory context rendering."""
 
 from __future__ import annotations
 
@@ -8,11 +8,9 @@ class ContextMemoryService:
         self,
         *,
         memory_store=None,
-        working_memory_renderer=None,
         semantic_memory_retriever=None,
     ) -> None:
         self.memory_store = memory_store
-        self.working_memory_renderer = working_memory_renderer
         self.semantic_memory_retriever = semantic_memory_retriever
 
     def build_memory_block(self, session, *, current_request: str = "") -> str:
@@ -38,12 +36,6 @@ class ContextMemoryService:
         if not text or text == "No relevant memory found.":
             return ""
         return "<memory>\n" + text + "\n</memory>"
-
-    def build_working_memory_block(self, session) -> str:
-        if self.working_memory_renderer is None:
-            return ""
-        return self.working_memory_renderer(session)
-
 
 def _queue_trace_events(session, service) -> None:
     if not hasattr(service, "drain_trace_events"):

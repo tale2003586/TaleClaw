@@ -11,9 +11,10 @@ from runtime.messaging.user_bus import MessageBus
 from plugins import PluginManager
 from plugins.run_report import RunReportPlugin
 from memory.background_lifecycle import BackgroundMemoryLifecycle
-from runtime.agent_loop import AgentLoop
+from applications.turn_coordinator import TurnCoordinator as AgentLoop
 from runtime.context import ContextBuilder as RealContextBuilder
-from runtime.runtime import Runtime
+from runtime.runtime import RunContext, Runtime
+from runtime.agent_spec import AgentSpec
 from models.provider import LLMResponse, ToolCall
 from runtime.trace.run_state import RunState
 from runtime.trace.summary import build_trace_summary_payload
@@ -33,9 +34,13 @@ from tools.executor import ToolExecutor
 from tools.handlers import run_read, run_write
 from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry
+from tools.spec import ToolInjection, ToolRisk, ToolSpec, ToolStateEffect
 
 
 class ContextBuilder:
+    def build_prefix(self, profile, *, session, active_turn_start_index):
+        return None
+
     def build(self, **kwargs):
         return SimpleNamespace(messages=kwargs["session"].messages)
 
@@ -142,14 +147,42 @@ def _final_response(content="done") -> LLMResponse:
     )
 
 
+def _run_pipeline(pipeline, session, profile, *, run_state=None, trace_store=None):
+    user_input = next(
+        str(message.get("content") or "")
+        for message in reversed(session.messages)
+        if message.get("role") == "user"
+    )
+    return pipeline.run(
+        AgentSpec(name="test", profile=profile),
+        user_input,
+        RunContext(
+            session=session,
+            profile=profile,
+            run_state=run_state,
+            trace_store=trace_store,
+        ),
+    ).output
+
+
+def _last_message_run_id(session):
+    for message in reversed(session.messages):
+        run_id = (message.get("metadata") or {}).get("run_id")
+        if run_id:
+            return run_id
+    raise AssertionError("run id was not recorded on the turn messages")
+
+
 def _registry() -> ToolRegistry:
     registry = ToolRegistry()
-    registry.register(
-        function_tool("echo", "Echo text.", {"text": {"type": "string"}}, ["text"]),
-        lambda **kwargs: f"echo: {kwargs['text']}",
-        allowed_agents={"bot", "coding"},
-        always_on=True,
-    )
+    schema = function_tool("echo", "Echo text.", {"text": {"type": "string"}}, ["text"])
+    registry.register(ToolSpec(
+        schema=schema,
+        handler=lambda **kwargs: f"echo: {kwargs['text']}",
+        allowed_modes=frozenset({"bot", "coding"}),
+        injection=ToolInjection.ALWAYS,
+        risk=ToolRisk.LOW,
+    ))
     return registry
 
 
@@ -186,8 +219,7 @@ def _real_context_pipeline(provider) -> Runtime:
 
 def _workspace_pipeline(provider) -> Runtime:
     registry = ToolRegistry()
-    registry.register(
-        function_tool(
+    write_schema = function_tool(
             "write_file",
             "Write content to a file.",
             {
@@ -195,17 +227,23 @@ def _workspace_pipeline(provider) -> Runtime:
                 "content": {"type": "string"},
             },
             ["path", "content"],
-        ),
-        lambda **kwargs: run_write(
+        )
+    registry.register(ToolSpec(
+        schema=write_schema,
+        handler=lambda **kwargs: run_write(
             kwargs["path"],
             kwargs["content"],
             _session=kwargs.get("_session"),
         ),
-        allowed_agents={"coding"},
-        always_on=True,
-    )
-    registry.register(
-        function_tool(
+        allowed_modes=frozenset({"coding"}),
+        injection=ToolInjection.ALWAYS,
+        risk=ToolRisk.HIGH,
+        idempotent=False,
+        side_effect=True,
+        state_effect=ToolStateEffect.EXTERNAL,
+        session_scoped=True,
+    ))
+    read_schema = function_tool(
             "read_file",
             "Read a file.",
             {
@@ -213,14 +251,18 @@ def _workspace_pipeline(provider) -> Runtime:
                 "limit": {"type": "integer"},
             },
             ["path"],
-        ),
-        lambda **kwargs: run_read(
+        )
+    registry.register(ToolSpec(
+        schema=read_schema,
+        handler=lambda **kwargs: run_read(
             kwargs["path"],
             kwargs.get("limit"),
             _session=kwargs.get("_session"),
         ),
-        allowed_agents={"coding"},
-    )
+        allowed_modes=frozenset({"coding"}),
+        risk=ToolRisk.LOW,
+        session_scoped=True,
+    ))
     return Runtime(
         tools=registry,
         provider=provider,
@@ -654,10 +696,7 @@ class RunTraceTests(unittest.TestCase):
         ])
         pipeline = _real_context_pipeline(provider)
 
-        pipeline.run_turn(
-            session,
-            SimpleNamespace(tool_mode="bot"),
-        )
+        _run_pipeline(pipeline, session, SimpleNamespace(tool_mode="bot"))
 
         self.assertEqual(2, len(provider.calls))
         second_call_messages = provider.calls[1]["messages"]
@@ -709,7 +748,7 @@ class RunTraceTests(unittest.TestCase):
             reply = asyncio.run(run())
 
             self.assertEqual("done", reply)
-            run_id = session.metadata["last_run_id"]
+            run_id = _last_message_run_id(session)
             run_dir = trace_store.run_dir(run_id)
             state = json.loads((run_dir / "run_state.json").read_text(encoding="utf-8"))
             report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
@@ -778,7 +817,7 @@ class RunTraceTests(unittest.TestCase):
 
             self.assertEqual("done", asyncio.run(run()))
 
-            run_dir = trace_store.run_dir(session.metadata["last_run_id"])
+            run_dir = trace_store.run_dir(_last_message_run_id(session))
             events = _events(run_dir / "trace.jsonl")
             by_name = {event["event"]: event for event in events}
             trace_summary = json.loads(
@@ -839,7 +878,8 @@ class RunTraceTests(unittest.TestCase):
 
             session.add_message("user", "我希望这个项目用 pytest 写测试")
             started = time.perf_counter()
-            reply = pipeline.run_turn(
+            reply = _run_pipeline(
+                pipeline,
                 session,
                 SimpleNamespace(tool_mode="bot"),
                 run_state=run_state,
@@ -959,7 +999,7 @@ class RunTraceTests(unittest.TestCase):
 
             asyncio.run(run())
 
-            run_dir = trace_store.run_dir(session.metadata["last_run_id"])
+            run_dir = trace_store.run_dir(_last_message_run_id(session))
             metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
             events = _events(run_dir / "trace.jsonl")
             event_names = [event["event"] for event in events]

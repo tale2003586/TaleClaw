@@ -102,7 +102,9 @@ class WebSessionDeletionTests(unittest.TestCase):
         deleted = []
         manager = SimpleNamespace(delete=lambda session_id: deleted.append(session_id) or True)
         service = AgentService()
-        service._runtime = SimpleNamespace(loop=SimpleNamespace(sessions=manager))
+        service._runtime = SimpleNamespace(
+            coordinator=SimpleNamespace(sessions=manager)
+        )
 
         async def run_delete():
             service._session_locks = {}

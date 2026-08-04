@@ -23,12 +23,9 @@ from runtime.context.providers import (
     PromptContextProvider,
 )
 from config import (
-    CODING_CONTEXT_STATE_ENABLED,
     PROMPT_SAFETY_MARGIN_TOKENS,
-    WORKING_MEMORY_RESUME_ENABLED,
     CONTEXT_PRESSURE_OBSERVATION_ENABLED,
     CONTEXT_PRESSURE_WINDOW_TOKENS,
-    TASK_STATE_CONTEXT_ENABLED,
     DYNAMIC_PROMPT_BUDGET_ENABLED,
     MEMORY_INJECTION_TRACE_ENABLED,
 )
@@ -36,6 +33,7 @@ from runtime.context.dynamic_budget import calculate_dynamic_prompt_budget
 from runtime.context.artifact_access import artifact_access_summary_message
 from runtime.context.attachments import latest_user_attachments, render_user_attachments_message
 from runtime.task_state import ensure_task_state_core, render_task_state_core_message
+from runtime.extensions import ContextContribution
 from runtime.token_estimator import estimate_tokens
 
 
@@ -257,6 +255,7 @@ class ContextBuilder:
         model_provider=None,
         model_tools: list[dict[str, Any]] | None = None,
         reserved_output_tokens: int = 0,
+        contributions: list[ContextContribution] | None = None,
 
     ) -> ContextBundle:
         prefix = self.context_providers["prompt"].provide(
@@ -312,8 +311,6 @@ class ContextBuilder:
         )
         raw_memory_block = memory_context.raw_memory
         budgeted_memory = memory_context.budgeted_memory
-        raw_working_memory_block = memory_context.raw_working_memory
-        budgeted_working_memory = memory_context.budgeted_working_memory
 
         retrieval_context = self.context_providers["retrieval"].provide(
             self,
@@ -353,6 +350,19 @@ class ContextBuilder:
             current_request=current_request,
             include_task_state=not coding_context_enabled,
         )
+        runtime_state_messages.extend(
+            {
+                "role": "system",
+                "content": item.content,
+                "metadata": {
+                    "kind": f"context_contribution:{item.name}",
+                    "source": item.source,
+                    "instructions": False,
+                },
+            }
+            for item in (contributions or [])
+            if item.content.strip()
+        )
 
         if coding_context_enabled:
             bundle = self._build_coding_context_state_bundle(
@@ -373,7 +383,6 @@ class ContextBuilder:
                 current_request=current_request,
                 raw_memory_block=raw_memory_block,
                 budgeted_memory=budgeted_memory,
-                raw_working_memory_block=raw_working_memory_block,
                 raw_retrieved_history=raw_retrieved_history,
                 retrieved_hits=retrieved_hits,
                 budgeted_retrieved_history=budgeted_retrieved_history,
@@ -402,7 +411,6 @@ class ContextBuilder:
 
         context_frame = self._build_context_frame(
             memory_block=budgeted_memory.rendered_text,
-            working_memory_block=budgeted_working_memory.rendered_text,
             retrieved_history_block=budgeted_retrieved_history.rendered_text,
             security_knowledge_block=budgeted_security_knowledge.rendered_text,
             task_runtime_events_block=budgeted_task_runtime_events.rendered_text,
@@ -457,9 +465,6 @@ class ContextBuilder:
             memory_block=budgeted_memory.rendered_text,
             raw_memory_block=raw_memory_block,
             budgeted_memory=budgeted_memory,
-            working_memory_block=budgeted_working_memory.rendered_text,
-            raw_working_memory_block=raw_working_memory_block,
-            budgeted_working_memory=budgeted_working_memory,
             retrieved_history_block=budgeted_retrieved_history.rendered_text,
             raw_retrieved_history_block=raw_retrieved_history,
             budgeted_retrieved_history=budgeted_retrieved_history,
@@ -543,7 +548,7 @@ class ContextBuilder:
                 system_tokens=tokens("system_prompt"),
                 recent_turn_tokens=tokens("active_turn"),
                 tool_output_tokens=tokens("task_runtime_events"),
-                memory_tokens=tokens("memory") + tokens("working_memory"),
+                memory_tokens=tokens("memory"),
                 retrieval_tokens=retrieval_tokens,
                 code_context_tokens=tokens("coding_context_state"),
             ),
@@ -583,7 +588,6 @@ class ContextBuilder:
         current_request: str,
         raw_memory_block: str,
         budgeted_memory: BudgetedText,
-        raw_working_memory_block: str,
         raw_retrieved_history: str,
         retrieved_hits: list,
         budgeted_retrieved_history: BudgetedText,
@@ -605,23 +609,8 @@ class ContextBuilder:
             if active_turn_start_index is not None
             else len(history_messages)
         )
-        budgeted_working_memory = BudgetedText(
-            name="working_memory",
-            raw_text=raw_working_memory_block,
-            rendered_text="",
-            budget_chars=None,
-            strategy="coding_context_state",
-            truncated=bool(raw_working_memory_block),
-            metadata={
-                "budget_enabled": bool(self.budgeter.enabled),
-                "strategy": "coding_context_state",
-                "transport": "coding_context_state",
-                "consumed_by": "coding_context_state",
-            },
-        )
         context_frame = self._build_context_frame(
             memory_block=budgeted_memory.rendered_text,
-            working_memory_block="",
             retrieved_history_block=budgeted_retrieved_history.rendered_text,
             security_knowledge_block=budgeted_security_knowledge.rendered_text,
             task_runtime_events_block=budgeted_task_runtime_events.rendered_text,
@@ -727,9 +716,6 @@ class ContextBuilder:
             memory_block=budgeted_memory.rendered_text,
             raw_memory_block=raw_memory_block,
             budgeted_memory=budgeted_memory,
-            working_memory_block="",
-            raw_working_memory_block=raw_working_memory_block,
-            budgeted_working_memory=budgeted_working_memory,
             retrieved_history_block=budgeted_retrieved_history.rendered_text,
             raw_retrieved_history_block=raw_retrieved_history,
             budgeted_retrieved_history=budgeted_retrieved_history,
@@ -789,7 +775,10 @@ class ContextBuilder:
         include_task_state: bool,
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
-        if TASK_STATE_CONTEXT_ENABLED and include_task_state:
+        if (
+            include_task_state
+            and str(getattr(profile, "tool_mode", "") or "") in {"coding", "teammate"}
+        ):
             refs = []
             for item in latest_user_attachments(session):
                 ref = item.get("artifact_ref")
@@ -883,7 +872,6 @@ class ContextBuilder:
         self,
         *,
         memory_block: str,
-        working_memory_block: str,
         retrieved_history_block: str,
         security_knowledge_block: str,
         task_runtime_events_block: str,
@@ -894,12 +882,6 @@ class ContextBuilder:
             sections.append(
                 "<!-- context-priority: security_knowledge; highest priority local security evidence -->\n"
                 + security_knowledge_block
-            )
-
-        if working_memory_block:
-            sections.append(
-                "<!-- context-priority: working_memory; resumable task checkpoint -->\n"
-                + working_memory_block
             )
 
         if task_runtime_events_block:
@@ -922,13 +904,6 @@ class ContextBuilder:
 
         return "\n\n".join(sections)
 
-    def _build_working_memory_block(self, session, *, profile) -> str:
-        if not WORKING_MEMORY_RESUME_ENABLED:
-            return ""
-        if not self._coding_uses_active_turn_only_history(profile, session=session):
-            return ""
-        return self.memory_service.build_working_memory_block(session)
-    
     def _build_system_prompt(
         self,
         *,
@@ -985,9 +960,6 @@ class ContextBuilder:
         memory_block = state.memory_block
         raw_memory_block = state.raw_memory_block
         budgeted_memory = state.budgeted_memory
-        working_memory_block = state.working_memory_block
-        raw_working_memory_block = state.raw_working_memory_block
-        budgeted_working_memory = state.budgeted_working_memory
         retrieved_history_block = state.retrieved_history_block
         raw_retrieved_history_block = state.raw_retrieved_history_block
         budgeted_retrieved_history = state.budgeted_retrieved_history
@@ -1065,17 +1037,6 @@ class ContextBuilder:
                 metadata={
                     "transport": "context_frame",
                     **budgeted_memory.metadata,
-                },
-            ),
-            ContextSection.from_text(
-                "working_memory",
-                working_memory_block,
-                raw_text=raw_working_memory_block,
-                budget_chars=budgeted_working_memory.budget_chars,
-                truncated=budgeted_working_memory.truncated,
-                metadata={
-                    "transport": "context_frame",
-                    **budgeted_working_memory.metadata,
                 },
             ),
             ContextSection.from_text(
@@ -1320,7 +1281,10 @@ class ContextBuilder:
 
     def _coding_context_state_enabled(self, profile, *, session=None) -> bool:
         return (
-            bool(TASK_STATE_CONTEXT_ENABLED and CODING_CONTEXT_STATE_ENABLED)
+            bool(
+                str(getattr(profile, "tool_mode", "") or "")
+                in {"coding", "teammate"}
+            )
             and callable(self.coding_context_view_builder)
             and self._coding_uses_active_turn_only_history(
                 profile,

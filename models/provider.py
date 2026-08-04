@@ -39,6 +39,8 @@ class OpenAICompatibleProvider:
         output_reserve_tokens: int | None = None,
         tokenizer_model: str | None = None,
         bpe_tokenizer_enabled: bool = False,
+        supports_thinking: bool = False,
+        thinking_param: str = "",
     ) -> None:
         self.client = client
         self.max_tokens_param = max_tokens_param or "max_tokens"
@@ -49,6 +51,8 @@ class OpenAICompatibleProvider:
         self.output_reserve_tokens = output_reserve_tokens
         self.tokenizer_model = tokenizer_model or ""
         self.bpe_tokenizer_enabled = bool(bpe_tokenizer_enabled)
+        self.supports_thinking = bool(supports_thinking)
+        self.thinking_param = str(thinking_param or "")
 
     def chat(
         self,
@@ -58,6 +62,7 @@ class OpenAICompatibleProvider:
         model: str,
         max_tokens: int,
         tool_choice: str = "auto",
+        thinking_enabled: bool = False,
     ) -> LLMResponse:
         if self.wire_api == "responses":
             return self._responses_chat(
@@ -66,6 +71,7 @@ class OpenAICompatibleProvider:
                 model=model,
                 max_tokens=max_tokens,
                 tool_choice=tool_choice,
+                thinking_enabled=thinking_enabled,
             )
 
         request = {
@@ -73,6 +79,8 @@ class OpenAICompatibleProvider:
             "messages": _sanitize_chat_messages(messages),
             self.max_tokens_param: max_tokens,
         }
+        if thinking_enabled and self.supports_thinking and self.thinking_param:
+            request[self.thinking_param] = True
         if tools:
             request["tools"] = tools
             request["tool_choice"] = tool_choice
@@ -111,6 +119,7 @@ class OpenAICompatibleProvider:
         max_tokens: int,
         on_text: Callable[[str], None],
         tool_choice: str = "auto",
+        thinking_enabled: bool = False,
     ) -> LLMResponse:
         if self.wire_api == "responses":
             return self._responses_stream_chat(
@@ -120,6 +129,7 @@ class OpenAICompatibleProvider:
                 max_tokens=max_tokens,
                 on_text=on_text,
                 tool_choice=tool_choice,
+                thinking_enabled=thinking_enabled,
             )
 
         request = {
@@ -128,6 +138,8 @@ class OpenAICompatibleProvider:
             self.max_tokens_param: max_tokens,
             "stream": True,
         }
+        if thinking_enabled and self.supports_thinking and self.thinking_param:
+            request[self.thinking_param] = True
         if tools:
             request["tools"] = tools
             request["tool_choice"] = tool_choice
@@ -193,12 +205,15 @@ class OpenAICompatibleProvider:
         model: str,
         max_tokens: int,
         tool_choice: str = "auto",
+        thinking_enabled: bool = False,
     ) -> LLMResponse:
         request = {
             "model": model,
             "input": _messages_to_responses_input(messages),
             "max_output_tokens": max_tokens,
         }
+        if thinking_enabled and self.supports_thinking and self.thinking_param:
+            request[self.thinking_param] = True
         response_tools = _tools_to_responses_tools(tools)
         if response_tools:
             request["tools"] = response_tools
@@ -224,6 +239,7 @@ class OpenAICompatibleProvider:
         max_tokens: int,
         on_text: Callable[[str], None],
         tool_choice: str = "auto",
+        thinking_enabled: bool = False,
     ) -> LLMResponse:
         request = {
             "model": model,
@@ -231,6 +247,8 @@ class OpenAICompatibleProvider:
             "max_output_tokens": max_tokens,
             "stream": True,
         }
+        if thinking_enabled and self.supports_thinking and self.thinking_param:
+            request[self.thinking_param] = True
         response_tools = _tools_to_responses_tools(tools)
         if response_tools:
             request["tools"] = response_tools

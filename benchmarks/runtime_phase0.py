@@ -169,7 +169,7 @@ def run_pipeline(responses):
     pipeline, _ = pipeline_for(responses)
     session = Session(id="bench:chat", active_agent="bot")
     session.add_message("user", "hello")
-    pipeline.run_turn(session, PROFILE)
+    pipeline.run(AgentSpec.from_profile(PROFILE), "hello", RunContext(session=session))
 
 
 def run_runtime_facade():
@@ -188,28 +188,36 @@ def run_streaming_pipeline():
     provider.stream_chunks = ["stream", "ed"]
     session = Session(id="bench:stream", active_agent="bot")
     session.add_message("user", "hello")
-    pipeline.run_turn(session, PROFILE, on_text=lambda chunk: None)
+    pipeline.run(
+        AgentSpec.from_profile(PROFILE),
+        "hello",
+        RunContext(session=session, on_text=lambda chunk: None),
+    )
 
 
 def run_cancelled_pipeline():
     pipeline, _ = pipeline_for([FinalResponse("unused")])
     session = Session(id="bench:cancel", active_agent="bot")
     session.add_message("user", "cancel")
-    pipeline.run_turn(session, PROFILE, cancel_requested=lambda: True)
+    pipeline.run(
+        AgentSpec.from_profile(PROFILE),
+        "cancel",
+        RunContext(session=session, cancel_requested=lambda: True),
+    )
 
 
 def run_traced_pipeline():
     pipeline, _ = pipeline_for([FinalResponse("ok")])
     session = Session(id="bench:trace", active_agent="bot")
     session.add_message("user", "hello")
-    pipeline.run_turn(
-        session,
-        PROFILE,
-        run_state=__import__(
+    pipeline.run(
+        AgentSpec.from_profile(PROFILE),
+        "hello",
+        RunContext(session=session, run_state=__import__(
             "runtime.trace.run_state",
             fromlist=["RunState"],
         ).RunState.create(session_id=session.id),
-        trace_store=NullTrace(),
+        trace_store=NullTrace()),
     )
 
 
@@ -229,12 +237,11 @@ def run_disk_traced_pipeline():
             else:
                 os.environ["TRACE_INDEX_ENABLED"] = previous
         trace.start_run(run_state)
-        reply = pipeline.run_turn(
-            session,
-            PROFILE,
-            run_state=run_state,
-            trace_store=trace,
-        )
+        reply = pipeline.run(
+            AgentSpec.from_profile(PROFILE),
+            "hello",
+            RunContext(session=session, run_state=run_state, trace_store=trace),
+        ).output
         run_state.finish_success(reply)
         trace.write_run_state(run_state)
         trace.write_report(run_state, {"benchmark": True})

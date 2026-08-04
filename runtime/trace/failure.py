@@ -110,7 +110,7 @@ def classify_failure(
             )
         if name == "run_stopped":
             reason = str(payload.get("reason") or "")
-            if reason == StopReason.EMPTY_MODEL_RESPONSE.value:
+            if reason == StopReason.NON_RETRYABLE_FAILURE.value:
                 return FailureClassification(
                     FailureCategory.EMPTY_MODEL_RESPONSE,
                     "The run stopped after repeated empty model responses.",

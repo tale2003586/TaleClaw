@@ -4,7 +4,7 @@ import unittest
 
 from runtime.messaging.events import InboundMessage
 from tests.fakes import make_agent_spec
-from runtime.agent_loop import AgentLoop
+from applications.turn_coordinator import TurnCoordinator as AgentLoop
 from runtime.sessions import Session
 
 

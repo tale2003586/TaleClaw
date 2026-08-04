@@ -22,6 +22,7 @@ def invoke_model(
     tools: list[dict],
     max_tokens: int,
     on_text: Callable[[str], None] | None = None,
+    thinking_enabled: bool = False,
 ) -> Any:
     if supports_streaming(provider, on_text):
         return provider.stream_chat(
@@ -31,6 +32,7 @@ def invoke_model(
             tool_choice="auto",
             max_tokens=max_tokens,
             on_text=on_text,
+            thinking_enabled=thinking_enabled,
         )
     return provider.chat(
         model=model,
@@ -38,6 +40,7 @@ def invoke_model(
         tools=tools,
         tool_choice="auto",
         max_tokens=max_tokens,
+        thinking_enabled=thinking_enabled,
     )
 
 

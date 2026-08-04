@@ -25,7 +25,7 @@ class ConfigBootstrapTests(unittest.TestCase):
             self.assertFalse(hasattr(config, "MODEL_POOL"))
 
     def test_runtime_proxy_disabled_preserves_existing_proxy_env(self) -> None:
-        from runtime.bootstrap import _configure_proxy_from_env
+        from applications.bootstrap import _configure_proxy_from_env
 
         with patch.dict(
             os.environ,
@@ -44,7 +44,7 @@ class ConfigBootstrapTests(unittest.TestCase):
             self.assertEqual("socks5://existing-all", os.environ["ALL_PROXY"])
 
     def test_runtime_proxy_enabled_sets_http_https_and_all_proxy(self) -> None:
-        from runtime.bootstrap import _configure_proxy_from_env
+        from applications.bootstrap import _configure_proxy_from_env
 
         with patch.dict(
             os.environ,

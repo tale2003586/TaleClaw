@@ -11,6 +11,7 @@ from tools.executor import ToolExecutor
 from tools.hooks import ToolLoopGuardHook
 from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry
+from tools.spec import ToolInjection, ToolSpec
 
 
 class ContextBuilder:
@@ -82,12 +83,12 @@ def _profile(tool_mode="bot"):
 
 def _registry():
     registry = ToolRegistry()
-    registry.register(
-        function_tool("echo", "Echo test tool", {"text": {"type": "string"}}, ["text"]),
-        lambda **kwargs: f"echo: {kwargs['text']}",
-        allowed_agents={"bot", "coding", "teammate"},
-        always_on=True,
-    )
+    registry.register(ToolSpec(
+        schema=function_tool("echo", "Echo test tool", {"text": {"type": "string"}}, ["text"]),
+        handler=lambda **kwargs: f"echo: {kwargs['text']}",
+        allowed_modes=frozenset({"bot", "coding", "teammate"}),
+        injection=ToolInjection.ALWAYS,
+    ))
     return registry
 
 
@@ -133,7 +134,7 @@ class AgentRunnerTests(unittest.TestCase):
             model_purpose="teammate",
         )
 
-        runner.run_turn(session=session, spec=spec)
+        runner.run(session=session, spec=spec)
 
         self.assertEqual("teammate-model", provider.calls[0]["model"])
         self.assertIn(("provider", "teammate"), model_pool.purposes)
@@ -160,7 +161,7 @@ class AgentRunnerTests(unittest.TestCase):
         session.add_message("user", "do it")
         spec = AgentSpec(name="main", profile=_profile("bot"), model_purpose="chat")
 
-        runner.run_turn(session=session, spec=spec)
+        runner.run(session=session, spec=spec)
 
         self.assertEqual("done", session.messages[-1]["content"])
         self.assertEqual(2, len(provider.calls))
@@ -191,14 +192,14 @@ class AgentRunnerTests(unittest.TestCase):
         session.add_message("user", "do it")
         spec = AgentSpec(name="main", profile=_profile("bot"), model_purpose="chat")
 
-        runner.run_turn(session=session, spec=spec)
+        runner.run(session=session, spec=spec)
 
         self.assertEqual(1, len(provider.calls))
         self.assertEqual("Reflection stopped this turn.", session.messages[-1]["content"])
         self.assertEqual("agent_loop_guard", session.messages[-1]["metadata"]["kind"])
         self.assertEqual("reflection_stop", session.messages[-1]["metadata"]["reason"])
 
-    def test_loop_guard_denial_asks_reflection_before_stopping(self):
+    def test_loop_guard_denial_uses_bounded_recovery_not_reflection(self):
         provider = RecordingProvider([
             _tool_response(1),
             _tool_response(2),
@@ -222,17 +223,11 @@ class AgentRunnerTests(unittest.TestCase):
         session.add_message("user", "do it")
         spec = AgentSpec(name="main", profile=_profile("bot"), model_purpose="chat")
 
-        runner.run_turn(session=session, spec=spec)
+        runner.run(session=session, spec=spec)
 
-        self.assertEqual("done after reflection", session.messages[-1]["content"])
+        self.assertIn("无法安全恢复", session.messages[-1]["content"])
         self.assertEqual(4, len(provider.calls))
-        self.assertEqual(["should", "should", "reflect"], [item[0] for item in reflection.calls])
-        self.assertTrue(reflection.calls[-1][1]["execution"].loop_guard_denied)
-        self.assertTrue(any(
-            message.get("metadata", {}).get("kind") == "reflection_instruction"
-            and message.get("metadata", {}).get("trigger") == "loop_guard_denied"
-            for message in session.messages
-        ))
+        self.assertEqual(["should", "should"], [item[0] for item in reflection.calls])
 
 
 class ReflectionAgentTests(unittest.TestCase):

@@ -2,30 +2,46 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 
 class StopReason(StrEnum):
-    REASONING_STEP_LIMIT = "reasoning_step_limit"
-    EMPTY_MODEL_RESPONSE = "empty_model_response"
-    REPEATED_TOOL_CALL = "repeated_tool_call"
-    UNAVAILABLE_TOOL_LOOP = "unavailable_tool_loop"
+    COMPLETED = "completed"
     USER_CANCELLED = "user_cancelled"
-    TIMEOUT = "timeout"
+    WAITING_USER = "waiting_user"
+    HARD_BUDGET_EXCEEDED = "hard_budget_exceeded"
+    SECURITY_BLOCKED = "security_blocked"
+    TOOL_UNAVAILABLE = "tool_unavailable"
+    NON_RETRYABLE_FAILURE = "non_retryable_failure"
+    REPEATED_SIDE_EFFECT_RISK = "repeated_side_effect_risk"
+    NO_PROGRESS = "no_progress"
+    RECOVERY_REJECTED = "recovery_rejected"
+    RECOVERY_EXHAUSTED = "recovery_exhausted"
+    COMPACTION_FAILED_FINAL = "compaction_failed_final"
+    PARTIAL_RESULT_ACCEPTED = "partial_result_accepted"
 
 
-REASONING_LOOP_STOP_REASON_KEY = "reasoning_loop_stop_reason"
-REASONING_LOOP_STOP_MESSAGE_KEY = "reasoning_loop_stop_message"
+@dataclass(frozen=True)
+class StopDecision:
+    reason: StopReason
+    message: str
+    triggering_event_id: str | None = None
+    recovery_attempted: bool = False
+    recoverable: bool = False
+    task_state_version: int | None = None
+
 
 INCOMPLETE_STEP_LIMIT_PREFIX = "[INCOMPLETE: hit step limit] "
 
 
 BUDGET_STOP_REASONS = {
-    StopReason.REASONING_STEP_LIMIT.value,
+    StopReason.HARD_BUDGET_EXCEEDED.value,
 }
 
 LOOP_GUARD_STOP_REASONS = {
-    StopReason.REPEATED_TOOL_CALL.value,
+    StopReason.NO_PROGRESS.value,
+    StopReason.REPEATED_SIDE_EFFECT_RISK.value,
 }
 
 

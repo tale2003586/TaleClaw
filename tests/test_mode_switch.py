@@ -3,7 +3,7 @@ import unittest
 
 from runtime.messaging.events import InboundMessage
 from runtime.messaging.user_bus import MessageBus
-from runtime.agent_loop import AgentLoop
+from applications.turn_coordinator import TurnCoordinator as AgentLoop
 from runtime.routing.agent_router import AgentRouter
 from runtime.sessions.session import Session
 from web.server import _is_internal_coding_application
@@ -39,6 +39,8 @@ class RecordingTaskRunner:
         user_text: str,
         profile,
         workspace_root=None,
+        cancel_requested=None,
+        agent_spec=None,
     ) -> str:
         self.calls.append((parent_session, user_text, profile, workspace_root))
         return "coding task completed"

@@ -268,7 +268,6 @@ def test_tracked_long_audit_event_is_replaced_in_active_prompt_without_mutation(
             active_turn_start_index=0,
             static_messages=[],
             usable_input_tokens=10_000,
-            compaction_persister=manager.compact,
         )
         prompt_json = json.dumps(
             {

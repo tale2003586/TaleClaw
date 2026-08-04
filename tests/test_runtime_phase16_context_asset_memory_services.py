@@ -53,10 +53,9 @@ def test_explicit_prompt_assets_service_preserves_instruction_rendering(
     assert "service instruction" in context.messages[0]["content"]
 
 
-def test_explicit_memory_service_preserves_durable_and_working_memory():
+def test_explicit_memory_service_preserves_durable_memory_only():
     service = ContextMemoryService(
         memory_store=_MemoryStore(),
-        working_memory_renderer=lambda session: "<working>checkpoint</working>",
     )
     builder = ContextBuilder(
         context_providers=DEFAULT_CONTEXT_PROVIDERS,
@@ -72,6 +71,3 @@ def test_explicit_memory_service_preserves_durable_and_working_memory():
 
     rendered = "\n".join(str(message.get("content", "")) for message in context.messages)
     assert "<memory>\nmemory for current request\n</memory>" in rendered
-    assert service.build_working_memory_block(session) == (
-        "<working>checkpoint</working>"
-    )

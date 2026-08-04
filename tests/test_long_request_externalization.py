@@ -14,7 +14,7 @@ from applications.coding.session import TaskSessionFactory
 from applications.coding.task_state import TASK_STATE_METADATA_KEY
 from memory.store import MemoryStore
 from models.provider import LLMResponse
-from runtime.agent_loop import AgentLoop
+from applications.turn_coordinator import TurnCoordinator as AgentLoop
 from runtime.context import ArtifactStore, LongContentDetector
 from runtime.context.events import ContextEventType
 from runtime.messaging.events import InboundMessage
@@ -302,7 +302,7 @@ def test_500k_inbound_request_is_stored_once_and_only_referenced_downstream(tmp_
     loop = AgentLoop(
         bus=bus,
         sessions=sessions,
-        pipeline=None,
+        runtime=None,
         router=_CodingRouter(),
         coding_application=coding,
         long_content_detector=detector,

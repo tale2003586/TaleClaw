@@ -12,6 +12,14 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 @runtime_checkable
 class ContextPort(Protocol):
+    def build_prefix(
+        self,
+        profile: Any,
+        *,
+        session: Any,
+        active_turn_start_index: int | None,
+    ) -> Any: ...
+
     def build(self, *, session: Any, profile: Any, **kwargs: Any) -> Any: ...
 
 
@@ -25,11 +33,14 @@ class ModelPort(Protocol):
         tools: list[dict],
         tool_choice: str,
         max_tokens: int,
+        thinking_enabled: bool = False,
     ) -> Any: ...
 
 
 @runtime_checkable
 class ToolPort(Protocol):
+    def spec_for(self, name: str) -> Any: ...
+
     def schemas_for_turn(self, session: Any, mode: str) -> list[dict]: ...
 
     def execute(

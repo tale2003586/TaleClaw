@@ -241,12 +241,10 @@ def default_config() -> dict[str, Any]:
                 "name": "budget-on",
                 "env": {
                     "CONTEXT_ENABLE_SECTION_BUDGET": "1",
-                    "WORKING_MEMORY_RESUME_ENABLED": "1",
                 },
                 "harness": {"no_step_budget": False},
                 "dimensions": {
                     "context_budget": "on",
-                    "working_memory_resume": "on",
                     "reasoning_step_budget": "on",
                 },
             },
@@ -254,12 +252,10 @@ def default_config() -> dict[str, Any]:
                 "name": "context-budget-off",
                 "env": {
                     "CONTEXT_ENABLE_SECTION_BUDGET": "0",
-                    "WORKING_MEMORY_RESUME_ENABLED": "1",
                 },
                 "harness": {"no_step_budget": False},
                 "dimensions": {
                     "context_budget": "off",
-                    "working_memory_resume": "on",
                     "reasoning_step_budget": "on",
                 },
             },
@@ -267,12 +263,10 @@ def default_config() -> dict[str, Any]:
                 "name": "step-budget-off",
                 "env": {
                     "CONTEXT_ENABLE_SECTION_BUDGET": "1",
-                    "WORKING_MEMORY_RESUME_ENABLED": "1",
                 },
                 "harness": {"no_step_budget": True},
                 "dimensions": {
                     "context_budget": "on",
-                    "working_memory_resume": "on",
                     "reasoning_step_budget": "off",
                 },
             },
@@ -300,19 +294,6 @@ def template_config() -> dict[str, Any]:
         "dimensions": {
             "agent": "real",
             "model_route": "default",
-        },
-    })
-    config["feature_sets"].append({
-        "name": "working-memory-resume-off",
-        "env": {
-            "CONTEXT_ENABLE_SECTION_BUDGET": "1",
-            "WORKING_MEMORY_RESUME_ENABLED": "0",
-        },
-        "harness": {"no_step_budget": False},
-        "dimensions": {
-            "context_budget": "on",
-            "working_memory_resume": "off",
-            "reasoning_step_budget": "on",
         },
     })
     return config

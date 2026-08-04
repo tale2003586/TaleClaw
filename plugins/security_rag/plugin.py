@@ -18,6 +18,7 @@ from runtime.trace.rag import (
     security_rag_span_id,
 )
 from tools.schema import function_tool
+from tools.spec import ToolInjection, ToolRisk
 
 
 class SecurityRagPlugin(Plugin):
@@ -46,9 +47,14 @@ class SecurityRagPlugin(Plugin):
                     ["query"],
                 ),
                 handler=self.search,
-                risk="low",
-                allowed_agents={"bot", "coding"},
-                always_on=True,
+                risk=ToolRisk.LOW,
+                allowed_modes=frozenset({"bot", "coding"}),
+                injection=ToolInjection.ALWAYS,
+                idempotent=True,
+                side_effect=False,
+                runtime_parameters=frozenset({
+                    "_trace_store", "_run_state", "_parent_span_id",
+                }),
                 source="plugin:security_rag",
             )
         ]

@@ -10,16 +10,11 @@ from runtime.execution.failure_reasons import SubagentFailureReason
 from runtime.runtime import Runtime
 from runtime.trace.run_state import RunState
 from runtime.trace.trace_store import TraceStore
-from runtime.working_memory import (
-    checkpoint_subtask_results,
-    checkpoint_subtasks_dispatched,
-    load_working_memory,
-    prepare_working_memory_for_turn,
-)
 from runtime.sessions import Session
 from tools.executor import ToolExecutor
 from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry
+from tools.spec import ToolSpec
 
 
 class TinyContextBuilder:
@@ -283,11 +278,11 @@ def _registry(read_file_handler=None) -> ToolRegistry:
         "tool_search",
     ]:
         handler = read_file_handler if name == "read_file" and read_file_handler else (lambda **kwargs: "ok")
-        registry.register(
-            function_tool(name, f"{name} tool", {}, []),
-            handler,
-            allowed_agents={"coding"},
-        )
+        registry.register(ToolSpec(
+            schema=function_tool(name, f"{name} tool", {}, []),
+            handler=handler,
+            allowed_modes=frozenset({"coding"}),
+        ))
     return registry
 
 
@@ -356,62 +351,6 @@ class SubagentRunnerTests(unittest.TestCase):
             self.assertNotIn("task", tools)
             self.assertNotIn("parallel_tasks", tools)
             self.assertNotIn("spawn_teammate", tools)
-
-    def test_subagent_task_state_mode_does_not_inherit_parent_working_memory(self) -> None:
-        parent = Session(id="parent-session", active_agent="coding")
-        prepare_working_memory_for_turn(
-            parent,
-            objective="inspect runtime",
-            task_id="parent-session",
-        )
-        tasks = [{
-            "description": "Inspect runtime pipeline",
-            "agent_type": "explore",
-            "scope": {"files": ["runtime/pipeline.py"]},
-        }]
-        checkpoint_subtasks_dispatched(parent, tasks)
-        checkpoint_subtask_results(
-            parent,
-            tasks,
-            [{
-                "agent_type": "explore",
-                "success": True,
-                "summary": "pipeline facts",
-                "status": "completed",
-                "findings": [{
-                    "claim": "Runtime owns tool loop",
-                    "path": "runtime/pipeline.py",
-                    "lines": "1-40",
-                }],
-                "evidence": [{
-                    "path": "runtime/pipeline.py",
-                    "lines": "1-40",
-                    "quote_or_signal": "class Runtime",
-                }],
-                "covered_scope": ["runtime/pipeline.py"],
-            }],
-        )
-        checkpoint_subtasks_dispatched(
-            parent,
-            [{
-                "description": "Pending parent-only investigation",
-                "agent_type": "explore",
-                "scope": {"files": ["runtime/context.py"]},
-            }],
-        )
-        runner = TaskSubagentRunner(base_pipeline=_pipeline())
-
-        child = runner._new_session(
-            prompt="inspect runtime/pipeline.py",
-            agent_type="explore",
-            description="runtime scout",
-            parent_session=parent,
-        )
-
-        child_memory = load_working_memory(child)
-        parent_memory = load_working_memory(parent)
-        self.assertIsNone(child_memory)
-        self.assertEqual(1, len(parent_memory.pending_units))
 
     def test_run_uses_isolated_session_and_returns_summary(self) -> None:
         provider = FinalAnswerProvider(_explore_answer("done from subagent"))
@@ -618,7 +557,7 @@ class SubagentRunnerTests(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertTrue(result.truncated)
-        self.assertEqual("reasoning_step_limit", result.stop_reason)
+        self.assertEqual("hard_budget_exceeded", result.stop_reason)
         self.assertIn("[INCOMPLETE: hit step limit]", result.summary)
         self.assertEqual(3, len(provider.calls))
         self.assertEqual("none", provider.calls[-1]["tool_choice"])

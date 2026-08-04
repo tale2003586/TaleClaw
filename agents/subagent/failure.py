@@ -78,16 +78,16 @@ def classify_subagent_failure(
     if structured_reason:
         return _structured_failure(structured_reason, structured)
 
-    if truncated or stop_reason == StopReason.REASONING_STEP_LIMIT.value:
+    if truncated or stop_reason == StopReason.HARD_BUDGET_EXCEEDED.value:
         return SubagentFailure(
             reason=SubagentFailureReason.STEP_LIMIT.value,
             message="Subagent hit the reasoning step limit before completing the task.",
             recoverable=True,
             retry_hint="Split the task into a smaller objective with a concrete deliverable or narrower search boundary.",
-            evidence=[{"stop_reason": stop_reason or StopReason.REASONING_STEP_LIMIT.value}],
+            evidence=[{"stop_reason": stop_reason or StopReason.HARD_BUDGET_EXCEEDED.value}],
         )
 
-    if stop_reason == StopReason.EMPTY_MODEL_RESPONSE.value:
+    if stop_reason == StopReason.NON_RETRYABLE_FAILURE.value:
         return SubagentFailure(
             reason=SubagentFailureReason.MODEL_ERROR.value,
             message="The model returned an empty response without a usable answer.",
@@ -97,8 +97,8 @@ def classify_subagent_failure(
         )
 
     if stop_reason in {
-        StopReason.REPEATED_TOOL_CALL.value,
-        StopReason.UNAVAILABLE_TOOL_LOOP.value,
+        StopReason.NO_PROGRESS.value,
+        StopReason.TOOL_UNAVAILABLE.value,
     }:
         return SubagentFailure(
             reason=SubagentFailureReason.TOOL_ERROR.value,

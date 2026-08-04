@@ -37,7 +37,6 @@ def ContextBuilder(
         ),
         memory_service=ContextMemoryService(
             memory_store=memory_store,
-            working_memory_renderer=working_memory_renderer,
         ),
         **kwargs,
     )
