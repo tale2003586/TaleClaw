@@ -8,20 +8,23 @@ export interface ActivitySnapshot { sessionId: string; items: ActivityItem[]; st
 export function useChatStream(onComplete: (session: SessionDto | null, reply: string, activity: ActivitySnapshot) => void) {
   const [status, setStatus] = useState<"idle" | "streaming" | "stopping" | "error">("idle");
   const [text, setText] = useState(""); const [error, setError] = useState("");
+  const [thinking, setThinking] = useState("");
   const [progressText, setProgressText] = useState("");
   const [activity, setActivity] = useState<ActivityItem[]>([]);
   const [startedAt, setStartedAt] = useState(0); const [finishedAt, setFinishedAt] = useState(0);
   const controller = useRef<AbortController | null>(null);
-  const send = useCallback(async (sessionId: string, message: string, workspaceRoot = "", attachments: string[] = [], thinkingEnabled = false) => {
+  const send = useCallback(async (sessionId: string, message: string, workspaceRoot = "", attachments: string[] = [], thinkingEnabled = false, modelProfile = "") => {
     controller.current?.abort(); const abort = new AbortController(); controller.current = abort;
     const requestStartedAt = performance.now();
-    setStatus("streaming"); setText(""); setError(""); setProgressText(attachments.length ? "正在准备附件解析…" : ""); setActivity([]); setStartedAt(requestStartedAt); setFinishedAt(0);
+    setStatus("streaming"); setText(""); setThinking(""); setError(""); setProgressText(attachments.length ? "正在准备附件解析…" : ""); setActivity([]); setStartedAt(requestStartedAt); setFinishedAt(0);
     let complete: Record<string, unknown> | null = null;
     let accumulated = "";
+    let accumulatedThinking = "";
     let activityItems: ActivityItem[] = [];
     try {
-      await streamNdjson<ChatStreamEvent>("/api/chat/stream", { session_id: sessionId, message, attachments, thinking_enabled: thinkingEnabled, ...(workspaceRoot ? { workspace_root: workspaceRoot } : {}) }, (event) => {
+      await streamNdjson<ChatStreamEvent>("/api/chat/stream", { session_id: sessionId, message, attachments, thinking_enabled: thinkingEnabled, ...(modelProfile ? { model_profile: modelProfile } : {}), ...(workspaceRoot ? { workspace_root: workspaceRoot } : {}) }, (event) => {
         if (event.type === "delta") { accumulated += event.text || ""; setText(accumulated); setProgressText(""); }
+        else if (event.type === "thinking") { accumulatedThinking += event.text || ""; setThinking(accumulatedThinking); setProgressText(""); }
         else if (event.type === "status") setProgressText(event.text || "");
         else if (event.type === "event") {
           const raw = event as Record<string, unknown>; const name = String(raw.event || "runtime.event");
@@ -37,7 +40,7 @@ export function useChatStream(onComplete: (session: SessionDto | null, reply: st
       onComplete((completed.session as SessionDto | undefined) || null, String(completed.reply || accumulated), { sessionId, items: activityItems, startedAt: requestStartedAt, finishedAt: endedAt, status: "complete" });
       // The completed session now contains the assistant message. Clear the
       // transient streaming copy so it is not rendered a second time.
-      setText(""); setProgressText(""); setActivity([]); setFinishedAt(endedAt); setStatus("idle");
+      setText(""); setThinking(""); setProgressText(""); setActivity([]); setFinishedAt(endedAt); setStatus("idle");
     } catch (reason) {
       if ((reason as Error).name === "AbortError") return;
       setFinishedAt(performance.now()); setProgressText(""); setError(reason instanceof Error ? reason.message : String(reason)); setStatus("error");
@@ -48,7 +51,7 @@ export function useChatStream(onComplete: (session: SessionDto | null, reply: st
     try { await postJson("/api/chat/stop", { session_id: sessionId }); }
     catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); setStatus("error"); }
   }, []);
-  return { status, text, error, progressText, activity, startedAt, finishedAt, send, stop };
+  return { status, text, thinking, error, progressText, activity, startedAt, finishedAt, send, stop };
 }
 
 function numberOrNull(value: unknown) { const number = Number(value); return Number.isFinite(number) && number > 0 ? number : null; }

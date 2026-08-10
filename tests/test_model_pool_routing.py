@@ -3,6 +3,8 @@ import unittest
 from types import SimpleNamespace
 
 from models.model_pool import ModelPool, ModelProfile, build_model_pool_from_env
+from runtime.execution.agent_runner import AgentRunner
+from runtime.execution.state import RunExecutionState
 from runtime.runtime import Runtime
 from models.provider import LLMResponse, OpenAICompatibleProvider
 from runtime.sessions.session import Session
@@ -191,6 +193,95 @@ class ModelPoolEnvTests(unittest.TestCase):
 
 
 class RoutedModelProviderTests(unittest.TestCase):
+    def test_agent_runner_uses_request_selected_profile(self) -> None:
+        pool = ModelPool(
+            profiles={
+                "primary": ModelProfile(
+                    name="primary", provider="custom", api_key="p",
+                    base_url="https://primary.example", model="primary-model",
+                ),
+                "selected": ModelProfile(
+                    name="selected", provider="custom", api_key="s",
+                    base_url="https://selected.example", model="selected-model",
+                ),
+            },
+            routes={"chat": ("primary",)},
+            default_profile="primary",
+        )
+        selected_provider = object()
+        pool._providers["selected"] = selected_provider
+        runner = AgentRunner(
+            tools=SimpleNamespace(),
+            tool_executor=SimpleNamespace(),
+            model_pool=pool,
+        )
+
+        provider, model = runner._provider_and_model(
+            None,
+            None,
+            SimpleNamespace(model_purpose="chat"),
+            run_context=SimpleNamespace(
+                state=RunExecutionState(model_profile="selected")
+            ),
+        )
+
+        self.assertIs(selected_provider, provider)
+        self.assertEqual("selected-model", model)
+
+    def test_thinking_flag_is_forwarded_for_chat_and_streaming(self) -> None:
+        pool = ModelPool(
+            profiles={
+                "primary": ModelProfile(
+                    name="primary",
+                    provider="custom",
+                    api_key="p",
+                    base_url="https://primary.example",
+                    model="primary-model",
+                ),
+            },
+            routes={"chat": ("primary",)},
+            default_profile="primary",
+        )
+
+        class Provider:
+            def __init__(self) -> None:
+                self.chat_calls = []
+                self.stream_calls = []
+
+            def chat(self, **kwargs):
+                self.chat_calls.append(kwargs)
+                return LLMResponse(content="chat")
+
+            def stream_chat(self, **kwargs):
+                self.stream_calls.append(kwargs)
+                kwargs["on_text"]("stream")
+                return LLMResponse(content="stream")
+
+        provider = Provider()
+        pool._providers["primary"] = provider
+        routed = pool.routed_provider("chat")
+
+        routed.chat(
+            model="primary-model",
+            messages=[],
+            tools=[],
+            max_tokens=100,
+            thinking_enabled=True,
+        )
+        emitted = []
+        routed.stream_chat(
+            model="primary-model",
+            messages=[],
+            tools=[],
+            max_tokens=100,
+            thinking_enabled=True,
+            on_text=emitted.append,
+        )
+
+        self.assertTrue(provider.chat_calls[0]["thinking_enabled"])
+        self.assertTrue(provider.stream_calls[0]["thinking_enabled"])
+        self.assertEqual(["stream"], emitted)
+
     def test_chat_falls_back_to_next_provider(self) -> None:
         pool = ModelPool(
             profiles={

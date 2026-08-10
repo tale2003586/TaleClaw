@@ -1,5 +1,6 @@
 """Model and tool reasoning lifecycle."""
 
+import hashlib
 import json
 import time
 from dataclasses import asdict, dataclass, field
@@ -380,7 +381,7 @@ class ReasoningLoop:
                         message=response.content or "",
                         task_state_version=_task_state_version(session),
                     )
-                if checkpoint_callback is not None:
+                if _task_mode(profile) and checkpoint_callback is not None:
                     checkpoint_callback(session)
                 after_turn(session)
                 return
@@ -431,6 +432,7 @@ class ReasoningLoop:
                 decision = None
                 if execution_state is not None:
                     provider, model = resolve_provider(session, profile)
+                    execution_state.task_state_version = _task_state_version(session)
                     decision = self.recovery_controller.duplicate_tool_call(
                         calls=response.tool_calls,
                         specs=[
@@ -440,6 +442,9 @@ class ReasoningLoop:
                         state=execution_state,
                         provider=provider,
                         model=model,
+                        error_type=_recovery_error_type(execution),
+                        result_hash=_recovery_result_hash(execution),
+                        task_state_version=execution_state.task_state_version,
                     )
                 if decision is not None and decision.action is RecoveryAction.CORRECT_ONCE:
                     session.add_message(
@@ -852,6 +857,8 @@ class ReasoningLoop:
         note: str = "",
         checkpoint_callback: Callable | None = None,
     ) -> None:
+        if not _task_mode(profile):
+            return
         append_event = getattr(session, "append_event", None)
         if callable(append_event):
             append_event("run_checkpoint", {
@@ -1642,7 +1649,7 @@ class ReasoningLoop:
                 },
                 task_state_version=task_state_version,
             )
-        if checkpoint_callback is not None:
+        if _task_mode(profile) and checkpoint_callback is not None:
             checkpoint_callback(session)
         if on_text is not None:
             on_text(message)
@@ -1975,6 +1982,34 @@ def _task_state_version(session) -> int | None:
     except (ImportError, ValueError, TypeError):
         return None
     return getattr(state, "version", None)
+
+
+def _task_mode(profile) -> bool:
+    return str(getattr(profile, "tool_mode", "") or "") in {"coding", "teammate"}
+
+
+def _recovery_error_type(execution: ToolExecutionSummary) -> str:
+    for result in reversed(execution.tool_results or []):
+        error_type = str(result.get("error_type") or "").strip()
+        if error_type:
+            return error_type
+        if str(result.get("status") or "") == "error":
+            return "ToolExecutionError"
+    return "LoopGuardDenied"
+
+
+def _recovery_result_hash(execution: ToolExecutionSummary) -> str:
+    outputs = [
+        {
+            "name": str(result.get("name") or ""),
+            "status": str(result.get("status") or ""),
+            "output": str(result.get("output") or ""),
+        }
+        for result in execution.tool_results or []
+    ]
+    return hashlib.sha256(
+        json.dumps(outputs, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def _response_tool_calls_payload(response) -> list[dict]:

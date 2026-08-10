@@ -79,6 +79,41 @@ class ModelProfile:
 
 这样 route、fallback、健康状态、trace 都能按 profile 粒度区分。
 
+## Web 前端选择模型与思考模式
+
+Web Chat 的模型菜单来自 `/api/health` 返回的已配置 profile。用户选择的是
+profile，而不是任意输入一个模型字符串；选择只作用于当前请求，不会修改全局
+route，也不会影响其他用户。未选择时保持原有自动 route 和 fallback 行为。
+
+思考模式同样按 profile 能力判断。某个 profile 只有同时声明
+`supports_thinking: true` 和实际 API 参数名 `thinking_param` 后，前端才会启用
+“深度思考”按钮。例如，具体 relay 文档确认参数为 `reasoning_effort` 时：
+
+```json
+{
+  "openai_relay": {
+    "api_key_env": "OPENAI_RELAY_API_KEY",
+    "base_url": "https://relay.example.com/v1",
+    "model": "reasoning-model",
+    "supports_thinking": true,
+    "thinking_param": "reasoning_effort",
+    "thinking_value": "high"
+  },
+  "plain_model": {
+    "api_key_env": "PLAIN_MODEL_API_KEY",
+    "base_url": "https://plain.example.com/v1",
+    "model": "plain-model"
+  }
+}
+```
+
+`thinking_param` 和 `thinking_value` 必须以供应商实际 API 文档为准。
+`thinking_value` 默认是布尔值 `true`，也可配置字符串、数字或 JSON 对象；不能仅
+因为模型名称包含 `reasoning` 就猜测参数。当前 `.env` 的 6 个 profile 都没有能力
+字段，因此
+前端禁用思考按钮是预期行为；配置并重启 Web 服务后，支持思考的 profile 会自动
+显示为可选模型并启用按钮。
+
 ## Provider 配置来源
 
 入口是：

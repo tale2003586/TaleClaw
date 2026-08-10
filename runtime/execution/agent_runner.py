@@ -84,6 +84,7 @@ class AgentRunner:
                 session,
                 profile,
                 spec,
+                run_context=run_context,
             ),
             after_turn=turn_finished,
             after_tool_calls=after_tool_calls,
@@ -105,11 +106,34 @@ class AgentRunner:
         if reset_executor is not None:
             reset_executor(session.id)
 
-    def _provider_and_model(self, session, profile, spec: AgentSpec):
-        return self.provider_and_model_for_purpose(spec.model_purpose or "chat")
+    def _provider_and_model(
+        self,
+        session,
+        profile,
+        spec: AgentSpec,
+        *,
+        run_context=None,
+    ):
+        state = getattr(run_context, "state", None)
+        selected_profile = str(getattr(state, "model_profile", "") or "").strip()
+        return self.provider_and_model_for_purpose(
+            spec.model_purpose or "chat",
+            profile_name=selected_profile,
+        )
 
-    def provider_and_model_for_purpose(self, purpose: str = "chat"):
+    def provider_and_model_for_purpose(
+        self,
+        purpose: str = "chat",
+        *,
+        profile_name: str = "",
+    ):
         if self.model_pool is not None:
+            if profile_name:
+                profile = self.model_pool.profile_named(profile_name)
+                return (
+                    self.model_pool.provider_for_profile(profile.name),
+                    profile.model,
+                )
             return (
                 self.model_pool.routed_provider(purpose),
                 self.model_pool.model_for(purpose),

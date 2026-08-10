@@ -11,9 +11,11 @@ import asyncio
 import base64
 import hmac
 import json
+import logging
 import mimetypes
 import os
 import queue
+import signal
 import shutil
 import sys
 import threading
@@ -63,6 +65,9 @@ from user_scope import (
 )
 from web.auth_store import AuthenticatedUser, EnvironmentUser, WebAuthStore
 from web.session_titles import WebSessionTitleService, session_display_title
+
+
+logger = logging.getLogger(__name__)
 
 
 def load_env_file(path: Path) -> None:
@@ -140,13 +145,19 @@ class AgentService:
         self._session_locks: dict[str, asyncio.Lock] | None = None
         self._pending: dict[str, asyncio.Future[str]] = {}
         self._session_title_service: WebSessionTitleService | None = None
+        self._shutdown_event: asyncio.Event | None = None
+        self._request_tasks: set[asyncio.Task[Any]] = set()
+        self._stopping = False
+        self._stopped = threading.Event()
 
     def ensure_started(self) -> None:
         with self._start_lock:
-            if self._runtime is not None:
-                return
             if self._start_error is not None:
                 raise RuntimeError(_friendly_runtime_error(self._start_error)) from self._start_error
+            if self._stopping:
+                raise RuntimeError("Agent runtime is shutting down.")
+            if self._runtime is not None:
+                return
             if self._thread is None:
                 self._thread = threading.Thread(
                     target=self._run_loop,
@@ -174,6 +185,7 @@ class AgentService:
         display_content: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
         thinking_enabled: bool = False,
+        model_profile: str = "",
         timeout: int = 180,
     ) -> str:
         return self.ask_stream(
@@ -185,6 +197,7 @@ class AgentService:
             display_content=display_content,
             attachments=attachments,
             thinking_enabled=thinking_enabled,
+            model_profile=model_profile,
             timeout=timeout,
         )
 
@@ -199,6 +212,7 @@ class AgentService:
         display_content: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
         thinking_enabled: bool = False,
+        model_profile: str = "",
         on_text: Callable[[str], None] | None = None,
         timeout: int = 1800,
     ) -> str:
@@ -206,7 +220,7 @@ class AgentService:
         if self._loop is None:
             raise RuntimeError("Agent runtime loop is not available.")
 
-        future = asyncio.run_coroutine_threadsafe(
+        future = self._submit(
             self._ask_async(
                 session_id=session_id,
                 content=content,
@@ -216,10 +230,10 @@ class AgentService:
                 display_content=display_content,
                 attachments=attachments,
                 thinking_enabled=thinking_enabled,
+                model_profile=model_profile,
                 on_text=on_text,
                 reply_timeout=_env_int("WEB_AGENT_REPLY_TIMEOUT_SECONDS", timeout),
-            ),
-            self._loop,
+            )
         )
         return future.result(timeout=timeout)
 
@@ -230,13 +244,13 @@ class AgentService:
         self.ensure_started()
         if self._loop is None:
             raise RuntimeError("Agent runtime loop is not available.")
-        future = asyncio.run_coroutine_threadsafe(
-            self._delete_session_async(session_id),
-            self._loop,
-        )
+        future = self._submit(self._delete_session_async(session_id))
         return future.result(timeout=timeout)
 
     def request_cancel(self, storage_session_id: str, timeout: int = 10) -> bool:
+        with self._start_lock:
+            if self._stopping:
+                return False
         self.ensure_started()
         if self._runtime is None:
             raise RuntimeError("Agent runtime is not started.")
@@ -257,28 +271,79 @@ class AgentService:
         return trace_store.subscribe(session_key, cb)
 
     def stop(self) -> None:
-        if self._loop is None:
-            return
-        future = asyncio.run_coroutine_threadsafe(self._stop_async(), self._loop)
-        try:
-            future.result(timeout=10)
-        finally:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        with self._start_lock:
+            thread = self._thread
+            if thread is None:
+                return
+            self._stopping = True
+            loop = self._loop
+            shutdown_event = self._shutdown_event
+        if loop is not None and shutdown_event is not None and loop.is_running():
+            loop.call_soon_threadsafe(shutdown_event.set)
+        if thread is not threading.current_thread():
+            timeout = _env_int("AGENT_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS", 30)
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                raise RuntimeError(
+                    f"Agent runtime did not stop within {timeout} seconds."
+                )
 
     def _run_loop(self) -> None:
-        loop = asyncio.new_event_loop()
-        self._loop = loop
-        asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(self._start_async())
+            asyncio.run(self._serve_async())
         except BaseException as exc:
-            self._start_error = exc
+            if self._start_error is None:
+                self._start_error = exc
         finally:
             self._ready.set()
+            self._stopped.set()
 
-        if self._start_error is None:
-            loop.run_forever()
-        loop.close()
+    async def _serve_async(self) -> None:
+        self._loop = asyncio.get_running_loop()
+        self._shutdown_event = asyncio.Event()
+        primary_error: BaseException | None = None
+        try:
+            await self._start_async()
+            self._ready.set()
+            while not self._shutdown_event.is_set():
+                await asyncio.sleep(0.1)
+        except BaseException as exc:
+            primary_error = exc
+            self._start_error = exc
+            raise
+        finally:
+            try:
+                await self._stop_async()
+            except BaseException:
+                if primary_error is None:
+                    raise
+                logger.exception(
+                    "Agent runtime cleanup failed after the primary error: %s",
+                    primary_error,
+                )
+            finally:
+                self._loop = None
+
+    async def _run_owned(self, coroutine):
+        task = asyncio.current_task()
+        if task is None:
+            return await coroutine
+        self._request_tasks.add(task)
+        try:
+            return await coroutine
+        finally:
+            self._request_tasks.discard(task)
+
+    def _submit(self, coroutine):
+        with self._start_lock:
+            loop = self._loop
+            if self._stopping or loop is None or not loop.is_running():
+                coroutine.close()
+                raise RuntimeError("Agent runtime is shutting down.")
+            return asyncio.run_coroutine_threadsafe(
+                self._run_owned(coroutine),
+                loop,
+            )
 
     async def _start_async(self) -> None:
         from applications.bootstrap import build_runtime
@@ -293,12 +358,32 @@ class AgentService:
         self._runtime.start()
 
     async def _stop_async(self) -> None:
-        if self._runtime is None:
-            return
-        await self._runtime.stop()
-        sessions = getattr(getattr(self._runtime, "coordinator", None), "sessions", None)
-        if sessions is not None:
-            sessions.close()
+        current = asyncio.current_task()
+        tasks = [task for task in self._request_tasks if task is not current]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        runtime = self._runtime
+        self._runtime = None
+        try:
+            if runtime is not None:
+                try:
+                    await runtime.stop()
+                finally:
+                    sessions = getattr(
+                        getattr(runtime, "coordinator", None),
+                        "sessions",
+                        None,
+                    )
+                    if sessions is not None:
+                        sessions.close()
+        finally:
+            self._pending.clear()
+            self._session_locks = None
+            self._session_title_service = None
 
     async def _handle_outbound(self, message) -> None:
         reply_future = self._pending.pop(message.chat_id, None)
@@ -316,6 +401,7 @@ class AgentService:
         display_content: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
         thinking_enabled: bool = False,
+        model_profile: str = "",
         on_text: Callable[[str], None] | None = None,
         reply_timeout: int = 180,
     ) -> str:
@@ -338,6 +424,8 @@ class AgentService:
             if attachments:
                 metadata["attachments"] = [dict(item) for item in attachments]
             metadata["thinking_enabled"] = bool(thinking_enabled)
+            if model_profile:
+                metadata["model_profile"] = str(model_profile)
             try:
                 await self._runtime.run_message(
                     content=content,
@@ -1311,6 +1399,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/health":
             user = self._current_user()
             coding_workspace = _default_coding_workspace()
+            model_options, default_model_profile = _configured_model_options()
             self._send_json({
                 "ok": True,
                 "workspace": str(ROOT) if user.role == "admin" else "private workspace",
@@ -1319,7 +1408,11 @@ class RequestHandler(BaseHTTPRequestHandler):
                 "runtime": "lazy",
                 "has_env_file": (ROOT / ".env").exists(),
                 "has_deepseek_key": bool(os.environ.get("DEEPSEEK_API_KEY")),
-                "thinking_supported": _thinking_supported(),
+                "thinking_supported": any(
+                    option["supports_thinking"] for option in model_options
+                ),
+                "models": model_options,
+                "default_model_profile": default_model_profile,
             })
             return
 
@@ -1600,14 +1693,15 @@ class RequestHandler(BaseHTTPRequestHandler):
             thinking_enabled = payload.get("thinking_enabled", False)
             if not isinstance(thinking_enabled, bool):
                 raise ValueError("thinking_enabled must be a boolean")
-            if thinking_enabled and not _thinking_supported():
+            model_profile = _validated_model_profile(payload.get("model_profile", ""))
+            if thinking_enabled and not _thinking_supported(model_profile):
                 raise ValueError("thinking_enabled is unavailable for configured model profiles")
             user = self._current_user()
             if not message:
                 self._send_json({"error": "message is required"}, status=HTTPStatus.BAD_REQUEST)
                 return
 
-            reply = self.agent_service.ask(
+            ask_kwargs = dict(
                 session_id=session_id,
                 content=message,
                 user_id=user.user_id,
@@ -1615,6 +1709,9 @@ class RequestHandler(BaseHTTPRequestHandler):
                 workspace_root=workspace_root,
                 thinking_enabled=thinking_enabled,
             )
+            if model_profile:
+                ask_kwargs["model_profile"] = model_profile
+            reply = self.agent_service.ask(**ask_kwargs)
             self._send_json({
                 "reply": reply,
                 "session_id": session_id,
@@ -1735,7 +1832,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             thinking_enabled = payload.get("thinking_enabled", False)
             if not isinstance(thinking_enabled, bool):
                 raise ValueError("thinking_enabled must be a boolean")
-            if thinking_enabled and not _thinking_supported():
+            model_profile = _validated_model_profile(payload.get("model_profile", ""))
+            if thinking_enabled and not _thinking_supported(model_profile):
                 raise ValueError("thinking_enabled is unavailable for configured model profiles")
             attachment_paths = payload.get("attachments") or []
             if not isinstance(attachment_paths, list) or not all(isinstance(item, str) for item in attachment_paths):
@@ -1789,6 +1887,13 @@ class RequestHandler(BaseHTTPRequestHandler):
                 subscribe_session = getattr(self.agent_service, "subscribe_session", None)
                 if callable(subscribe_session):
                     unsubscribe = subscribe_session(session_key, enqueue_trace_event)
+                def on_text(text: str) -> None:
+                    events.put({"type": "delta", "text": text})
+
+                def on_thinking(text: str) -> None:
+                    events.put({"type": "thinking", "text": text})
+
+                setattr(on_text, "on_thinking", on_thinking)
                 ask_kwargs = dict(
                     session_id=session_id,
                     content=agent_content,
@@ -1796,8 +1901,10 @@ class RequestHandler(BaseHTTPRequestHandler):
                     user_role=user.role,
                     workspace_root=workspace_root,
                     thinking_enabled=thinking_enabled,
-                    on_text=lambda text: events.put({"type": "delta", "text": text}),
+                    on_text=on_text,
                 )
+                if model_profile:
+                    ask_kwargs["model_profile"] = model_profile
                 if display_content is not None:
                     ask_kwargs["display_content"] = display_content
                 if attachment_payloads is not None:
@@ -1836,6 +1943,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 self._send_stream_event(event)
             except (BrokenPipeError, ConnectionResetError):
+                self.agent_service.request_cancel(session_key)
                 return
             if event["type"] in {"complete", "error"}:
                 return
@@ -2271,29 +2379,55 @@ def _env_int(name: str, default: int) -> int:
     value = os.getenv(name)
     if value is None or value == "":
         return int(default)
-
-
-def _thinking_supported() -> bool:
-    truthy = {"1", "true", "yes", "on"}
-    for name, value in os.environ.items():
-        if name.endswith("_SUPPORTS_THINKING") and value.strip().lower() in truthy:
-            prefix = name.removesuffix("_SUPPORTS_THINKING")
-            if os.environ.get(f"{prefix}_THINKING_PARAM", "").strip():
-                return True
-    try:
-        profiles = json.loads(os.environ.get("LLM_PROVIDERS_JSON", "{}") or "{}")
-    except json.JSONDecodeError:
-        return False
-    return any(
-        isinstance(profile, dict)
-        and profile.get("supports_thinking") is True
-        and bool(str(profile.get("thinking_param") or "").strip())
-        for profile in (profiles.values() if isinstance(profiles, dict) else ())
-    )
     try:
         return int(value)
     except ValueError:
         return int(default)
+
+
+def _configured_model_options() -> tuple[list[dict[str, Any]], str]:
+    try:
+        from models.model_pool import build_model_pool_from_env
+
+        pool = build_model_pool_from_env(os.environ)
+    except Exception:
+        return [], ""
+    options = [
+        {
+            "profile": profile.name,
+            "provider": profile.provider,
+            "model": profile.model,
+            "supports_thinking": bool(
+                profile.supports_thinking and profile.thinking_param
+            ),
+        }
+        for profile in pool.profiles.values()
+    ]
+    return options, pool.primary_profile_name("chat")
+
+
+def _validated_model_profile(value: Any) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("model_profile must be a string")
+    selected = value.strip()
+    if not selected:
+        return ""
+    options, _ = _configured_model_options()
+    if selected not in {option["profile"] for option in options}:
+        raise ValueError(f"model_profile is not configured: {selected}")
+    return selected
+
+
+def _thinking_supported(model_profile: str = "") -> bool:
+    options, _ = _configured_model_options()
+    if model_profile:
+        return any(
+            option["profile"] == model_profile and option["supports_thinking"]
+            for option in options
+        )
+    return any(option["supports_thinking"] for option in options)
 
 
 def _default_coding_workspace() -> Path:
@@ -2313,10 +2447,23 @@ def main() -> None:
     url = f"http://{args.host}:{args.port}"
     print(f"taleclaw running at {url}")
     print("Press Ctrl+C to stop.")
+    shutdown_started = threading.Event()
+
+    def request_shutdown(signum, _frame) -> None:
+        if shutdown_started.is_set():
+            return
+        shutdown_started.set()
+        print(f"\nReceived signal {signum}; stopping server...")
+        threading.Thread(
+            target=server.shutdown,
+            name="web-http-shutdown",
+            daemon=True,
+        ).start()
+
+    signal.signal(signal.SIGTERM, request_shutdown)
+    signal.signal(signal.SIGINT, request_shutdown)
     try:
         server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nStopping server...")
     finally:
         agent_service.stop()
         server.server_close()

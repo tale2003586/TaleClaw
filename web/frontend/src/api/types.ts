@@ -12,6 +12,15 @@ export interface HealthResponse {
   user: CurrentUser;
   runtime: string;
   thinking_supported?: boolean;
+  models?: ModelOption[];
+  default_model_profile?: string;
+}
+
+export interface ModelOption {
+  profile: string;
+  provider: string;
+  model: string;
+  supports_thinking: boolean;
 }
 
 export interface RuntimeHealthResponse {
@@ -26,6 +35,7 @@ export interface MessageDto {
   content?: string;
   name?: string;
   tool_calls?: unknown[];
+  reasoning_content?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -193,6 +203,7 @@ export interface TraceStep { number: number; events: TraceEvent[] }
 
 export type ChatStreamEvent =
   | { type: "delta"; text?: string }
+  | { type: "thinking"; text?: string }
   | { type: "status"; status?: string; text?: string }
   | ({ type: "event" } & Record<string, unknown>)
   | ({ type: "complete" } & Record<string, unknown>)
