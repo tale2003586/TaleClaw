@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,8 @@ class TelegramBotApiClient:
         if not cleaned_token:
             raise ValueError("TELEGRAM_BOT_TOKEN is required.")
         self._owns_client = http_client is None
+        self._closed = False
+        self._close_lock = asyncio.Lock()
         self._client = http_client or httpx.AsyncClient(
             base_url=f"https://api.telegram.org/bot{cleaned_token}/",
             timeout=httpx.Timeout(45.0, connect=10.0),
@@ -105,8 +108,12 @@ class TelegramBotApiClient:
             )
 
     async def close(self) -> None:
-        if self._owns_client:
-            await self._client.aclose()
+        async with self._close_lock:
+            if self._closed:
+                return
+            if self._owns_client:
+                await self._client.aclose()
+            self._closed = True
 
     async def _call(
         self,

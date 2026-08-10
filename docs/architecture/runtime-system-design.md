@@ -65,8 +65,9 @@ contract. Runtime passes trace and budget information as explicit keyword
 arguments. Applications provide `ContextContributor` implementations through
 `RuntimeExtensions`; the kernel never imports Coding, BUS or background result
 types. Ordinary bot chat uses the shared builder without creating TaskState or
-Coding context state. Coding and teammate modes opt into their task-state
-rendering and event-window compaction.
+Coding context state. It also skips task/run checkpoints when the model returns
+a normal one-step answer. Coding and teammate modes opt into their task-state
+rendering, checkpoints and event-window compaction.
 
 The coding view is an immutable `CodingContextSnapshot` projection. Its
 renderer does not decide completion or mutate task semantics. `EventCompactor`
@@ -111,7 +112,9 @@ non-idempotent or side-effecting calls stop immediately with
 `REPEATED_SIDE_EFFECT_RISK`. A read-only/idempotent duplicate may invoke one
 no-tool `RecoveryJudge`, followed by at most one corrected execution. The
 controller validates the resulting action against the registered `ToolSpec` and
-the incident budget. A second occurrence of the same incident, an invalid
+the incident budget. Incident identity includes normalized tool arguments,
+error type, result hash and TaskState version. A run may invoke at most two
+recovery judges in total. A second occurrence of the same incident, an invalid
 decision, or a judge failure stops deterministically.
 
 All stop paths use `StopDecision` and `StopReason`: `completed`,

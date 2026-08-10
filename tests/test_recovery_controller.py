@@ -81,6 +81,41 @@ class RecoveryControllerTests(unittest.TestCase):
         self.assertEqual(RecoveryAction.STOP, decision.action)
         self.assertEqual(StopReason.RECOVERY_REJECTED, decision.reason)
 
+    def test_incident_fingerprint_includes_task_version_and_result_context(self):
+        provider = JudgeProvider('{"action":"stop"}')
+        controller = RecoveryController()
+        first = controller.duplicate_tool_call(
+            calls=duplicate(), specs=[spec()], state=RunExecutionState(),
+            provider=provider, model="judge", error_type="Timeout",
+            result_hash="result-a", task_state_version=1,
+        )
+        second = controller.duplicate_tool_call(
+            calls=duplicate(), specs=[spec()], state=RunExecutionState(),
+            provider=provider, model="judge", error_type="Timeout",
+            result_hash="result-b", task_state_version=2,
+        )
+        self.assertNotEqual(first.incident_id, second.incident_id)
+        self.assertEqual(2, len(provider.calls))
+
+    def test_recovery_has_a_hard_per_run_limit(self):
+        provider = JudgeProvider('{"action":"stop"}')
+        controller = RecoveryController(max_recoveries_per_run=2)
+        state = RunExecutionState()
+        for index in range(2):
+            decision = controller.duplicate_tool_call(
+                calls=[ToolCall(id=str(index), name="read", arguments={"path": str(index)})],
+                specs=[spec()], state=state, provider=provider, model="judge",
+                result_hash=str(index),
+            )
+            self.assertEqual(StopReason.RECOVERY_REJECTED, decision.reason)
+        decision = controller.duplicate_tool_call(
+            calls=[ToolCall(id="third", name="read", arguments={"path": "third"})],
+            specs=[spec()], state=state, provider=provider, model="judge",
+            result_hash="third",
+        )
+        self.assertEqual(StopReason.RECOVERY_EXHAUSTED, decision.reason)
+        self.assertEqual(2, len(provider.calls))
+
 
 if __name__ == "__main__":
     unittest.main()

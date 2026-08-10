@@ -54,6 +54,7 @@ class ToolSpec:
     requires_audit: bool = False
     policy_tag: str = ""
     runtime_parameters: frozenset[str] = field(default_factory=frozenset)
+    schemas_by_mode: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.allowed_modes = frozenset(self.allowed_modes)
@@ -61,6 +62,16 @@ class ToolSpec:
         self.state_effect = ToolStateEffect(self.state_effect)
         self.injection = ToolInjection(self.injection)
         self.runtime_parameters = frozenset(self.runtime_parameters)
+        self.schemas_by_mode = {
+            str(mode): schema
+            for mode, schema in self.schemas_by_mode.items()
+        }
+        for mode, schema in self.schemas_by_mode.items():
+            variant_name = str(schema.get("function", {}).get("name") or "")
+            if variant_name != self.name:
+                raise ValueError(
+                    f"ToolSpec schema variant for {mode!r} must use tool name {self.name!r}."
+                )
         if self.side_effect or self.state_effect is not ToolStateEffect.NONE:
             self.requires_audit = True
 
@@ -71,6 +82,9 @@ class ToolSpec:
     @property
     def description(self) -> str:
         return str(self.schema["function"].get("description") or "")
+
+    def schema_for(self, mode: str) -> dict[str, Any]:
+        return self.schemas_by_mode.get(mode, self.schema)
 
     def enabled_for(self, mode: str, session=None) -> bool:
         if mode not in self.allowed_modes:
@@ -93,4 +107,5 @@ class ToolSpec:
             "session_scoped": self.session_scoped,
             "admin_only": self.admin_only,
             "runtime_parameters": sorted(self.runtime_parameters),
+            "schema_modes": sorted(self.schemas_by_mode),
         }

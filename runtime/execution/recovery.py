@@ -63,8 +63,14 @@ class RecoveryJudge:
 class RecoveryController:
     """Enforces one judge and one correction per anomaly incident."""
 
-    def __init__(self, judge: RecoveryJudge | None = None) -> None:
+    def __init__(
+        self,
+        judge: RecoveryJudge | None = None,
+        *,
+        max_recoveries_per_run: int = 2,
+    ) -> None:
         self.judge = judge or RecoveryJudge()
+        self.max_recoveries_per_run = max(0, int(max_recoveries_per_run))
 
     def duplicate_tool_call(
         self,
@@ -74,6 +80,9 @@ class RecoveryController:
         state,
         provider,
         model: str,
+        error_type: str = "",
+        result_hash: str = "",
+        task_state_version: int | None = None,
     ) -> RecoveryDecision:
         payload = [
             {
@@ -82,7 +91,18 @@ class RecoveryController:
             }
             for call in calls
         ]
-        encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+        version = (
+            task_state_version
+            if task_state_version is not None
+            else getattr(state, "task_state_version", None)
+        )
+        fingerprint = {
+            "tool_calls": payload,
+            "error_type": str(error_type or ""),
+            "result_hash": str(result_hash or ""),
+            "task_state_version": version,
+        }
+        encoded = json.dumps(fingerprint, sort_keys=True, ensure_ascii=False, default=str)
         incident_id = "duplicate:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:20]
         if incident_id in state.corrected_incidents:
             return RecoveryDecision(
@@ -99,6 +119,12 @@ class RecoveryController:
                 StopReason.REPEATED_SIDE_EFFECT_RISK,
                 incident_id=incident_id,
             )
+        if state.recovery_attempts >= self.max_recoveries_per_run:
+            return RecoveryDecision(
+                RecoveryAction.STOP,
+                StopReason.RECOVERY_EXHAUSTED,
+                incident_id=incident_id,
+            )
         if incident_id in state.recovered_incidents:
             return RecoveryDecision(
                 RecoveryAction.STOP, StopReason.RECOVERY_EXHAUSTED, incident_id=incident_id
@@ -109,7 +135,13 @@ class RecoveryController:
             decision = self.judge.decide(
                 provider=provider,
                 model=model,
-                incident={"kind": "duplicate_tool_call", "calls": payload},
+                incident={
+                    "kind": "duplicate_tool_call",
+                    "calls": payload,
+                    "error_type": str(error_type or ""),
+                    "result_hash": str(result_hash or ""),
+                    "task_state_version": version,
+                },
             )
         except Exception:
             decision = RecoveryDecision(RecoveryAction.STOP, StopReason.RECOVERY_REJECTED)

@@ -68,6 +68,9 @@ class FeishuGateway(ChannelAdapter):
         self._server: ThreadingHTTPServer | None = None
         self._stopping = False
         self._runtime_lock = asyncio.Lock()
+        self._background_tasks: set[asyncio.Task[Any]] = set()
+        self._closed = False
+        self._close_lock = asyncio.Lock()
 
     @classmethod
     def from_env(cls, runtime) -> "FeishuGateway":
@@ -105,8 +108,15 @@ class FeishuGateway(ChannelAdapter):
             if self._server is not None:
                 await asyncio.to_thread(self._server.shutdown)
             await server_thread
+            if self._server is not None:
+                self._server.server_close()
 
     async def handle_callback(self, payload: dict[str, Any]) -> CallbackResponse:
+        if self._stopping:
+            return CallbackResponse(
+                {"error": "Feishu gateway is shutting down."},
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
         if self._is_encrypted_payload(payload):
             return CallbackResponse(
                 {"error": "Encrypted Feishu callbacks are not supported yet."},
@@ -122,7 +132,12 @@ class FeishuGateway(ChannelAdapter):
             return CallbackResponse({"ok": True, "duplicate": True})
 
         if _event_type(payload) == "im.message.receive_v1":
-            asyncio.create_task(self._handle_message_event(payload), name=f"feishu-event-{event_id or 'message'}")
+            task = asyncio.create_task(
+                self._handle_message_event(payload),
+                name=f"feishu-event-{event_id or 'message'}",
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_task_done)
         return CallbackResponse({"ok": True})
 
     async def send(self, message: OutboundMessage) -> None:
@@ -154,15 +169,66 @@ class FeishuGateway(ChannelAdapter):
                 )
 
     async def close(self) -> None:
-        self._stopping = True
-        if self._server is not None:
-            await asyncio.to_thread(self._server.shutdown)
-        await self.runtime.stop()
-        sessions = getattr(getattr(self.runtime, "loop", None), "sessions", None)
-        if sessions is not None:
-            sessions.close()
-        self.store.close()
-        await self.client.close()
+        async with self._close_lock:
+            if self._closed:
+                return
+            self._stopping = True
+            primary_error: BaseException | None = None
+            if self._server is not None:
+                try:
+                    await asyncio.to_thread(self._server.shutdown)
+                except BaseException as exc:
+                    primary_error = exc
+            tasks = list(self._background_tasks)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                await self.runtime.stop()
+            except BaseException as exc:
+                if primary_error is None:
+                    primary_error = exc
+                else:
+                    logger.exception("Feishu runtime shutdown also failed")
+            sessions = getattr(getattr(self.runtime, "loop", None), "sessions", None)
+            if sessions is not None:
+                try:
+                    sessions.close()
+                except BaseException as exc:
+                    if primary_error is None:
+                        primary_error = exc
+                    else:
+                        logger.exception("Feishu session shutdown also failed")
+            try:
+                self.store.close()
+            except BaseException as exc:
+                if primary_error is None:
+                    primary_error = exc
+                else:
+                    logger.exception("Feishu store shutdown also failed")
+            try:
+                await self.client.close()
+            except BaseException as exc:
+                if primary_error is None:
+                    primary_error = exc
+                else:
+                    logger.exception("Feishu HTTP client shutdown also failed")
+            if primary_error is not None:
+                raise primary_error
+            self._closed = True
+
+    def _background_task_done(self, task: asyncio.Task[Any]) -> None:
+        self._background_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "Feishu event task failed",
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
     async def _handle_message_event(self, payload: dict[str, Any]) -> None:
         event = payload.get("event") if isinstance(payload.get("event"), dict) else {}

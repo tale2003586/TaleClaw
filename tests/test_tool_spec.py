@@ -90,6 +90,21 @@ class ToolSpecTests(unittest.TestCase):
             )
         self.assertIs(tool_spec, registry.spec_for("publish"))
 
+    def test_mode_specific_schema_is_owned_by_the_tool_spec(self):
+        base = function_tool("state", "coding state", {"coding": {"type": "string"}}, [])
+        bot = function_tool("state", "bot state", {"bot": {"type": "string"}}, [])
+        tool_spec = ToolSpec(
+            schema=base,
+            handler=lambda **_: "ok",
+            schemas_by_mode={"bot": bot},
+        )
+        registry = ToolRegistry()
+        registry.register(tool_spec)
+
+        self.assertIs(bot, tool_spec.schema_for("bot"))
+        self.assertIs(base, tool_spec.schema_for("coding"))
+        self.assertEqual(bot, registry._schema_for_mode(tool_spec, "bot"))
+
 
 if __name__ == "__main__":
     unittest.main()

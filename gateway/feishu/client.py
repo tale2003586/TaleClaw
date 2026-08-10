@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 import os
@@ -37,6 +38,8 @@ class FeishuApiClient:
         if not self.app_secret:
             raise ValueError("FEISHU_APP_SECRET is required.")
         self._owns_client = http_client is None
+        self._closed = False
+        self._close_lock = asyncio.Lock()
         self._client = http_client or httpx.AsyncClient(
             base_url=(base_url or os.environ.get("FEISHU_BASE_URL") or "https://open.feishu.cn"),
             timeout=httpx.Timeout(45.0, connect=10.0),
@@ -129,8 +132,12 @@ class FeishuApiClient:
         return self._tenant_access_token
 
     async def close(self) -> None:
-        if self._owns_client:
-            await self._client.aclose()
+        async with self._close_lock:
+            if self._closed:
+                return
+            if self._owns_client:
+                await self._client.aclose()
+            self._closed = True
 
     async def _call(
         self,
