@@ -14,6 +14,7 @@ class RunExecutionState:
     parent_run_id: str = ""
     input_text: str = ""
     thinking_enabled: bool = False
+    model_profile: str = ""
     messages: list[Any] = field(default_factory=list)
     reasoning_step: int = 0
     tool_calls: int = 0
@@ -23,6 +24,7 @@ class RunExecutionState:
     web_search_remaining: int = 0
     duplicate_fingerprints: dict[str, int] = field(default_factory=dict)
     recovery_attempts: int = 0
+    task_state_version: int | None = None
     recovered_incidents: set[str] = field(default_factory=set)
     corrected_incidents: set[str] = field(default_factory=set)
     cancellation_requested: bool = False
@@ -49,6 +51,7 @@ class RunExecutionState:
         self.web_search_remaining = self.web_search_limit
         self.duplicate_fingerprints.clear()
         self.recovery_attempts = 0
+        self.task_state_version = None
         self.recovered_incidents.clear()
         self.corrected_incidents.clear()
         self.cancellation_requested = False

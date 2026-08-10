@@ -315,7 +315,10 @@ class TurnCoordinator:
                 state=RunExecutionState(
                     thinking_enabled=bool(
                         (inbound.metadata or {}).get("thinking_enabled", False)
-                    )
+                    ),
+                    model_profile=str(
+                        (inbound.metadata or {}).get("model_profile", "") or ""
+                    ).strip(),
                 ),
             ),
         ).output

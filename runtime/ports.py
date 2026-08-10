@@ -36,6 +36,18 @@ class ModelPort(Protocol):
         thinking_enabled: bool = False,
     ) -> Any: ...
 
+    def stream_chat(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        tool_choice: str,
+        max_tokens: int,
+        on_text: Callable[[str], None],
+        thinking_enabled: bool = False,
+    ) -> Any: ...
+
 
 @runtime_checkable
 class ToolPort(Protocol):

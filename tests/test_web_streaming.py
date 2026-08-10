@@ -14,8 +14,12 @@ from web.server import (
 )
 
 
-def _chunk(*, content=None, tool_calls=None):
-    delta = SimpleNamespace(content=content, tool_calls=tool_calls or [])
+def _chunk(*, content=None, reasoning_content=None, tool_calls=None):
+    delta = SimpleNamespace(
+        content=content,
+        reasoning_content=reasoning_content,
+        tool_calls=tool_calls or [],
+    )
     return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
 
 
@@ -25,6 +29,33 @@ def _tool_delta(index, *, call_id=None, name=None, arguments=None):
 
 
 class StreamingProviderTests(unittest.TestCase):
+    def test_stream_chat_emits_reasoning_content_separately(self) -> None:
+        chunks = [
+            _chunk(reasoning_content="先分析问题。"),
+            _chunk(reasoning_content="再组织答案。"),
+            _chunk(content="最终回答"),
+        ]
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **_kwargs: chunks),
+            ),
+        )
+        text = []
+        thinking = []
+
+        response = OpenAICompatibleProvider(client).stream_chat(
+            model="test-model",
+            messages=[{"role": "user", "content": "test"}],
+            tools=[],
+            max_tokens=100,
+            on_text=text.append,
+            on_thinking=thinking.append,
+        )
+
+        self.assertEqual(["最终回答"], text)
+        self.assertEqual(["先分析问题。", "再组织答案。"], thinking)
+        self.assertEqual("先分析问题。再组织答案。", response.raw_message["reasoning_content"])
+
     def test_stream_chat_emits_text_and_reassembles_tool_arguments(self) -> None:
         chunks = [
             _chunk(content="正在"),

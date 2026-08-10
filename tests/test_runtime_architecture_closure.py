@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import unittest
 
 from runtime.context import ContextBuilder
+from runtime.execution.reasoning_loop import ReasoningLoop
 from runtime.sessions import Session
 
 
@@ -57,6 +58,19 @@ class RuntimeArchitectureClosureTests(unittest.TestCase):
         )
         ContextBuilder().build(session=session, profile=profile)
         self.assertNotIn("task_state", session.metadata)
+
+    def test_plain_bot_reasoning_does_not_create_run_checkpoint(self):
+        session = Session(id="chat:checkpoint", active_agent="bot")
+        events = []
+        ReasoningLoop(tools=None, tool_executor=None)._checkpoint_reasoning_step(
+            session,
+            SimpleNamespace(tool_mode="bot"),
+            step=1,
+            phase="assistant_final",
+            checkpoint_callback=lambda _: events.append("checkpoint"),
+        )
+        self.assertEqual([], events)
+        self.assertFalse(any(event.type == "run_checkpoint" for event in session.event_log))
 
     def test_runtime_has_no_coding_bus_or_background_fields(self):
         source = (ROOT / "runtime/runtime.py").read_text(encoding="utf-8")

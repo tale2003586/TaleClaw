@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, CircleStop, Paperclip, Send, Sparkles, X } from "lucide-react";
 import { postJson, uploadFormData } from "../api/client";
-import type { FileEntry, FilesResponse, MessageDto, SessionDto, SessionResponse } from "../api/types";
+import type { FileEntry, FilesResponse, MessageDto, ModelOption, SessionDto, SessionResponse } from "../api/types";
 import { useAppContext, useSessionsContext } from "../app/contexts";
 import { Button, EmptyState } from "../components/ui";
 import { SafeMarkdown } from "../components/chat/SafeMarkdown";
@@ -25,6 +25,9 @@ export default function ChatPage() {
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachmentError, setAttachmentError] = useState("");
   const [thinkingEnabled, setThinkingEnabled] = useState(false);
+  const [modelProfile, setModelProfile] = useState(() => {
+    try { return window.localStorage.getItem("taleclaw.model_profile") || ""; } catch { return ""; }
+  });
   const bottom = useRef<HTMLDivElement>(null);
   const messageList = useRef<HTMLDivElement>(null);
   const messageScroller = useRef<HTMLDivElement>(null);
@@ -41,6 +44,12 @@ export default function ChatPage() {
     void reload().catch(() => undefined);
   }, [optimistic, reload, setActive]);
   const stream = useChatStream(onComplete);
+  const models = useMemo(() => health.models || [], [health.models]);
+  const selectedModel = models.find((item) => item.profile === modelProfile);
+  const automaticModel = models.find((item) => item.profile === health.default_model_profile);
+  const thinkingAvailable = selectedModel
+    ? selectedModel.supports_thinking
+    : Boolean(automaticModel?.supports_thinking);
   const activeMessageCount = active?.messages?.length || 0;
 
   useEffect(() => {
@@ -49,6 +58,16 @@ export default function ChatPage() {
   useEffect(() => {
     shouldStickToBottom.current = true;
   }, [sessions.activeId]);
+  useEffect(() => {
+    if (!modelProfile || models.some((item) => item.profile === modelProfile)) return;
+    setModelProfile("");
+  }, [modelProfile, models]);
+  useEffect(() => {
+    try {
+      if (modelProfile) window.localStorage.setItem("taleclaw.model_profile", modelProfile);
+      else window.localStorage.removeItem("taleclaw.model_profile");
+    } catch { /* storage can be unavailable in private browsing */ }
+  }, [modelProfile]);
   useEffect(() => {
     if (!shouldStickToBottom.current) return;
     const frame = window.requestAnimationFrame(() => bottom.current?.scrollIntoView?.({ behavior: stream.status === "streaming" ? "auto" : "smooth", block: "end" }));
@@ -104,7 +123,7 @@ export default function ChatPage() {
         paths = (response.saved || []).map((entry) => entry.path);
         if (paths.length !== selectedFiles.length) throw new Error("部分附件上传失败");
       }
-      await stream.send(sessions.activeId, message, user.role === "admin" ? codingWorkspace : "", paths, thinkingEnabled);
+      await stream.send(sessions.activeId, message, user.role === "admin" ? codingWorkspace : "", paths, thinkingEnabled, modelProfile);
     } catch (reason) {
       setOptimistic([]);
       setAttachmentError(reason instanceof Error ? reason.message : String(reason));
@@ -150,12 +169,12 @@ export default function ChatPage() {
     <div className="message-scroll" ref={messageScroller} onScroll={handleMessageScroll}>
       <div className="message-list" ref={messageList}>
         {active?.message_page?.has_more && <div className="message-history-loader"><Button disabled={loadingHistory} onClick={() => handleMessageScroll()}>{loadingHistory ? "正在加载更早消息…" : "向上滚动加载更早消息"}</Button></div>}
-        {messages.length === 0 && !stream.text ? <EmptyState title="今天想先处理什么？" message="从一个具体任务开始，TaleClaw 会持续展示执行过程。" /> : messages.map((message, index) => <article className={`message ${message.role}`} key={message.seq == null ? `${message.role}-pending-${index}` : `message-${message.seq}`}><span className="message-role">{roleLabel(message)}</span><div><MessageContent message={message} activity={index === lastAssistantIndex && completedActivity?.sessionId === sessions.activeId ? completedActivity : null} /></div></article>)}
-        {(stream.status === "streaming" || stream.status === "stopping" || stream.text || stream.error) && <article className={`message assistant streaming ${stream.error ? "error" : ""}`}><span className="message-role">Agent</span><div><ActivityTimeline items={stream.activity} status={stream.status === "error" ? "error" : "running"} startedAt={stream.startedAt} finishedAt={stream.finishedAt} />{stream.progressText && <p className="attachment-progress">{stream.progressText}</p>}{stream.text && <SafeMarkdown>{stream.text}</SafeMarkdown>}{stream.error && <p className="inline-error">{stream.error}</p>}</div></article>}
+        {messages.length === 0 && !stream.text && !stream.thinking ? <EmptyState title="今天想先处理什么？" message="从一个具体任务开始，TaleClaw 会持续展示执行过程。" /> : messages.map((message, index) => <article className={`message ${message.role}`} key={message.seq == null ? `${message.role}-pending-${index}` : `message-${message.seq}`}><span className="message-role">{roleLabel(message)}</span><div><MessageContent message={message} activity={index === lastAssistantIndex && completedActivity?.sessionId === sessions.activeId ? completedActivity : null} /></div></article>)}
+        {(stream.status === "streaming" || stream.status === "stopping" || stream.text || stream.thinking || stream.error) && <article className={`message assistant streaming ${stream.error ? "error" : ""}`}><span className="message-role">Agent</span><div><ActivityTimeline items={stream.activity} status={stream.status === "error" ? "error" : "running"} startedAt={stream.startedAt} finishedAt={stream.finishedAt} />{stream.progressText && <p className="attachment-progress">{stream.progressText}</p>}{stream.thinking && <ThinkingContent content={stream.thinking} open />}{stream.text && <SafeMarkdown>{stream.text}</SafeMarkdown>}{stream.error && <p className="inline-error">{stream.error}</p>}</div></article>}
         <div ref={bottom} />
       </div>
     </div>
-    <div className="composer-dock"><div className="composer">{attachments.length > 0 && <div className="attachment-list">{attachments.map((file, index) => <span className="attachment-chip" key={`${file.name}-${file.size}-${index}`}><Paperclip aria-hidden="true" size={13} />{file.name}<button type="button" aria-label={`移除 ${file.name}`} onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X aria-hidden="true" size={12} /></button></span>)}</div>}{attachmentError && <p className="composer-error">{attachmentError}</p>}<textarea ref={composerInput} value={draft} disabled={raw || stream.status === "streaming" || attachmentBusy} onChange={(event) => { setDraft(event.target.value); event.currentTarget.style.height = "auto"; event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 190)}px`; }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} placeholder={raw ? "只读会话" : "输入问题，并可添加 PDF、Word、PPT 或图片附件……"} /><div><span>{attachmentBusy ? "正在上传附件" : stream.status === "streaming" ? "思考与执行中" : stream.status === "stopping" ? "正在停止" : raw ? "只读会话" : "附件将先经 MinerU 精准解析"}</span>{stream.status === "streaming" ? <Button onClick={() => void stream.stop(sessions.activeId)}><CircleStop aria-hidden="true" size={14} />停止</Button> : <div className="composer-actions"><Button title={health.thinking_supported ? "启用模型深度思考" : "当前模型不支持"} disabled={!health.thinking_supported || raw || attachmentBusy} className={thinkingEnabled ? "active" : ""} onClick={() => setThinkingEnabled((value) => !value)}>深度思考</Button><Button aria-label="添加附件" disabled={raw || attachmentBusy} onClick={() => attachmentInput.current?.click()}><Paperclip aria-hidden="true" size={14} />附件</Button><input ref={attachmentInput} hidden multiple type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.png,.jpg,.jpeg,.jp2,.webp,.gif,.bmp" onChange={(event) => selectAttachments(event.target.files)} /><Button className="primary" onClick={() => void send()} disabled={(!draft.trim() && !attachments.length) || raw || attachmentBusy}><Send aria-hidden="true" size={14} />发送</Button></div>}</div></div></div>
+    <div className="composer-dock"><div className="composer">{attachments.length > 0 && <div className="attachment-list">{attachments.map((file, index) => <span className="attachment-chip" key={`${file.name}-${file.size}-${index}`}><Paperclip aria-hidden="true" size={13} />{file.name}<button type="button" aria-label={`移除 ${file.name}`} onClick={() => setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X aria-hidden="true" size={12} /></button></span>)}</div>}{attachmentError && <p className="composer-error">{attachmentError}</p>}<textarea ref={composerInput} value={draft} disabled={raw || stream.status === "streaming" || attachmentBusy} onChange={(event) => { setDraft(event.target.value); event.currentTarget.style.height = "auto"; event.currentTarget.style.height = `${Math.min(event.currentTarget.scrollHeight, 190)}px`; }} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} placeholder={raw ? "只读会话" : "输入问题，并可添加 PDF、Word、PPT 或图片附件……"} /><div><span>{attachmentBusy ? "正在上传附件" : stream.status === "streaming" ? "思考与执行中" : stream.status === "stopping" ? "正在停止" : raw ? "只读会话" : "附件将先经 MinerU 精准解析"}</span>{stream.status === "streaming" ? <Button onClick={() => void stream.stop(sessions.activeId)}><CircleStop aria-hidden="true" size={14} />停止</Button> : <div className="composer-actions"><label className="model-picker"><span>模型</span><select value={modelProfile} disabled={raw || attachmentBusy} onChange={(event) => { setModelProfile(event.target.value); setThinkingEnabled(false); }} aria-label="选择模型">{models.length === 0 && <option value="">自动路由</option>}{models.length > 0 && <option value="">自动路由</option>}{models.map((option: ModelOption) => <option key={option.profile} value={option.profile}>{option.model} · {option.provider}</option>)}</select></label><Button title={thinkingAvailable ? "启用模型深度思考" : "当前模型不支持思考模式"} disabled={!thinkingAvailable || raw || attachmentBusy} className={thinkingEnabled ? "active" : ""} onClick={() => setThinkingEnabled((value) => !value)}>深度思考</Button><Button aria-label="添加附件" disabled={raw || attachmentBusy} onClick={() => attachmentInput.current?.click()}><Paperclip aria-hidden="true" size={14} />附件</Button><input ref={attachmentInput} hidden multiple type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.png,.jpg,.jpeg,.jp2,.webp,.gif,.bmp" onChange={(event) => selectAttachments(event.target.files)} /><Button className="primary" onClick={() => void send()} disabled={(!draft.trim() && !attachments.length) || raw || attachmentBusy}><Send aria-hidden="true" size={14} /><span>发送</span></Button></div>}</div></div></div>
   </div>;
 }
 
@@ -165,9 +184,13 @@ function uploadId() {
 
 function MessageContent({ message, activity }: { message: MessageDto; activity?: ActivitySnapshot | null }) {
   const content = String(message.content || "");
-  if (message.role === "assistant") return <>{activity && <ActivityTimeline items={activity.items} status={activity.status} startedAt={activity.startedAt} finishedAt={activity.finishedAt} />}{content && <SafeMarkdown>{content}</SafeMarkdown>}{Boolean(message.tool_calls?.length) && <TechnicalOutput label={`工具调用 · ${message.tool_calls!.length}`} value={message.tool_calls} />}</>;
+  if (message.role === "assistant") return <>{activity && <ActivityTimeline items={activity.items} status={activity.status} startedAt={activity.startedAt} finishedAt={activity.finishedAt} />}{message.reasoning_content && <ThinkingContent content={message.reasoning_content} />}{content && <SafeMarkdown>{content}</SafeMarkdown>}{Boolean(message.tool_calls?.length) && <TechnicalOutput label={`工具调用 · ${message.tool_calls!.length}`} value={message.tool_calls} />}</>;
   if (message.role === "user") return <UserMessageContent content={content} />;
   return <TechnicalOutput label={message.name ? `${roleLabel(message)} · ${message.name}` : roleLabel(message)} value={content} />;
+}
+
+function ThinkingContent({ content, open = false }: { content: string; open?: boolean }) {
+  return <details className="thinking-content" open={open}><summary>思考过程</summary><pre>{content}</pre></details>;
 }
 
 function UserMessageContent({ content }: { content: string }) {

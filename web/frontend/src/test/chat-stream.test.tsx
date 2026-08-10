@@ -15,6 +15,7 @@ describe("useChatStream", () => {
     const gate = new Promise<void>((resolve) => { finish = resolve; });
     mocks.streamNdjson.mockImplementation(async (...args: unknown[]) => {
       const onEvent = args.find((value) => typeof value === "function") as (event: Record<string, unknown>) => void;
+      onEvent({ type: "thinking", text: "reasoning" });
       onEvent({ type: "delta", text: "streamed text" });
       await gate;
       onEvent({ type: "complete", reply: "streamed text", session: { chat_id: "default", messages: [{ role: "assistant", content: "streamed text" }] } });
@@ -26,12 +27,17 @@ describe("useChatStream", () => {
 
     await act(async () => finish());
     await waitFor(() => expect(screen.queryByTestId("stream-copy")).not.toBeInTheDocument());
+    expect(screen.queryByTestId("stream-thinking")).not.toBeInTheDocument();
     expect(screen.getByTestId("completed-reply")).toHaveTextContent("streamed text");
+    expect(mocks.streamNdjson.mock.calls[0][1]).toMatchObject({
+      thinking_enabled: true,
+      model_profile: "reasoning",
+    });
   });
 });
 
 function Harness() {
   const [reply, setReply] = useState("");
   const stream = useChatStream((_session, value) => setReply(value));
-  return <><button onClick={() => void stream.send("default", "hello")}>send</button>{stream.text && <span data-testid="stream-copy">{stream.text}</span>}<span data-testid="completed-reply">{reply}</span></>;
+  return <><button onClick={() => void stream.send("default", "hello", "", [], true, "reasoning")}>send</button>{stream.text && <span data-testid="stream-copy">{stream.text}</span>}{stream.thinking && <span data-testid="stream-thinking">{stream.thinking}</span>}<span data-testid="completed-reply">{reply}</span></>;
 }

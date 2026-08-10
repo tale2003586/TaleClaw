@@ -25,7 +25,7 @@ def invoke_model(
     thinking_enabled: bool = False,
 ) -> Any:
     if supports_streaming(provider, on_text):
-        return provider.stream_chat(
+        stream_kwargs = dict(
             model=model,
             messages=messages,
             tools=tools,
@@ -34,6 +34,10 @@ def invoke_model(
             on_text=on_text,
             thinking_enabled=thinking_enabled,
         )
+        on_thinking = getattr(on_text, "on_thinking", None)
+        if callable(on_thinking):
+            stream_kwargs["on_thinking"] = on_thinking
+        return provider.stream_chat(**stream_kwargs)
     return provider.chat(
         model=model,
         messages=messages,

@@ -64,7 +64,9 @@ back a valid snapshot or repeat a tool action.
 `RecoveryJudge` is a single no-tool diagnostic call. `RecoveryController` allows
 one judge and one corrected attempt for a read-only/idempotent incident. Any
 side-effecting or non-idempotent duplicate stops immediately, and a repeated
-incident stops with `recovery_exhausted`. Stop paths use the standard
+incident stops with `recovery_exhausted`. Incident fingerprints include the
+tool/arguments, error type, result hash and TaskState version; the run-wide
+judge budget is capped at two. Stop paths use the standard
 `StopReason`/`StopDecision` values rather than free-form session metadata.
 
 ## ToolSpec convergence
@@ -95,11 +97,11 @@ Missing Thinking fields in old profiles default safely to false.
 
 Executed checks:
 
-* `.venv/bin/python -m pytest --collect-only -q`: 678 tests collected, no
+* `.venv/bin/python -m pytest --collect-only -q`: 681 tests collected, no
   collection errors.
-* no-PostgreSQL suite (the documented 17-file exclusion): **514 passed** in
-  22.92 seconds.
-* New architecture tests: 31 passed, covering snapshots, recovery, ToolSpec,
+* no-PostgreSQL suite (the documented 17-file exclusion): **517 passed** in
+  23.25 seconds.
+* New architecture tests: 34 passed, covering snapshots, recovery, ToolSpec,
   Thinking and static runtime boundaries.
 * `npm test -- --run`: **26 passed**.
 * `npm run build`: passed; generated hashed assets are current build output.

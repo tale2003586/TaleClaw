@@ -77,6 +77,7 @@ class ModelProfile:
     bpe_tokenizer_enabled: bool = False
     supports_thinking: bool = False
     thinking_param: str = ""
+    thinking_value: Any = True
     fallbacks: tuple[str, ...] = ()
 
 
@@ -135,6 +136,9 @@ class ModelPool:
     def profile_for(self, purpose: str = "chat") -> ModelProfile:
         return self.route_profiles_for_call(purpose)[0]
 
+    def profile_named(self, profile_name: str) -> ModelProfile:
+        return self._require_profile(_normalize_profile_name(profile_name))
+
     def model_for(self, purpose: str = "chat") -> str:
         return self.profile_for(purpose).model
 
@@ -172,6 +176,7 @@ class ModelPool:
                 bpe_tokenizer_enabled=profile.bpe_tokenizer_enabled,
                 supports_thinking=profile.supports_thinking,
                 thinking_param=profile.thinking_param,
+                thinking_value=profile.thinking_value,
             )
         return self._providers[profile.name]
 
@@ -366,6 +371,7 @@ class RoutedModelProvider:
         model: str,
         max_tokens: int,
         tool_choice: str = "auto",
+        thinking_enabled: bool = False,
     ) -> LLMResponse:
         return self._call_with_fallbacks(
             stream=False,
@@ -374,6 +380,7 @@ class RoutedModelProvider:
             model=model,
             max_tokens=max_tokens,
             tool_choice=tool_choice,
+            thinking_enabled=thinking_enabled,
         )
 
     def stream_chat(
@@ -384,7 +391,9 @@ class RoutedModelProvider:
         model: str,
         max_tokens: int,
         on_text: Callable[[str], None],
+        on_thinking: Callable[[str], None] | None = None,
         tool_choice: str = "auto",
+        thinking_enabled: bool = False,
     ) -> LLMResponse:
         return self._call_with_fallbacks(
             stream=True,
@@ -394,6 +403,8 @@ class RoutedModelProvider:
             max_tokens=max_tokens,
             tool_choice=tool_choice,
             on_text=on_text,
+            on_thinking=on_thinking,
+            thinking_enabled=thinking_enabled,
         )
 
     def _call_with_fallbacks(self, *, stream: bool, **kwargs) -> LLMResponse:
@@ -780,6 +791,18 @@ def _profile_from_mapping(
         raise RuntimeError(
             f"Model profile '{profile_name}' supports_thinking requires thinking_param."
         )
+    raw_thinking_value = raw.get("thinking_value")
+    if raw_thinking_value in (None, ""):
+        raw_thinking_value = _first_env(
+            env,
+            _provider_env_names(
+                profile_name,
+                provider,
+                selected_match=selected_match,
+                suffix="THINKING_VALUE",
+            ),
+        )
+    thinking_value = _configuration_value(raw_thinking_value, default=True)
     fallbacks = _parse_profile_list(raw.get("fallbacks", ()))
 
     return ModelProfile(
@@ -799,6 +822,7 @@ def _profile_from_mapping(
         bpe_tokenizer_enabled=bpe_tokenizer_enabled,
         supports_thinking=supports_thinking,
         thinking_param=thinking_param,
+        thinking_value=thinking_value,
         fallbacks=fallbacks,
     )
 
@@ -869,6 +893,20 @@ def _json_mapping(value: str, env_name: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise RuntimeError(f"{env_name} must be a JSON object.")
     return payload
+
+
+def _configuration_value(value: Any, *, default: Any) -> Any:
+    if value is None or value == "":
+        return default
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return default
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
 
 
 def _parse_profile_list(value: Any) -> tuple[str, ...]:

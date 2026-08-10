@@ -93,11 +93,7 @@ class ToolRegistry:
         ]
 
     def _schema_for_mode(self, tool: ToolSpec, mode: str) -> dict:
-        if tool.name == "update_task_state" and mode not in {"coding", "teammate"}:
-            from tools.schema import CORE_TASK_STATE_TOOL
-
-            return CORE_TASK_STATE_TOOL
-        return tool.schema
+        return tool.schema_for(mode)
 
     def visible_names_for_turn(self, session, mode: str = "coding") -> set[str]:
         return self.policy.visible_tools(session, mode)
@@ -271,7 +267,7 @@ class ToolRegistry:
         return self._schema_for_mode(tool, mode)["function"].get("description", "")
 
 
-from .schema import LEAD_TOOLS, SEARCH_TOOLS, TEAMMATE_TOOLS
+from .schema import CORE_TASK_STATE_TOOL, LEAD_TOOLS, SEARCH_TOOLS, TEAMMATE_TOOLS
 from .handlers import make_lead_handlers, make_teammate_handlers
 
 
@@ -409,6 +405,11 @@ def _builtin_spec(schema: dict, handler: Callable[..., str], *, source: str) -> 
                 if name in {"task", "parallel_tasks"}
                 else set()
             )
+        ),
+        schemas_by_mode=(
+            {"bot": CORE_TASK_STATE_TOOL, "hybrid": CORE_TASK_STATE_TOOL}
+            if name == "update_task_state"
+            else {}
         ),
     )
 

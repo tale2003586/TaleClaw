@@ -1,6 +1,11 @@
 import json
+import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -41,6 +46,7 @@ class OpenAICompatibleProvider:
         bpe_tokenizer_enabled: bool = False,
         supports_thinking: bool = False,
         thinking_param: str = "",
+        thinking_value: Any = True,
     ) -> None:
         self.client = client
         self.max_tokens_param = max_tokens_param or "max_tokens"
@@ -53,6 +59,7 @@ class OpenAICompatibleProvider:
         self.bpe_tokenizer_enabled = bool(bpe_tokenizer_enabled)
         self.supports_thinking = bool(supports_thinking)
         self.thinking_param = str(thinking_param or "")
+        self.thinking_value = thinking_value
 
     def chat(
         self,
@@ -80,7 +87,7 @@ class OpenAICompatibleProvider:
             self.max_tokens_param: max_tokens,
         }
         if thinking_enabled and self.supports_thinking and self.thinking_param:
-            request[self.thinking_param] = True
+            request[self.thinking_param] = self.thinking_value
         if tools:
             request["tools"] = tools
             request["tool_choice"] = tool_choice
@@ -118,6 +125,7 @@ class OpenAICompatibleProvider:
         model: str,
         max_tokens: int,
         on_text: Callable[[str], None],
+        on_thinking: Callable[[str], None] | None = None,
         tool_choice: str = "auto",
         thinking_enabled: bool = False,
     ) -> LLMResponse:
@@ -128,6 +136,7 @@ class OpenAICompatibleProvider:
                 model=model,
                 max_tokens=max_tokens,
                 on_text=on_text,
+                on_thinking=on_thinking,
                 tool_choice=tool_choice,
                 thinking_enabled=thinking_enabled,
             )
@@ -139,33 +148,42 @@ class OpenAICompatibleProvider:
             "stream": True,
         }
         if thinking_enabled and self.supports_thinking and self.thinking_param:
-            request[self.thinking_param] = True
+            request[self.thinking_param] = self.thinking_value
         if tools:
             request["tools"] = tools
             request["tool_choice"] = tool_choice
 
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         streamed_tool_calls: dict[int, dict[str, str]] = {}
-        for chunk in self.client.chat.completions.create(**request):
-            choices = getattr(chunk, "choices", [])
-            if not choices:
-                continue
-            delta = choices[0].delta
-            text = getattr(delta, "content", None)
-            if text:
-                content_parts.append(text)
-                on_text(text)
-            for call in getattr(delta, "tool_calls", None) or []:
-                item = streamed_tool_calls.setdefault(
-                    call.index,
-                    {"id": "", "name": "", "arguments": ""},
-                )
-                if getattr(call, "id", None):
-                    item["id"] += call.id
-                function = getattr(call, "function", None)
-                if function is not None:
-                    item["name"] += getattr(function, "name", "") or ""
-                    item["arguments"] += getattr(function, "arguments", "") or ""
+        raw_stream = self.client.chat.completions.create(**request)
+        with _owned_stream(raw_stream) as stream:
+            for chunk in stream:
+                choices = getattr(chunk, "choices", [])
+                if not choices:
+                    continue
+                delta = choices[0].delta
+                reasoning = getattr(delta, "reasoning_content", None)
+                if reasoning:
+                    reasoning_text = str(reasoning)
+                    reasoning_parts.append(reasoning_text)
+                    if on_thinking is not None:
+                        on_thinking(reasoning_text)
+                text = getattr(delta, "content", None)
+                if text:
+                    content_parts.append(text)
+                    on_text(text)
+                for call in getattr(delta, "tool_calls", None) or []:
+                    item = streamed_tool_calls.setdefault(
+                        call.index,
+                        {"id": "", "name": "", "arguments": ""},
+                    )
+                    if getattr(call, "id", None):
+                        item["id"] += call.id
+                    function = getattr(call, "function", None)
+                    if function is not None:
+                        item["name"] += getattr(function, "name", "") or ""
+                        item["arguments"] += getattr(function, "arguments", "") or ""
 
         content = "".join(content_parts)
         tool_calls = []
@@ -190,7 +208,11 @@ class OpenAICompatibleProvider:
                 },
             })
 
-        raw_message = _chat_raw_message(content, raw_tool_calls)
+        raw_message = _chat_raw_message(
+            content,
+            raw_tool_calls,
+            reasoning_content="".join(reasoning_parts),
+        )
         return LLMResponse(
             content=content or None,
             tool_calls=tool_calls,
@@ -213,7 +235,7 @@ class OpenAICompatibleProvider:
             "max_output_tokens": max_tokens,
         }
         if thinking_enabled and self.supports_thinking and self.thinking_param:
-            request[self.thinking_param] = True
+            request[self.thinking_param] = self.thinking_value
         response_tools = _tools_to_responses_tools(tools)
         if response_tools:
             request["tools"] = response_tools
@@ -238,6 +260,7 @@ class OpenAICompatibleProvider:
         model: str,
         max_tokens: int,
         on_text: Callable[[str], None],
+        on_thinking: Callable[[str], None] | None = None,
         tool_choice: str = "auto",
         thinking_enabled: bool = False,
     ) -> LLMResponse:
@@ -248,7 +271,7 @@ class OpenAICompatibleProvider:
             "stream": True,
         }
         if thinking_enabled and self.supports_thinking and self.thinking_param:
-            request[self.thinking_param] = True
+            request[self.thinking_param] = self.thinking_value
         response_tools = _tools_to_responses_tools(tools)
         if response_tools:
             request["tools"] = response_tools
@@ -258,71 +281,73 @@ class OpenAICompatibleProvider:
         streamed_calls: dict[int, dict[str, str]] = {}
         final_response = None
 
-        for event in self.client.responses.create(**request):
-            event_type = str(_field(event, "type", "") or "")
-            if event_type == "response.output_text.delta":
-                delta = str(_field(event, "delta", "") or "")
-                if delta:
-                    content_parts.append(delta)
-                    on_text(delta)
-                continue
+        raw_stream = self.client.responses.create(**request)
+        with _owned_stream(raw_stream) as stream:
+            for event in stream:
+                event_type = str(_field(event, "type", "") or "")
+                if event_type == "response.output_text.delta":
+                    delta = str(_field(event, "delta", "") or "")
+                    if delta:
+                        content_parts.append(delta)
+                        on_text(delta)
+                    continue
 
-            if event_type in {
-                "response.output_item.added",
-                "response.output_item.done",
-            }:
-                item = _field(event, "item")
-                if _field(item, "type") == "function_call":
+                if event_type in {
+                    "response.output_item.added",
+                    "response.output_item.done",
+                }:
+                    item = _field(event, "item")
+                    if _field(item, "type") == "function_call":
+                        output_index = int(_field(event, "output_index", 0) or 0)
+                        call = streamed_calls.setdefault(
+                            output_index,
+                            {"id": "", "name": "", "arguments": ""},
+                        )
+                        call["id"] = str(
+                            _field(item, "call_id", "")
+                            or _field(item, "id", "")
+                            or call["id"]
+                        )
+                        call["name"] = str(_field(item, "name", "") or call["name"])
+                        item_arguments = _field(item, "arguments", None)
+                        if item_arguments not in (None, ""):
+                            call["arguments"] = str(item_arguments)
+                    continue
+
+                if event_type == "response.function_call_arguments.delta":
                     output_index = int(_field(event, "output_index", 0) or 0)
                     call = streamed_calls.setdefault(
                         output_index,
                         {"id": "", "name": "", "arguments": ""},
                     )
-                    call["id"] = str(
-                        _field(item, "call_id", "")
-                        or _field(item, "id", "")
-                        or call["id"]
+                    call["arguments"] += str(_field(event, "delta", "") or "")
+                    continue
+
+                if event_type == "response.function_call_arguments.done":
+                    output_index = int(_field(event, "output_index", 0) or 0)
+                    call = streamed_calls.setdefault(
+                        output_index,
+                        {"id": "", "name": "", "arguments": ""},
                     )
-                    call["name"] = str(_field(item, "name", "") or call["name"])
-                    item_arguments = _field(item, "arguments", None)
-                    if item_arguments not in (None, ""):
-                        call["arguments"] = str(item_arguments)
-                continue
+                    call["name"] = str(_field(event, "name", "") or call["name"])
+                    arguments = _field(event, "arguments", None)
+                    if arguments is not None:
+                        call["arguments"] = str(arguments)
+                    continue
 
-            if event_type == "response.function_call_arguments.delta":
-                output_index = int(_field(event, "output_index", 0) or 0)
-                call = streamed_calls.setdefault(
-                    output_index,
-                    {"id": "", "name": "", "arguments": ""},
-                )
-                call["arguments"] += str(_field(event, "delta", "") or "")
-                continue
+                if event_type in {"response.completed", "response.incomplete"}:
+                    final_response = _field(event, "response")
+                    continue
 
-            if event_type == "response.function_call_arguments.done":
-                output_index = int(_field(event, "output_index", 0) or 0)
-                call = streamed_calls.setdefault(
-                    output_index,
-                    {"id": "", "name": "", "arguments": ""},
-                )
-                call["name"] = str(_field(event, "name", "") or call["name"])
-                arguments = _field(event, "arguments", None)
-                if arguments is not None:
-                    call["arguments"] = str(arguments)
-                continue
-
-            if event_type in {"response.completed", "response.incomplete"}:
-                final_response = _field(event, "response")
-                continue
-
-            if event_type in {"error", "response.failed"}:
-                response = _field(event, "response")
-                error = _field(event, "error") or _field(response, "error")
-                message = str(
-                    _field(error, "message", "")
-                    or _field(event, "message", "")
-                    or "Responses API stream failed"
-                )
-                raise RuntimeError(message)
+                if event_type in {"error", "response.failed"}:
+                    response = _field(event, "response")
+                    error = _field(event, "error") or _field(response, "error")
+                    message = str(
+                        _field(error, "message", "")
+                        or _field(event, "message", "")
+                        or "Responses API stream failed"
+                    )
+                    raise RuntimeError(message)
 
         streamed_content = "".join(content_parts)
         content = _responses_text(final_response) if final_response is not None else ""
@@ -341,6 +366,29 @@ class OpenAICompatibleProvider:
             raw_message=_responses_raw_message(content, tool_calls),
             usage=_usage_from_response(final_response),
         )
+
+
+@contextmanager
+def _owned_stream(stream):
+    try:
+        yield stream
+    except BaseException as primary_error:
+        try:
+            _close_stream(stream)
+        except BaseException:
+            logger.exception(
+                "Model stream cleanup failed after the primary error: %s",
+                primary_error,
+            )
+        raise
+    else:
+        _close_stream(stream)
+
+
+def _close_stream(stream) -> None:
+    close = getattr(stream, "close", None)
+    if callable(close):
+        close()
 
 
 def _messages_to_responses_input(messages: list[dict]) -> list[dict[str, Any]]:
@@ -399,7 +447,7 @@ def _sanitize_chat_messages(messages: list[dict]) -> list[dict[str, Any]]:
 def _is_empty_assistant_message(message: dict[str, Any]) -> bool:
     content = message.get("content")
     tool_calls = message.get("tool_calls")
-    if tool_calls:
+    if tool_calls or message.get("reasoning_content"):
         return False
     if isinstance(content, str):
         return content == ""
@@ -411,14 +459,18 @@ def _is_empty_assistant_message(message: dict[str, Any]) -> bool:
 def _chat_raw_message(
     content: str,
     raw_tool_calls: list[dict[str, Any]],
+    *,
+    reasoning_content: str = "",
 ) -> dict[str, Any] | None:
-    if not content and not raw_tool_calls:
+    if not content and not raw_tool_calls and not reasoning_content:
         return None
     raw_message: dict[str, Any] = {"role": "assistant"}
     if content:
         raw_message["content"] = content
     if raw_tool_calls:
         raw_message["tool_calls"] = raw_tool_calls
+    if reasoning_content:
+        raw_message["reasoning_content"] = reasoning_content
     return raw_message
 
 

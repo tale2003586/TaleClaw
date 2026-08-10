@@ -48,6 +48,8 @@ class TelegramGateway(ChannelAdapter):
         self.outbox_limit = _env_int("TELEGRAM_OUTBOX_BATCH_SIZE", default=10, minimum=1)
         self.outbox_max_attempts = _env_int("TELEGRAM_OUTBOX_MAX_ATTEMPTS", default=3, minimum=1)
         self._stopping = False
+        self._closed = False
+        self._close_lock = asyncio.Lock()
 
     @classmethod
     def from_env(cls, runtime) -> "TelegramGateway":
@@ -230,13 +232,41 @@ class TelegramGateway(ChannelAdapter):
                 )
 
     async def close(self) -> None:
-        self._stopping = True
-        await self.runtime.stop()
-        sessions = getattr(getattr(self.runtime, "loop", None), "sessions", None)
-        if sessions is not None:
-            sessions.close()
-        self.store.close()
-        await self.client.close()
+        async with self._close_lock:
+            if self._closed:
+                return
+            self._stopping = True
+            primary_error: BaseException | None = None
+            try:
+                await self.runtime.stop()
+            except BaseException as exc:
+                primary_error = exc
+            sessions = getattr(getattr(self.runtime, "loop", None), "sessions", None)
+            if sessions is not None:
+                try:
+                    sessions.close()
+                except BaseException as exc:
+                    if primary_error is None:
+                        primary_error = exc
+                    else:
+                        logger.exception("Telegram session shutdown also failed")
+            try:
+                self.store.close()
+            except BaseException as exc:
+                if primary_error is None:
+                    primary_error = exc
+                else:
+                    logger.exception("Telegram store shutdown also failed")
+            try:
+                await self.client.close()
+            except BaseException as exc:
+                if primary_error is None:
+                    primary_error = exc
+                else:
+                    logger.exception("Telegram HTTP client shutdown also failed")
+            if primary_error is not None:
+                raise primary_error
+            self._closed = True
 
 
 def _status_text(identity: TelegramIdentity, conversation_id: str) -> str:

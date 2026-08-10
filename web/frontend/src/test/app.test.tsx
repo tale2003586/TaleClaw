@@ -7,9 +7,10 @@ const longQuestion = `${"请详细分析这个问题。".repeat(60)}完整问题
 
 describe("App", () => {
   beforeEach(() => {
+    localStorage.removeItem("taleclaw.model_profile");
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
-      if (path === "/api/health") return json({ ok: true, workspace: "/app", coding_workspace: "/work", runtime: "ready", user: { id: "admin", role: "admin" } });
+      if (path === "/api/health") return json({ ok: true, workspace: "/app", coding_workspace: "/work", runtime: "ready", user: { id: "admin", role: "admin" }, default_model_profile: "plain", thinking_supported: true, models: [{ profile: "plain", provider: "relay", model: "plain-model", supports_thinking: false }, { profile: "reasoning", provider: "relay", model: "reasoning-model", supports_thinking: true }] });
       if (path.startsWith("/api/sessions")) return json({ sessions: [], has_more: false });
       if (path.includes("before=10")) return json({ session: { chat_id: "default", channel: "web", messages: [{ seq: 1, role: "assistant", content: "更早的历史消息" }], message_page: { has_more: false, next_before: null } } });
       if (path.startsWith("/api/session")) return json({ session: { chat_id: "default", channel: "web", title: "默认会话", current_mode: "hybrid", messages: [{ seq: 10, role: "user", content: longQuestion }, { seq: 11, role: "assistant", content: "处理完成" }, { seq: 12, role: "tool", name: "security_search", content: "{\n  \"score\": 0.67,\n  \"source\": \"advisory.json\"\n}" }], message_page: { has_more: true, next_before: 10 } } });
@@ -25,6 +26,11 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: /Runs/ })).toBeInTheDocument();
     expect(await screen.findByText("默认会话")).toBeInTheDocument();
     expect(await screen.findByText("处理完成")).toBeInTheDocument();
+    const modelPicker = screen.getByRole("combobox", { name: "选择模型" });
+    const thinkingButton = screen.getByRole("button", { name: "深度思考" });
+    expect(thinkingButton).toBeDisabled();
+    await user.selectOptions(modelPicker, "reasoning");
+    expect(thinkingButton).toBeEnabled();
     expect(screen.queryByText(longQuestion)).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /展开完整问题/ }));
     expect(screen.getByText(longQuestion)).toBeInTheDocument();

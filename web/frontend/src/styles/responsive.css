@@ -57,6 +57,8 @@
   .mode-switch { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .output-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .mode-switch .button, .output-controls .button { min-width: 0; width: 100%; overflow: hidden; justify-content: center; text-overflow: ellipsis; white-space: nowrap; }
+  .model-picker { min-width: 0; flex: 1 1 150px; }
+  .model-picker select { min-width: 0; max-width: none; width: 100%; }
   .message-list { width: calc(100% - 20px); padding-top: 20px; }
   .message { grid-template-columns: 1fr; gap: 5px; }
   .message > span { text-align: left; }
