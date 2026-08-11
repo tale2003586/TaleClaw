@@ -1,12 +1,12 @@
 {
   "metadata": {
-    "python": "3.14.6",
-    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "python": "3.12.4",
+    "platform": "Linux-6.17.0-35-generic-x86_64-with-glibc2.39",
     "timer": "perf_counter_ns",
     "network": false,
     "tokens": {
-      "chat_estimated": 730,
-      "coding_estimated": 2347
+      "chat_estimated": 186,
+      "coding_estimated": 649
     },
     "component_counts": {
       "chat_candidate_chain": 9,
@@ -21,115 +21,122 @@
   },
   "results": [
     {
-      "scenario": "pipeline_construction",
-      "iterations": 50,
-      "median_ms": 0.03702,
-      "p95_ms": 0.041708,
-      "note": "Current Pipeline + AgentRunner fixture; excludes model pool and external stores."
+      "scenario": "runtime_construction",
+      "iterations": 20,
+      "median_ms": 0.056512,
+      "p95_ms": 0.059527,
+      "note": "Current Runtime + AgentRunner fixture; excludes model pool and external stores."
     },
     {
       "scenario": "chat_no_tool_runtime",
-      "iterations": 50,
-      "median_ms": 0.692166,
-      "p95_ms": 0.832375,
+      "iterations": 20,
+      "median_ms": 0.498007,
+      "p95_ms": 0.612874,
       "note": "Fake model; includes context construction and model-external runtime."
     },
     {
+      "scenario": "runtime_facade_no_tool",
+      "iterations": 20,
+      "median_ms": 0.484449,
+      "p95_ms": 0.528182,
+      "note": "Runtime.run + RunContext + RunResult over the existing no-tool Runtime."
+    },
+    {
       "scenario": "chat_one_tool_runtime",
-      "iterations": 50,
-      "median_ms": 1.34625,
-      "p95_ms": 1.486583,
+      "iterations": 20,
+      "median_ms": 0.958616,
+      "p95_ms": 1.014245,
       "note": "One fake tool call followed by final response."
     },
     {
       "scenario": "chat_three_tool_runtime",
-      "iterations": 50,
-      "median_ms": 2.835146,
-      "p95_ms": 3.257209,
+      "iterations": 20,
+      "median_ms": 1.050985,
+      "p95_ms": 1.267011,
       "note": "Three sequential fake tool calls."
     },
     {
       "scenario": "tool_executor_wrapper",
-      "iterations": 50,
-      "median_ms": 0.001584,
-      "p95_ms": 0.00175,
+      "iterations": 20,
+      "median_ms": 0.00223,
+      "p95_ms": 0.002613,
       "note": "ToolExecutor only; no shell, network, or persistence."
     },
     {
       "scenario": "chat_context_build",
-      "iterations": 50,
-      "median_ms": 0.200521,
-      "p95_ms": 0.311333,
+      "iterations": 20,
+      "median_ms": 0.2026,
+      "p95_ms": 0.328901,
       "note": ""
     },
     {
       "scenario": "coding_context_build",
-      "iterations": 50,
-      "median_ms": 0.278645,
-      "p95_ms": 1.014,
+      "iterations": 20,
+      "median_ms": 1.071649,
+      "p95_ms": 1.157194,
       "note": ""
     },
     {
       "scenario": "chat_context_build_with_memory",
-      "iterations": 50,
-      "median_ms": 0.180938,
-      "p95_ms": 0.204042,
+      "iterations": 20,
+      "median_ms": 0.215535,
+      "p95_ms": 0.235846,
       "note": "Local in-memory text only; no vector retrieval."
     },
     {
       "scenario": "chat_trace_enabled",
-      "iterations": 50,
-      "median_ms": 0.795063,
-      "p95_ms": 0.97,
+      "iterations": 20,
+      "median_ms": 0.52468,
+      "p95_ms": 0.631091,
       "note": "Null trace sink; measures event construction/callback overhead, not disk I/O."
     },
     {
       "scenario": "chat_trace_disk_write",
-      "iterations": 50,
-      "median_ms": 4.918042,
-      "p95_ms": 5.705125,
+      "iterations": 20,
+      "median_ms": 4.025707,
+      "p95_ms": 4.17502,
       "note": "Real TraceStore JSONL/report writes with index disabled; includes temporary directory lifecycle."
     },
     {
       "scenario": "chat_streaming",
-      "iterations": 50,
-      "median_ms": 0.691771,
-      "p95_ms": 0.78475,
+      "iterations": 20,
+      "median_ms": 0.49337,
+      "p95_ms": 0.521454,
       "note": "Two deterministic text chunks and no transport I/O."
     },
     {
       "scenario": "cancellation_before_model",
-      "iterations": 50,
-      "median_ms": 0.185333,
-      "p95_ms": 0.194584,
+      "iterations": 20,
+      "median_ms": 0.21178,
+      "p95_ms": 0.355261,
       "note": ""
     },
     {
-      "scenario": "task_session_factory",
-      "iterations": 50,
-      "median_ms": 0.518729,
-      "p95_ms": 0.581042,
+      "scenario": "coding_application_factory",
+      "iterations": 20,
+      "median_ms": 0.14897,
+      "p95_ms": 0.158703,
       "note": "In-memory Session manager; includes temporary directory setup and cleanup."
     },
     {
       "scenario": "subagent_create_and_return",
-      "iterations": 50,
-      "median_ms": 2.485063,
-      "p95_ms": 2.598083,
+      "iterations": 20,
+      "median_ms": 2.54492,
+      "p95_ms": 2.657067,
       "note": "Independent Session and filtered tools with one fake final model response."
     },
     {
       "scenario": "vector_memory_search",
-      "iterations": 50,
-      "median_ms": 0.007833,
-      "p95_ms": 0.008042,
+      "iterations": 20,
+      "median_ms": 0.011903,
+      "p95_ms": 0.012745,
       "note": "Deterministic in-process MemoryVectorIndex test double; four records, no Qdrant/network."
     },
     {
       "scenario": "security_rag_search",
-      "iterations": 50,
-      "median_ms": 0.002334,
-      "p95_ms": 0.0025,
+      "iterations": 20,
+      "median_ms": 0.00293,
+      "p95_ms": 0.002998,
       "note": "Deterministic local RAG index test double; three documents, no embedding model/network."
     }
   ]
