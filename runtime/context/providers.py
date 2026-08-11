@@ -1,7 +1,7 @@
 """Composable context providers used by ContextBuilder.
 
 Providers own data selection and budgeting. ContextBuilder remains the ordered
-composer during the compatibility phase so prompt and token behavior stay stable.
+composer so prompt and token behavior stay stable.
 """
 
 from __future__ import annotations

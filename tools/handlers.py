@@ -3208,7 +3208,7 @@ def run_read_artifact_with_metadata(
     *,
     artifact_store: ArtifactStore | None = None,
 ):
-    """Return the compatibility string plus structured access metadata."""
+    """Return display text plus structured access metadata."""
     from runtime.context.artifact_access import normalize_query
     from tools.executor import ToolHandlerOutput
 
