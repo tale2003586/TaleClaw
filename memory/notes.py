@@ -25,29 +25,6 @@ class MemoryNoteOrigin(StrEnum):
     LEGACY_IMPORT = "legacy_import"
 
 
-class MemoryRelationType(StrEnum):
-    RELATED_TO = "related_to"
-    SUPPORTS = "supports"
-    UPDATES = "updates"
-    CONTRADICTS = "contradicts"
-    SUPERSEDES = "supersedes"
-    DERIVED_FROM = "derived_from"
-    ENRICHES = "enriches"
-    DUPLICATE_OF = "duplicate_of"
-
-
-class MemoryLinkCreator(StrEnum):
-    LLM = "llm"
-    RUNTIME = "runtime"
-    USER = "user"
-
-
-class MemoryLinkStatus(StrEnum):
-    CANDIDATE = "candidate"
-    ACCEPTED = "accepted"
-    REJECTED = "rejected"
-
-
 @dataclass(frozen=True)
 class MemoryNote:
     id: str
@@ -160,40 +137,6 @@ class MemoryNote:
             updated_at=self.updated_at,
             metadata=legacy,
         )
-
-    def to_dict(self) -> dict[str, Any]:
-        return _serialize(asdict(self))
-
-
-@dataclass(frozen=True)
-class MemoryLink:
-    source_memory_id: str
-    target_memory_id: str
-    relation_type: MemoryRelationType
-    confidence: float
-    reason: str
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    created_by: MemoryLinkCreator = MemoryLinkCreator.RUNTIME
-    status: MemoryLinkStatus = MemoryLinkStatus.CANDIDATE
-    audit_metadata: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        source = str(self.source_memory_id or "").strip()
-        target = str(self.target_memory_id or "").strip()
-        if not source or not target or source == target:
-            raise ValueError("MemoryLink requires distinct source and target IDs.")
-        object.__setattr__(self, "source_memory_id", source)
-        object.__setattr__(self, "target_memory_id", target)
-        object.__setattr__(self, "relation_type", MemoryRelationType(self.relation_type))
-        object.__setattr__(self, "created_by", MemoryLinkCreator(self.created_by))
-        object.__setattr__(self, "status", MemoryLinkStatus(self.status))
-        confidence = float(self.confidence)
-        if not 0.0 <= confidence <= 1.0:
-            raise ValueError("MemoryLink confidence must be between 0 and 1.")
-        object.__setattr__(self, "confidence", confidence)
-        object.__setattr__(self, "reason", str(self.reason or "").strip()[:500])
-        object.__setattr__(self, "created_at", _aware(self.created_at, "created_at"))
-        object.__setattr__(self, "audit_metadata", dict(self.audit_metadata or {}))
 
     def to_dict(self) -> dict[str, Any]:
         return _serialize(asdict(self))

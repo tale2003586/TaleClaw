@@ -1393,8 +1393,3 @@ LEAD_TOOLS = (
     + SANDBOX_TOOLS
     + SEARCH_TOOLS
 )
-
-# Temporary compatibility aliases for older imports. Prefer TEAMMATE_TOOLS and
-# LEAD_TOOLS in new code.
-CHILD_TOOLS = TEAMMATE_TOOLS
-PARENT_TOOLS = LEAD_TOOLS
