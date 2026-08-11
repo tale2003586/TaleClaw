@@ -74,7 +74,7 @@ class ToolExecutionSummary:
 class ReasoningLoop:
     """Run the model/tool reasoning loop for one agent turn.
 
-    Runtime owns turn setup, context policies, and memory lifecycle. This class
+    Runtime owns turn setup and context policies. This class
     owns the repeated model call -> tool execution -> model call cycle so other
     agent runtimes can reuse it without copying Runtime internals.
     """
@@ -94,7 +94,7 @@ class ReasoningLoop:
         self.max_tokens = max_tokens
         self.max_reasoning_steps = max(1, int(max_reasoning_steps))
         policies = policies or ExecutionPolicies.minimal(self.max_reasoning_steps)
-        self.web_search_policy = policies.web_search
+        self.tool_call_policy = policies.tool_calls
         self.finishing_policy = policies.finishing
         self.recovery_controller = recovery_controller or RecoveryController()
 
@@ -368,7 +368,7 @@ class ReasoningLoop:
                         task_state_version=self._observed_state_version(session),
                     )
                 self._notify_run_observers(session, execution_state)
-                if _task_mode(agent_spec) and checkpoint_callback is not None:
+                if checkpoint_callback is not None:
                     checkpoint_callback(session)
                 after_turn(session)
                 return
@@ -807,7 +807,7 @@ class ReasoningLoop:
         note: str = "",
         checkpoint_callback: Callable | None = None,
     ) -> None:
-        if not _task_mode(agent_spec):
+        if checkpoint_callback is None:
             return
         append_event = getattr(session, "append_event", None)
         if callable(append_event):
@@ -919,7 +919,7 @@ class ReasoningLoop:
                     session=session,
                     mode=agent_spec.tool_mode,
                 )
-                search_budget_denial = self._web_search_budget_denial(
+                tool_call_denial = self._tool_call_denial(
                     session,
                     call.name,
                 )
@@ -932,10 +932,10 @@ class ReasoningLoop:
                     metadata=session.metadata,
                     session=session,
                 )
-                if search_budget_denial:
+                if tool_call_denial:
                     started = time.perf_counter()
                     result = self._denied_tool_result(
-                        output=search_budget_denial,
+                        output=tool_call_denial,
                         arguments=call.arguments,
                         duration_ms=_elapsed_ms(started),
                     )
@@ -952,7 +952,7 @@ class ReasoningLoop:
                             parent_span_id=span_id,
                         ),
                     )
-                output = self._with_web_search_budget_notice(
+                output = self._with_tool_call_notice(
                     session,
                     call.name,
                     result.output,
@@ -1096,20 +1096,20 @@ class ReasoningLoop:
         for observer in self._run_observers():
             observer.after_run(session=session, execution=execution_state)
 
-    def _web_search_budget_denial(self, session, tool_name: str) -> str:
-        return self.web_search_policy.denial(
+    def _tool_call_denial(self, session, tool_name: str) -> str:
+        return self.tool_call_policy.denial(
             session,
             tool_name,
             state=getattr(getattr(self, "run_context", None), "state", None),
         )
 
-    def _with_web_search_budget_notice(
+    def _with_tool_call_notice(
         self,
         session,
         tool_name: str,
         output: str,
     ) -> str:
-        return self.web_search_policy.add_notice(
+        return self.tool_call_policy.add_notice(
             session,
             tool_name,
             output,
@@ -1163,7 +1163,7 @@ class ReasoningLoop:
                 task_state_version=self._observed_state_version(session),
             )
         self._notify_run_observers(session, state)
-        if _task_mode(agent_spec) and checkpoint_callback is not None:
+        if checkpoint_callback is not None:
             checkpoint_callback(session)
         if on_text is not None:
             on_text(message)
@@ -1440,10 +1440,6 @@ def _coerce_stop_reason(reason: str | StopReason) -> StopReason:
         return StopReason(str(reason))
     except ValueError:
         return StopReason.NON_RETRYABLE_FAILURE
-
-
-def _task_mode(agent_spec) -> bool:
-    return str(getattr(agent_spec, "tool_mode", "") or "") in {"coding", "teammate"}
 
 
 def _recovery_error_type(execution: ToolExecutionSummary) -> str:

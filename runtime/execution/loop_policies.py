@@ -125,7 +125,7 @@ class FinishingReminderPolicy:
 
 def standard_execution_policies(max_reasoning_steps: int) -> ExecutionPolicies:
     return ExecutionPolicies(
-        web_search=WebSearchBudgetPolicy(),
+        tool_calls=WebSearchBudgetPolicy(),
         finishing=FinishingReminderPolicy(max_reasoning_steps),
     )
 

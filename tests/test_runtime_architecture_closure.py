@@ -59,7 +59,7 @@ class RuntimeArchitectureClosureTests(unittest.TestCase):
         ContextBuilder().build(session=session, agent_spec=agent_spec)
         self.assertNotIn("task_state", session.metadata)
 
-    def test_plain_bot_reasoning_does_not_create_run_checkpoint(self):
+    def test_reasoning_checkpoint_is_controlled_by_explicit_callback(self):
         session = Session(id="chat:checkpoint", active_agent="bot")
         events = []
         ReasoningLoop(tools=None, tool_executor=None)._checkpoint_reasoning_step(
@@ -69,8 +69,8 @@ class RuntimeArchitectureClosureTests(unittest.TestCase):
             phase="assistant_final",
             checkpoint_callback=lambda _: events.append("checkpoint"),
         )
-        self.assertEqual([], events)
-        self.assertFalse(any(event.type == "run_checkpoint" for event in session.event_log))
+        self.assertEqual(["checkpoint"], events)
+        self.assertTrue(any(event.type == "run_checkpoint" for event in session.event_log))
 
     def test_runtime_has_no_coding_bus_or_background_fields(self):
         source = (ROOT / "runtime/runtime.py").read_text(encoding="utf-8")

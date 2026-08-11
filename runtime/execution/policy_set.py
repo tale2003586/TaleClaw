@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-class NoWebSearchPolicy:
+class NoToolCallPolicy:
     def denial(self, session, tool_name: str, *, state=None) -> str:
         return ""
 
@@ -23,13 +23,13 @@ class NoFinishingPolicy:
 
 @dataclass(frozen=True)
 class ExecutionPolicies:
-    web_search: object
+    tool_calls: object
     finishing: object
 
     @classmethod
     def minimal(cls, max_reasoning_steps: int = 1) -> "ExecutionPolicies":
         return cls(
-            web_search=NoWebSearchPolicy(),
+            tool_calls=NoToolCallPolicy(),
             finishing=NoFinishingPolicy(),
         )
 

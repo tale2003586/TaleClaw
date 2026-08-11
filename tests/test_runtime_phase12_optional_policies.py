@@ -67,12 +67,12 @@ def test_minimal_policies_have_no_metadata_side_effects():
     session = SimpleNamespace(metadata={})
     policies = ExecutionPolicies.minimal(24)
 
-    assert policies.web_search.denial(session, "web_search") == ""
-    assert policies.web_search.add_notice(session, "web_search", "result") == "result"
+    assert policies.tool_calls.denial(session, "web_search") == ""
+    assert policies.tool_calls.add_notice(session, "web_search", "result") == "result"
     assert session.metadata == {}
 
 
 def test_standard_policy_factory_explicitly_enables_product_policies():
     policies = standard_execution_policies(24)
 
-    assert isinstance(policies.web_search, WebSearchBudgetPolicy)
+    assert isinstance(policies.tool_calls, WebSearchBudgetPolicy)
