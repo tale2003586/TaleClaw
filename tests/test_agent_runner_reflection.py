@@ -219,7 +219,10 @@ class AgentRunnerTests(unittest.TestCase):
             context_builder=ContextBuilder(),
             reflection_agent=reflection,
         )
-        session = Session(id="agent:loop-reflect")
+        session = Session(
+            id="agent:loop-reflect",
+            metadata={"unlocked_tools": ["echo"]},
+        )
         session.add_message("user", "do it")
         spec = AgentSpec(name="main", profile=_profile("bot"), model_purpose="chat")
 

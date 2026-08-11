@@ -11,16 +11,16 @@ from tools.tool_registry import build_lead_tool_registry
 
 
 class BotSandboxToolTests(unittest.TestCase):
-    def test_bot_mode_sees_sandbox_tools_but_not_workspace_write_tools(self) -> None:
+    def test_bot_mode_defers_sandbox_tools(self) -> None:
         registry = build_lead_tool_registry()
         session = Session(id="web:default", active_agent="bot")
 
         visible = registry.visible_names_for_turn(session, "bot")
 
-        self.assertIn("sandbox_list_files", visible)
-        self.assertIn("sandbox_read_file", visible)
-        self.assertIn("sandbox_write_file", visible)
-        self.assertIn("publish_artifact", visible)
+        self.assertNotIn("sandbox_list_files", visible)
+        self.assertNotIn("sandbox_read_file", visible)
+        self.assertNotIn("sandbox_write_file", visible)
+        self.assertNotIn("publish_artifact", visible)
         self.assertNotIn("write_file", visible)
         self.assertNotIn("edit_file", visible)
         self.assertNotIn("bash", visible)

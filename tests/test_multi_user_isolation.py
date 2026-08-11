@@ -103,6 +103,12 @@ class MultiUserIsolationTests(unittest.TestCase):
                     mode="bot",
                 )
                 registry.execute(
+                    "tool_search",
+                    {"query": "select:storage_write_file"},
+                    session=alice,
+                    mode="bot",
+                )
+                registry.execute(
                     "storage_write_file",
                     {"path": "reports/daily.md", "content": "alice-only"},
                     session=alice,

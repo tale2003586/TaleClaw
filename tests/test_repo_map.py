@@ -89,13 +89,13 @@ class RepoMapToolTests(unittest.TestCase):
             self.assertIn("lib.py:", symbol_map)
             self.assertIn("class CoreService:", symbol_map)
 
-    def test_repo_map_is_visible_for_coding_lead(self) -> None:
+    def test_repo_map_is_deferred_for_coding_lead(self) -> None:
         registry = build_lead_tool_registry()
         session = Session(id="task:repo-map-visible", active_agent="coding")
 
         visible = registry.visible_names_for_turn(session, "coding")
 
-        self.assertIn("repo_map", visible)
+        self.assertNotIn("repo_map", visible)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,12 @@ from tools.tool_registry import build_lead_tool_registry
 
 
 def _call(executor, registry, session, arguments, call_id="call"):
+    registry.execute(
+        "tool_search",
+        {"query": "select:read_artifact"},
+        session=session,
+        mode="bot",
+    )
     return executor.execute(
         ToolExecutionRequest(
             call_id,

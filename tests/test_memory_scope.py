@@ -48,6 +48,17 @@ def _memory_registry() -> ToolRegistry:
     return registry
 
 
+def _unlock_memory(registry: ToolRegistry, session: Session) -> None:
+    mode = session.active_agent if session.active_agent in {"bot", "coding"} else "bot"
+    for name in ("memorize", "recall_memory"):
+        registry.execute(
+            "tool_search",
+            {"query": f"select:{name}"},
+            session=session,
+            mode=mode,
+        )
+
+
 class MemoryScopeTests(unittest.TestCase):
     def tearDown(self) -> None:
         handlers.configure_semantic_memory_services()
@@ -76,6 +87,7 @@ class MemoryScopeTests(unittest.TestCase):
             global_memory = MemoryStore(Path(tmp) / "memory")
             registry = _memory_registry()
             session = Session(id="web:default")
+            _unlock_memory(registry, session)
 
             with patch.object(handlers, "MEMORY", global_memory):
                 result = registry.execute(
@@ -107,6 +119,7 @@ class MemoryScopeTests(unittest.TestCase):
                 id="web:alice:a",
                 metadata={"user_id": "alice"},
             )
+            _unlock_memory(registry, session)
 
             with patch.object(handlers, "MEMORY", global_memory):
                 saved = registry.execute(
@@ -163,6 +176,7 @@ class MemoryScopeTests(unittest.TestCase):
                 },
             )
             registry = _memory_registry()
+            _unlock_memory(registry, session)
             global_memory.append("memory", "global-only fact")
 
             with (
@@ -204,6 +218,7 @@ class MemoryScopeTests(unittest.TestCase):
                 },
             )
             registry = _memory_registry()
+            _unlock_memory(registry, session)
 
             with (
                 patch.object(handlers, "MEMORY", global_memory),

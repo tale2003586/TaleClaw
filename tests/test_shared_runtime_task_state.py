@@ -45,6 +45,12 @@ def test_hybrid_uses_core_schema_without_coding_phase() -> None:
     session = Session("hybrid:core", active_agent="hybrid")
     session.add_message("user", "回答问题")
     ContextBuilder().build(session=session, profile=_profile("hybrid"))
+    registry.execute(
+        "tool_search",
+        {"query": "select:update_task_state"},
+        session=session,
+        mode="hybrid",
+    )
 
     schema = next(
         item for item in registry.schemas_for_turn(session, "hybrid")

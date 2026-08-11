@@ -4,7 +4,6 @@ from typing import Any
 from runtime.execution.agent_runner import AgentRunner
 from runtime.execution.state import RunExecutionState
 from runtime.agent_spec import AgentSpec
-from runtime.context import ContextBundle
 from runtime.extensions import ContextContribution, RuntimeExtensions
 from runtime.ports import ContextPort, LifecyclePort, ModelPort, ToolExecutorPort, ToolPort
 from runtime.execution.failure_reasons import (
@@ -207,31 +206,7 @@ class Runtime:
         if _section_rendered(context, "security_knowledge"):
             if state is not None:
                 state.security_knowledge_used = True
-        return self._with_tool_catalog(context, session, profile)
-
-    def _with_tool_catalog(self, context, session, profile):
-        catalog = self._tool_catalog(session, profile)
-        if not catalog:
-            return context
-        messages = list(getattr(context, "messages", []) or [])
-        messages.insert(_active_turn_insert_index(context, messages), {
-            "role": "user",
-            "content": catalog,
-        })
-        return ContextBundle(
-            messages=messages,
-            report=getattr(context, "report", None),
-        )
-
-    def _tool_catalog(self, session, profile) -> str:
-        tools = self.agent_runner.tools
-        render = getattr(tools, "tool_catalog_text", None)
-        if render is None:
-            return ""
-        return render(
-            session,
-            str(getattr(profile, "tool_mode", "bot") or "bot"),
-        )
+        return context
 
     def _after_turn(self, session, *, run_state=None, trace_store=None) -> None:
         queued_memory_events = []
@@ -294,29 +269,6 @@ def _last_user_message_index(messages: list) -> int | None:
         if isinstance(message, dict) and message.get("role") == "user":
             return index
     return None
-
-
-def _active_turn_insert_index(context, messages: list) -> int:
-    report = getattr(context, "report", None)
-    if report is None:
-        return len(messages)
-    try:
-        sections = report.to_dict().get("sections", {})
-    except AttributeError:
-        return len(messages)
-    active = sections.get("active_turn") or {}
-    metadata = active.get("metadata") or {}
-    try:
-        active_count = int(metadata.get("message_count") or 0)
-    except (TypeError, ValueError):
-        active_count = 0
-    try:
-        active_count = int(metadata.get("rendered_message_count") or active_count)
-    except (TypeError, ValueError):
-        pass
-    if active_count <= 0:
-        return len(messages)
-    return max(1, len(messages) - active_count)
 
 
 def _section_rendered(context, name: str) -> bool:

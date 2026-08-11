@@ -98,22 +98,6 @@ class ToolRegistry:
     def visible_names_for_turn(self, session, mode: str = "coding") -> set[str]:
         return self.policy.visible_tools(session, mode)
 
-    def tool_catalog_text(self, session, mode: str = "coding") -> str:
-        allowed = self.policy._allowed_names(session=session, mode=mode)
-        visible = self.visible_names_for_turn(session, mode) if session is not None else set()
-        deferred = sorted(name for name in allowed if name not in visible)
-
-        if not deferred:
-            return ""
-
-        lines = [
-            '<tool_catalog>',
-            "Deferred tools can be unlocked with tool_search select:<name>:",
-            ", ".join(deferred),
-        ]
-        lines.append("</tool_catalog>")
-        return "\n".join(lines)
-
     def reset_turn_unlocks(self, session) -> None:
         session.metadata[UNLOCKED_TOOLS_KEY] = []
 
@@ -191,7 +175,10 @@ class ToolRegistry:
         lowered_query = query.lower()
 
         if lowered_query in {"catalog", "tools", "list"}:
-            return self.tool_catalog_text(session, mode) or "No tools are available in this mode."
+            return (
+                "Search deferred tools by capability, then unlock one with "
+                "select:<tool_name>."
+            )
 
         if lowered_query.startswith(("help:", "schema:")):
             name = query.split(":", 1)[1].strip()
