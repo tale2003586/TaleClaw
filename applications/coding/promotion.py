@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 from memory.dedup import normalize_memory_text
-from memory.store import MemoryStore
 from memory.commands import MemoryContext, MemoryWriteProposal
 from memory.domain import (
     MemoryEvidence,
@@ -19,13 +17,9 @@ ALLOWED_CATEGORIES = {"project", "decision", "preference", "fact", "task"}
 MIN_LLM_CONFIDENCE = 0.65
 MAX_CANDIDATE_LENGTH = 360
 MAX_CANDIDATE_LINES = 4
-_TAG_PREFIX_RE = re.compile(r"^\[[^\]]+\]\s*")
-_SOURCE_SUFFIX_RE = re.compile(r"\s*\(source:\s*`[^`]+`\)\s*$")
 _NOISY_MARKERS = {
     "<task-session",
     "</task-session>",
-    "<global-memory-snapshot",
-    "</global-memory-snapshot>",
     "task recent context:",
     "task summary:",
     "latest_user:",
@@ -52,129 +46,86 @@ class PromotionResult:
 
 
 class TaskMemoryPromoter:
-    """Promote filtered task conclusions into global pending memory."""
+    """Write filtered coding conclusions to semantic memory when enabled."""
 
     def __init__(
         self,
-        global_memory: MemoryStore | None = None,
-        *,
         command_service=None,
     ) -> None:
-        self.global_memory = global_memory
         self.command_service = command_service
 
     def promote(
         self,
         *,
         task_id: str,
-        task_memory: MemoryStore,
         extracted_conclusions: list[ConclusionCandidate] | None = None,
         memory_context: MemoryContext | None = None,
         repository_revision: str = "",
     ) -> PromotionResult:
         result = PromotionResult()
-        candidates = self._collect_candidates(task_memory, extracted_conclusions or [])
+        if self.command_service is None:
+            return result
+        candidates = _dedupe(extracted_conclusions or [])
         for candidate in candidates:
             reason = _rejection_reason(candidate)
             if reason:
                 result.rejected.append(RejectedConclusion(candidate=candidate, reason=reason))
                 continue
-            if self.command_service is not None:
-                if memory_context is None:
-                    result.rejected.append(RejectedConclusion(
-                        candidate=candidate,
-                        reason="trusted memory context is required",
-                    ))
-                    continue
-                owner_scope, owner_id = _coding_owner(memory_context)
-                evidence_file = candidate.evidence_file or candidate.evidence
-                evidence_location = candidate.evidence_location
-                verified = bool(candidate.verified)
-                evidence = MemoryEvidence(
-                    id=_evidence_id(task_id, candidate),
-                    memory_id="pending",
-                    source_type=MemorySourceType.CODING_CONCLUSION,
-                    source_ref=(
-                        f"task:{task_id}/{evidence_file}"
-                        + (f":{evidence_location}" if evidence_location else "")
-                    ),
-                    session_id=memory_context.session_id,
-                    task_id=task_id,
-                    workspace_id=memory_context.workspace_id,
-                    project_id=memory_context.project_id,
-                    excerpt=candidate.content,
-                    metadata={
-                        "category": candidate.category,
-                        "evidence": candidate.evidence,
-                        "evidence_file": evidence_file,
-                        "evidence_location": evidence_location,
-                        "code_revision": candidate.code_revision or repository_revision,
-                        "verified": verified,
-                    },
-                )
-                self.command_service.propose(MemoryWriteProposal(
-                    content=candidate.content,
-                    kind=_kind_for_category(candidate.category),
-                    owner_scope=owner_scope,
-                    owner_id=owner_id,
-                    source_type=MemorySourceType.CODING_CONCLUSION,
-                    evidence=(evidence,),
-                    confidence=candidate.confidence,
-                    salience=0.7,
-                    metadata={
-                        "entrypoint": "coding_conclusion",
-                        "repository_revision": candidate.code_revision or repository_revision,
-                        "verified": verified,
-                    },
-                ), memory_context)
-                result.promoted.append(candidate)
-                continue
-            if self.global_memory is None:
+            if memory_context is None:
                 result.rejected.append(RejectedConclusion(
                     candidate=candidate,
-                    reason="legacy global memory is unavailable",
+                    reason="trusted memory context is required",
                 ))
                 continue
-            save_result = self.global_memory.append_pending(
-                candidate.content,
-                tag=candidate.category,
-                source_ref=f"task:{task_id}/{candidate.source}",
+            owner_scope, owner_id = _coding_owner(memory_context)
+            evidence_file = candidate.evidence_file or candidate.evidence
+            evidence_location = candidate.evidence_location
+            verified = bool(candidate.verified)
+            evidence = MemoryEvidence(
+                id=_evidence_id(task_id, candidate),
+                memory_id="pending",
+                source_type=MemorySourceType.CODING_CONCLUSION,
+                source_ref=(
+                    f"task:{task_id}/{evidence_file}"
+                    + (f":{evidence_location}" if evidence_location else "")
+                ),
+                session_id=memory_context.session_id,
+                task_id=task_id,
+                workspace_id=memory_context.workspace_id,
+                project_id=memory_context.project_id,
+                excerpt=candidate.content,
+                metadata={
+                    "category": candidate.category,
+                    "evidence": candidate.evidence,
+                    "evidence_file": evidence_file,
+                    "evidence_location": evidence_location,
+                    "code_revision": candidate.code_revision or repository_revision,
+                    "verified": verified,
+                },
             )
-            if save_result.startswith("Saved"):
-                result.promoted.append(candidate)
-            else:
-                result.skipped.append(candidate)
+            if not verified:
+                result.rejected.append(RejectedConclusion(
+                    candidate=candidate,
+                    reason="coding conclusion is not verified",
+                ))
+                continue
+            self.command_service.record_verified_conclusion(MemoryWriteProposal(
+                content=candidate.content,
+                kind=_kind_for_category(candidate.category),
+                owner_scope=owner_scope,
+                owner_id=owner_id,
+                source_type=MemorySourceType.CODING_CONCLUSION,
+                evidence=(evidence,),
+                confidence=candidate.confidence,
+                salience=0.7,
+                metadata={
+                    "entrypoint": "coding_conclusion",
+                    "repository_revision": candidate.code_revision or repository_revision,
+                    "verified": verified,
+                },
+            ), memory_context)
+            result.promoted.append(candidate)
         return result
-
-    def _collect_candidates(
-        self,
-        task_memory: MemoryStore,
-        extracted_conclusions: list[ConclusionCandidate],
-    ) -> list[ConclusionCandidate]:
-        explicit = [
-            ConclusionCandidate(
-                category="task",
-                content=item,
-                confidence=1.0,
-                source="explicit",
-            )
-            for item in _bullet_items(task_memory.read_pending())
-        ]
-        return _dedupe([*explicit, *extracted_conclusions])
-
-
-def _bullet_items(markdown: str) -> list[str]:
-    items: list[str] = []
-    for line in markdown.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith(("-", "*")):
-            continue
-        content = stripped[1:].strip()
-        content = _TAG_PREFIX_RE.sub("", content)
-        content = _SOURCE_SUFFIX_RE.sub("", content).strip()
-        if content:
-            items.append(content)
-    return items
 
 
 def _dedupe(items: list[ConclusionCandidate]) -> list[ConclusionCandidate]:

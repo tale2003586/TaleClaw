@@ -35,19 +35,25 @@ def ContextBuilder(
             instruction_limit=instruction_limit,
             skill_loader=skill_loader,
         ),
-        memory_service=ContextMemoryService(
-            memory_store=memory_store,
-        ),
+        memory_service=MemoryService(memory_store) if memory_store else ContextMemoryService(),
         **kwargs,
     )
 
 
-class MemoryStore:
+class StaticMemoryText:
     def __init__(self, text: str) -> None:
         self.text = text
 
     def read_all(self) -> str:
         return self.text
+
+
+class MemoryService:
+    def __init__(self, store: StaticMemoryText) -> None:
+        self.store = store
+
+    def build_memory_block(self, session, *, current_request="") -> str:
+        return f"<memory>\n{self.store.read_all()}\n</memory>"
 
 
 class FakeVectorIndex:
@@ -218,7 +224,7 @@ class ContextInstructionTests(unittest.TestCase):
             ):
                 context = ContextBuilder(
                     context_providers=DEFAULT_CONTEXT_PROVIDERS,
-                    memory_store=MemoryStore("memory-item-" * 80),
+                    memory_store=StaticMemoryText("memory-item-" * 80),
                     instruction_root=root,
                 ).build(
                     session=session,
@@ -272,7 +278,7 @@ class ContextInstructionTests(unittest.TestCase):
 
         context = ContextBuilder(
             context_providers=DEFAULT_CONTEXT_PROVIDERS,
-            memory_store=MemoryStore("remembered preference"),
+            memory_store=StaticMemoryText("remembered preference"),
         ).build(
             session=session,
             profile=SimpleNamespace(
@@ -426,7 +432,7 @@ class ContextInstructionTests(unittest.TestCase):
             clear=False,
         ):
             context = ContextBuilder(
-                memory_store=MemoryStore("memory before active turn"),
+                memory_store=StaticMemoryText("memory before active turn"),
             ).build(
                 session=session,
                 profile=SimpleNamespace(

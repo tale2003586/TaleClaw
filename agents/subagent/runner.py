@@ -240,7 +240,6 @@ class TaskSubagentRunner:
         return self.base_pipeline.fork(
             tools=self._filtered_tools(agent_type),
             context_builder=self._sub_context_builder(),
-            memory_lifecycle=None,
             max_reasoning_steps=self.max_reasoning_steps,
         )
 

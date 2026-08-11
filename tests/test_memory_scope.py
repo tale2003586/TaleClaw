@@ -3,7 +3,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from memory.store import MemoryStore
 from runtime.sessions.session import Session
 from applications.coding import session as coding_application_module
 from applications.coding.session import TaskSessionFactory
@@ -63,7 +62,7 @@ class MemoryScopeTests(unittest.TestCase):
     def tearDown(self) -> None:
         handlers.configure_semantic_memory_services()
 
-    def test_coding_application_factory_stores_portable_relative_memory_root(self) -> None:
+    def test_coding_application_factory_does_not_create_memory_root(self) -> None:
         class RecordingSessions:
             def get_or_create(self, session_id: str) -> Session:
                 return Session(id=session_id)
@@ -77,33 +76,26 @@ class MemoryScopeTests(unittest.TestCase):
                     user_request="fix the bug",
                 )
 
-            self.assertEqual(
-                f".coding_applications/{record.task_id}/memory",
-                record.session.metadata["memory_root"],
-            )
+            self.assertTrue(record.task_root.is_dir())
+            self.assertNotIn("memory_root", record.session.metadata)
+            self.assertFalse((record.task_root / "memory").exists())
 
-    def test_regular_session_memorize_writes_global_memory(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            global_memory = MemoryStore(Path(tmp) / "memory")
-            registry = _memory_registry()
-            session = Session(id="web:default")
-            _unlock_memory(registry, session)
+    def test_disabled_memory_tool_does_not_create_legacy_markdown(self) -> None:
+        registry = _memory_registry()
+        session = Session(id="web:default")
+        _unlock_memory(registry, session)
 
-            with patch.object(handlers, "MEMORY", global_memory):
-                result = registry.execute(
-                    "memorize",
-                    {"content": "global preference"},
-                    session=session,
-                    mode="bot",
-                )
+        result = registry.execute(
+            "memorize",
+            {"content": "global preference"},
+            session=session,
+            mode="bot",
+        )
 
-            self.assertEqual("Saved to MEMORY.md", result)
-            self.assertIn("global preference", global_memory.memory_path.read_text())
+        self.assertEqual("Durable memory is not enabled.", result)
 
     def test_semantic_memorize_uses_repository_not_markdown(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            global_memory = MemoryStore(Path(tmp) / "memory")
-            before = global_memory.memory_path.read_text()
+        with tempfile.TemporaryDirectory():
             repository = InMemoryMemoryRepository()
             index = InMemoryMemoryIndex()
             commands = MemoryCommandService(repository)
@@ -121,24 +113,22 @@ class MemoryScopeTests(unittest.TestCase):
             )
             _unlock_memory(registry, session)
 
-            with patch.object(handlers, "MEMORY", global_memory):
-                saved = registry.execute(
-                    "memorize",
-                    {"content": "Prefer concise answers"},
-                    session=session,
-                    mode="bot",
-                )
-                recalled = registry.execute(
-                    "recall_memory",
-                    {"query": "concise"},
-                    session=session,
-                    mode="bot",
-                )
+            saved = registry.execute(
+                "memorize",
+                {"content": "Prefer concise answers"},
+                session=session,
+                mode="bot",
+            )
+            recalled = registry.execute(
+                "recall_memory",
+                {"query": "concise"},
+                session=session,
+                mode="bot",
+            )
 
             self.assertIn("Saved semantic memory", saved)
             self.assertIn("<semantic_memory>", recalled)
             self.assertIn("Prefer concise answers", recalled)
-            self.assertEqual(before, global_memory.memory_path.read_text())
             self.assertEqual(1, len(repository.items))
             event_names = [
                 event["event"]
@@ -158,82 +148,7 @@ class MemoryScopeTests(unittest.TestCase):
             _session=Session(id="web:default"),
         )
 
-        self.assertIn("no longer accepts file sections", result)
-
-    def test_coding_application_memorize_and_recall_use_local_memory(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            global_memory = MemoryStore(root / "memory")
-            task_memory_root = root / ".coding_applications"
-            local_memory_root = task_memory_root / "coding-12345678" / "memory"
-            session = Session(
-                id="task:coding-12345678",
-                active_agent="coding",
-                metadata={
-                    "kind": "coding_application",
-                    "task_id": "coding-12345678",
-                    "memory_root": ".coding_applications/coding-12345678/memory",
-                },
-            )
-            registry = _memory_registry()
-            _unlock_memory(registry, session)
-            global_memory.append("memory", "global-only fact")
-
-            with (
-                patch.object(handlers, "MEMORY", global_memory),
-                patch.object(handlers, "WORKDIR", root),
-                patch.object(handlers, "TASK_MEMORY_ROOT", task_memory_root.resolve()),
-            ):
-                save_result = registry.execute(
-                    "memorize",
-                    {"content": "task-only fact"},
-                    session=session,
-                    mode="coding",
-                )
-                recall_result = registry.execute(
-                    "recall_memory",
-                    {"query": "fact"},
-                    session=session,
-                    mode="coding",
-                )
-
-            self.assertEqual("Saved to MEMORY.md", save_result)
-            self.assertNotIn("task-only fact", global_memory.memory_path.read_text())
-            self.assertIn("task-only fact", (local_memory_root / "MEMORY.md").read_text())
-            self.assertIn("task-only fact", recall_result)
-            self.assertNotIn("global-only fact", recall_result)
-
-    def test_coding_application_memory_root_cannot_escape_task_directory(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            global_memory = MemoryStore(root / "memory")
-            task_memory_root = root / ".coding_applications"
-            session = Session(
-                id="task:coding-12345678",
-                active_agent="coding",
-                metadata={
-                    "kind": "coding_application",
-                    "task_id": "coding-12345678",
-                    "memory_root": str(root / "outside"),
-                },
-            )
-            registry = _memory_registry()
-            _unlock_memory(registry, session)
-
-            with (
-                patch.object(handlers, "MEMORY", global_memory),
-                patch.object(handlers, "TASK_MEMORY_ROOT", task_memory_root.resolve()),
-            ):
-                result = registry.execute(
-                    "memorize",
-                    {"content": "must not be written"},
-                    session=session,
-                    mode="coding",
-                )
-
-            self.assertEqual("Error: Task memory root escapes .coding_applications.", result)
-            self.assertFalse((root / "outside").exists())
-
+        self.assertIn("does not accept file sections", result)
 
 if __name__ == "__main__":
     unittest.main()

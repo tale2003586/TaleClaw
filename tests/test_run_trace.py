@@ -1,7 +1,6 @@
 import asyncio
 import json
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +9,6 @@ from runtime.messaging.events import InboundMessage
 from runtime.messaging.user_bus import MessageBus
 from plugins import PluginManager
 from plugins.run_report import RunReportPlugin
-from memory.background_lifecycle import BackgroundMemoryLifecycle
 from applications.turn_coordinator import TurnCoordinator as AgentLoop
 from runtime.context import ContextBuilder as RealContextBuilder
 from runtime.runtime import RunContext, Runtime
@@ -21,8 +19,6 @@ from runtime.trace.summary import build_trace_summary_payload
 from runtime.trace.trace_store import TraceStore
 from runtime.trace.workspace import capture_workspace_snapshot, diff_workspace_snapshots
 from runtime.workspace import WorkspaceResolver
-from memory.store import MemoryStore
-from memory.lifecycle import MemoryLifecycleResult
 from runtime.routing.agent_router import AgentRouter
 from runtime.sessions.session import Session, SessionManager
 from tests.postgres_utils import temporary_postgres_schema
@@ -69,58 +65,6 @@ class RecordingSessions:
 
     def save(self, session: Session) -> None:
         self.saved.append(session)
-
-
-class FakeMemoryLifecycle:
-    def after_turn(self, session) -> MemoryLifecycleResult:
-        result = MemoryLifecycleResult(
-            pending_added=1,
-            candidates_updated=1,
-            related_triggered=0,
-            promoted_count=1,
-            vector_indexed=1,
-            vector_errors=0,
-            history_updated=True,
-            recent_context_updated=True,
-        )
-        result.trace_events.extend([
-            {
-                "event": "memory.candidate.evaluated",
-                "payload": {
-                    "source_ref": "web:default:1",
-                    "method": "history_vector_similarity",
-                    "similar_hit_count": 2,
-                    "candidate_selected": True,
-                },
-            },
-            {
-                "event": "memory.candidate.promoted",
-                "payload": {
-                    "candidate_id": "mem_cand_0001",
-                    "memory_text_preview": "用户偏好使用 pytest。",
-                },
-            },
-            {
-                "event": "memory.history_vector.upserted",
-                "payload": {
-                    "source_ref": "web:default:1",
-                    "source_type": "session_turn",
-                    "message_count": 2,
-                },
-            },
-        ])
-        return result
-
-
-class SlowMemoryLifecycle(FakeMemoryLifecycle):
-    def __init__(self, delay: float = 0.2) -> None:
-        self.delay = delay
-        self.calls = 0
-
-    def after_turn(self, session) -> MemoryLifecycleResult:
-        self.calls += 1
-        time.sleep(self.delay)
-        return super().after_turn(session)
 
 
 def _tool_response(index: int, name="echo", arguments=None) -> LLMResponse:
@@ -193,17 +137,6 @@ def _pipeline(provider) -> Runtime:
         model="test-model",
         tool_executor=ToolExecutor([]),
         context_builder=ContextBuilder(),
-    )
-
-
-def _pipeline_with_memory_trace(provider) -> Runtime:
-    return Runtime(
-        tools=_registry(),
-        provider=provider,
-        model="test-model",
-        tool_executor=ToolExecutor([]),
-        context_builder=ContextBuilder(),
-        memory_lifecycle=FakeMemoryLifecycle(),
     )
 
 
@@ -787,116 +720,6 @@ class RunTraceTests(unittest.TestCase):
             self.assertIn("echo", markdown_report)
             self.assertIn("done", markdown_report)
 
-    def test_memory_lifecycle_trace_events_are_recorded(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            trace_store = TraceStore(Path(tmp) / ".runs")
-            session = Session(id="web:default", active_agent="bot")
-            sessions = RecordingSessions(session)
-            provider = ScriptedProvider([_final_response("done")])
-            bus = MessageBus()
-            loop = AgentLoop(
-                bus,
-                sessions,
-                _pipeline_with_memory_trace(provider),
-                AgentRouter(),
-                plugin_manager=PluginManager([], workspace=Path(tmp), tool_registry=_registry()),
-                trace_store=trace_store,
-            )
-
-            async def run() -> str:
-                await bus.publish_inbound(InboundMessage(
-                    channel="web",
-                    chat_id="default",
-                    sender="user",
-                    content="我希望这个项目用 pytest 写测试",
-                    metadata={"user_id": "local", "user_role": "admin"},
-                ))
-                await loop.run_once()
-                outbound = await bus._outbound.get()
-                return outbound.content
-
-            self.assertEqual("done", asyncio.run(run()))
-
-            run_dir = trace_store.run_dir(_last_message_run_id(session))
-            events = _events(run_dir / "trace.jsonl")
-            by_name = {event["event"]: event for event in events}
-            trace_summary = json.loads(
-                (run_dir / "trace_summary.json").read_text(encoding="utf-8")
-            )
-
-            self.assertIn("memory.candidate.evaluated", by_name)
-            self.assertIn("memory.candidate.promoted", by_name)
-            self.assertIn("memory.history_vector.upserted", by_name)
-            self.assertIn("memory.lifecycle.completed", by_name)
-            self.assertEqual(
-                2,
-                by_name["memory.candidate.evaluated"]["payload"]["similar_hit_count"],
-            )
-            self.assertTrue(
-                by_name["memory.candidate.evaluated"]["payload"]["candidate_selected"]
-            )
-            self.assertEqual(
-                "session_turn",
-                by_name["memory.history_vector.upserted"]["payload"]["source_type"],
-            )
-            self.assertEqual(
-                1,
-                by_name["memory.lifecycle.completed"]["payload"]["promoted_count"],
-            )
-            self.assertEqual(
-                1,
-                trace_summary["memory"]["candidate_evaluations"],
-            )
-            self.assertEqual(
-                1,
-                trace_summary["memory"]["candidate_promotions"],
-            )
-
-    def test_background_memory_lifecycle_does_not_block_pipeline_reply(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            trace_store = TraceStore(Path(tmp) / ".runs")
-            session = Session(id="web:default", active_agent="bot")
-            run_state = RunState.create(
-                session_id=session.id,
-                channel="web",
-                chat_id="default",
-                mode="bot",
-                execution_path="runtime",
-            )
-            trace_store.start_run(run_state)
-            slow_lifecycle = SlowMemoryLifecycle(delay=0.25)
-            background_lifecycle = BackgroundMemoryLifecycle(slow_lifecycle)
-            provider = ScriptedProvider([_final_response("done")])
-            pipeline = Runtime(
-                tools=_registry(),
-                provider=provider,
-                model="test-model",
-                tool_executor=ToolExecutor([]),
-                context_builder=ContextBuilder(),
-                memory_lifecycle=background_lifecycle,
-            )
-
-            session.add_message("user", "我希望这个项目用 pytest 写测试")
-            started = time.perf_counter()
-            reply = _run_pipeline(
-                pipeline,
-                session,
-                SimpleNamespace(tool_mode="bot"),
-                run_state=run_state,
-                trace_store=trace_store,
-            )
-            elapsed = time.perf_counter() - started
-
-            self.assertEqual("done", reply)
-            self.assertLess(elapsed, 0.2)
-            self.assertTrue(background_lifecycle.wait(timeout=2.0))
-            self.assertEqual(1, slow_lifecycle.calls)
-
-            events = _events(trace_store.run_dir(run_state) / "trace.jsonl")
-            event_names = [event["event"] for event in events]
-            self.assertIn("memory.lifecycle.scheduled", event_names)
-            self.assertIn("memory.lifecycle.completed", event_names)
-
     def test_coding_coding_application_is_bound_to_parent_run(self) -> None:
         class Extractor:
             def extract(self, **kwargs):
@@ -910,7 +733,6 @@ class RunTraceTests(unittest.TestCase):
             runner = CodingApplication(
                 sessions=sessions,
                 base_pipeline=base_pipeline,
-                global_memory=MemoryStore(root / "memory"),
                 workspace_root=root,
             )
             runner.factory = TaskSessionFactory(sessions, root=root / ".coding_applications")
@@ -1223,7 +1045,6 @@ class RunTraceTests(unittest.TestCase):
             runner = CodingApplication(
                 sessions=sessions,
                 base_pipeline=_workspace_pipeline(provider),
-                global_memory=MemoryStore(root / "memory"),
                 workspace_root=workspace,
             )
             runner.factory = TaskSessionFactory(sessions, root=root / ".coding_applications")

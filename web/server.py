@@ -36,14 +36,14 @@ ROOT = Path(__file__).resolve().parents[1]
 STATIC_DIR = ROOT / "web" / "static"
 USERS_DIR = ROOT / ".users"
 RUNS_DIR = ROOT / ".runs"
-MEMORY_FILES = [
+MEMORY_FILES = (
     "SELF.md",
     "MEMORY.md",
     "NOW.md",
     "PENDING.md",
     "RECENT_CONTEXT.md",
     "HISTORY.md",
-]
+)
 DEFAULT_MAX_BODY_BYTES = 52_428_800
 MAX_PREVIEW_BYTES = 1_000_000
 AUTH_COOKIE_NAME = "taleclaw_session"
@@ -52,10 +52,10 @@ _CHAT_MARKDOWN = None
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from memory.migration.legacy_files import read_legacy_memory_files
 from user_scope import (
     DEFAULT_USER_ID,
     DEFAULT_USER_ROLE,
-    memory_root_for_user,
     normalize_user_id,
     normalize_user_role,
     parse_web_session_id,
@@ -772,16 +772,7 @@ def render_chat_markdown(text: str) -> str:
 
 
 def read_memory_files(user_id: str = DEFAULT_USER_ID) -> list[dict[str, str]]:
-    memory_dir = memory_root_for_user(ROOT, user_id)
-    files = []
-    for name in MEMORY_FILES:
-        path = memory_dir / name
-        if path.exists():
-            content = path.read_text(encoding="utf-8")
-        else:
-            content = ""
-        files.append({"name": name, "content": content})
-    return files
+    return read_legacy_memory_files(ROOT, user_id, MEMORY_FILES)
 
 
 def _now_iso() -> str:

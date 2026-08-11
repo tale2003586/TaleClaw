@@ -17,7 +17,6 @@ class RuntimeServices:
     tool_registry: Any
     tool_executor: Any
     plugin_manager: Any
-    memory_store: Any
     context_builder: Any
     session_manager: Any
     trace_store: Any

@@ -7,10 +7,8 @@ class ContextMemoryService:
     def __init__(
         self,
         *,
-        memory_store=None,
         semantic_memory_retriever=None,
     ) -> None:
-        self.memory_store = memory_store
         self.semantic_memory_retriever = semantic_memory_retriever
 
     def build_memory_block(self, session, *, current_request: str = "") -> str:
@@ -23,19 +21,7 @@ class ContextMemoryService:
             )
             _queue_trace_events(session, self.semantic_memory_retriever)
             return self.semantic_memory_retriever.render(result)
-        if self.memory_store is None:
-            return ""
-
-        store = self.memory_store
-        if hasattr(store, "for_session"):
-            store = store.for_session(session)
-        if current_request.strip() and hasattr(store, "recall"):
-            text = store.recall(current_request).strip()
-        else:
-            text = store.read_all().strip()
-        if not text or text == "No relevant memory found.":
-            return ""
-        return "<memory>\n" + text + "\n</memory>"
+        return ""
 
 def _queue_trace_events(session, service) -> None:
     if not hasattr(service, "drain_trace_events"):

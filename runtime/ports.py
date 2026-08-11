@@ -71,11 +71,6 @@ class ToolExecutorPort(Protocol):
 
 
 @runtime_checkable
-class LifecyclePort(Protocol):
-    def after_turn(self, session: Any) -> Any: ...
-
-
-@runtime_checkable
 class ObservabilityPort(Protocol):
     def append_event(
         self,
@@ -90,7 +85,6 @@ class ObservabilityPort(Protocol):
 
 __all__ = (
     "ContextPort",
-    "LifecyclePort",
     "ModelPort",
     "ObservabilityPort",
     "ToolExecutorPort",

@@ -5,7 +5,7 @@ from runtime.execution.agent_runner import AgentRunner
 from runtime.execution.state import RunExecutionState
 from runtime.agent_spec import AgentSpec
 from runtime.extensions import ContextContribution, RuntimeExtensions
-from runtime.ports import ContextPort, LifecyclePort, ModelPort, ToolExecutorPort, ToolPort
+from runtime.ports import ContextPort, ModelPort, ToolExecutorPort, ToolPort
 from runtime.execution.failure_reasons import (
     StopReason,
 )
@@ -26,7 +26,6 @@ class Runtime:
         model: str,
         tool_executor: ToolExecutorPort | None = None,
         context_builder: ContextPort | None = None,
-        memory_lifecycle: LifecyclePort | None = None,
         model_pool=None,
         reflection_agent=None,
         execution_policy_factory=None,
@@ -37,7 +36,6 @@ class Runtime:
             raise ValueError("Runtime requires a tool_executor.")
         if context_builder is None:
             raise ValueError("Runtime requires a context_builder.")
-        self.memory_lifecycle = memory_lifecycle
         self.execution_policy_factory = execution_policy_factory
         self.agent_runner = AgentRunner(
             tools=tools,
@@ -65,7 +63,6 @@ class Runtime:
         *,
         context_builder,
         tools=None,
-        memory_lifecycle=None,
         max_reasoning_steps: int | None = None,
         execution_policy_factory=None,
     ) -> "Runtime":
@@ -75,7 +72,6 @@ class Runtime:
             model=self.agent_runner.model,
             tool_executor=self.agent_runner.tool_executor,
             context_builder=context_builder,
-            memory_lifecycle=memory_lifecycle,
             model_pool=self.agent_runner.model_pool,
             reflection_agent=self.agent_runner.reflection_agent,
             execution_policy_factory=(
@@ -219,25 +215,6 @@ class Runtime:
                 payload = item.get("payload") if isinstance(item, dict) else {}
                 if event_name:
                     trace_store.append_event(run_state, event_name, payload or {})
-        if self.memory_lifecycle is not None:
-            enqueue = getattr(self.memory_lifecycle, "enqueue_after_turn", None)
-            if enqueue is not None:
-                enqueue(session, run_state=run_state, trace_store=trace_store)
-            else:
-                result = self.memory_lifecycle.after_turn(session)
-                if trace_store is not None and run_state is not None and result is not None:
-                    for item in getattr(result, "trace_events", []) or []:
-                        event_name = item.get("event")
-                        payload = item.get("payload") or {}
-                        if event_name:
-                            trace_store.append_event(run_state, event_name, payload)
-                    trace_store.append_event(
-                        run_state,
-                        "memory.lifecycle.completed",
-                        result.to_trace_payload()
-                        if hasattr(result, "to_trace_payload")
-                        else {},
-                    )
         session.touch()
 
 def get_last_assistant_text(messages: list) -> str:

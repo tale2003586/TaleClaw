@@ -12,7 +12,6 @@ from applications.coding.handoff import (
 from applications.coding.runner import CodingApplication
 from applications.coding.session import TaskSessionFactory
 from applications.coding.task_state import TASK_STATE_METADATA_KEY
-from memory.store import MemoryStore
 from models.provider import LLMResponse
 from applications.turn_coordinator import TurnCoordinator as AgentLoop
 from runtime.context import ArtifactStore, LongContentDetector
@@ -101,7 +100,6 @@ def _direct_coding_runner(tmp_path: Path) -> tuple[CodingApplication, _InMemoryS
             max_tokens=1_024,
             max_reasoning_steps=2,
         ),
-        global_memory=MemoryStore(tmp_path / "global-memory"),
         workspace_root=tmp_path,
         artifact_store=artifact_store,
         long_content_detector=LongContentDetector(artifact_store),
@@ -136,14 +134,6 @@ def _large_request() -> tuple[str, str, str]:
     request = prefix + body
     assert len(request) == 500_000
     return request, instruction, marker
-
-
-def _all_task_memory_text(memory_root: Path) -> str:
-    return "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in sorted(memory_root.iterdir())
-        if path.is_file()
-    )
 
 
 def test_direct_coding_call_records_current_request_in_an_empty_parent(tmp_path) -> None:
@@ -181,8 +171,7 @@ def test_direct_coding_call_records_current_request_in_an_empty_parent(tmp_path)
         ]
         == original_request_ref
     )
-    memory_root = coding.factory.root / task.metadata["task_id"] / "memory"
-    assert original_request_ref in _all_task_memory_text(memory_root)
+    assert not (coding.factory.root / task.metadata["task_id"] / "memory").exists()
 
     restarted_parent = Session(
         id=parent.id,
@@ -289,7 +278,6 @@ def test_500k_inbound_request_is_stored_once_and_only_referenced_downstream(tmp_
             max_tokens=1_024,
             max_reasoning_steps=2,
         ),
-        global_memory=MemoryStore(tmp_path / "global-memory"),
         workspace_root=tmp_path,
         artifact_store=artifact_store,
         long_content_detector=detector,
@@ -346,15 +334,12 @@ def test_500k_inbound_request_is_stored_once_and_only_referenced_downstream(tmp_
         ensure_ascii=False,
         default=str,
     )
-    memory_root = coding.factory.root / task.metadata["task_id"] / "memory"
-    task_memory = _all_task_memory_text(memory_root)
-
     assert raw_body_marker not in prompt
     assert raw_body_marker not in json.dumps(handoff, ensure_ascii=False)
     assert raw_body_marker not in session_metadata
     assert raw_body_marker not in session_messages
     assert raw_body_marker not in json.dumps(task_state, ensure_ascii=False, default=str)
-    assert raw_body_marker not in task_memory
+    assert not (coding.factory.root / task.metadata["task_id"] / "memory").exists()
     assert "current_user_request" not in handoff
 
     storage_uri = artifact_ref["storage_uri"]
@@ -363,5 +348,4 @@ def test_500k_inbound_request_is_stored_once_and_only_referenced_downstream(tmp_
     assert task_state["objective"]["summary"] == instruction
     assert storage_uri in task_state["artifact_refs"]
     assert task_state["objective"]["original_request_ref"].startswith("event://")
-    assert storage_uri in task_memory
     assert bus.outbound

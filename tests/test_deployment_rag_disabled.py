@@ -66,12 +66,5 @@ class DeploymentRagDisabledTests(unittest.TestCase):
             self.assertFalse(bootstrap._security_rag_auto_context_enabled())
             self.assertFalse(bootstrap._security_rag_plugin_enabled())
 
-    def test_memory_lifecycle_is_opt_in(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            self.assertFalse(bootstrap._env_bool("MEMORY_LIFECYCLE_ENABLED", False))
-        with patch.dict(os.environ, {"MEMORY_LIFECYCLE_ENABLED": "1"}, clear=True):
-            self.assertTrue(bootstrap._env_bool("MEMORY_LIFECYCLE_ENABLED", False))
-
-
 if __name__ == "__main__":
     unittest.main()

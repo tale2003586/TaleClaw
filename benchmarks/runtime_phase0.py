@@ -55,12 +55,18 @@ class InMemorySessions:
         return self.sessions[session_id]
 
 
-class MemoryStore:
+class DeterministicMemoryRetriever:
     def __init__(self, text):
         self.text = text
 
-    def read_all(self):
+    def retrieve(self, request, context):
         return self.text
+
+    def render(self, result):
+        return f"<memory>\n{result}\n</memory>"
+
+    def drain_trace_events(self):
+        return []
 
 
 class NullTrace:
@@ -158,7 +164,6 @@ def pipeline_for(responses):
                 skill_loader=SimpleNamespace(catalog_text=lambda: ""),
             ),
         ),
-        memory_lifecycle=None,
         max_tokens=256,
         max_reasoning_steps=8,
     )
@@ -400,7 +405,9 @@ def benchmarks(iterations: int) -> tuple[list[dict], dict]:
             lambda: ContextBuilder(
                 context_providers=DEFAULT_CONTEXT_PROVIDERS,
                 memory_service=ContextMemoryService(
-                    memory_store=MemoryStore("Use deterministic fixtures."),
+                    semantic_memory_retriever=DeterministicMemoryRetriever(
+                        "Use deterministic fixtures."
+                    ),
                 ),
                 prompt_assets_service=PromptAssetsService(
                     budgeter=ContextBudgeter.from_env(),

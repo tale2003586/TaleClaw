@@ -18,12 +18,12 @@ from runtime.sessions import Session
 
 
 class _Memory:
-    def read_all(self):
-        return "durable preference"
+    def build_memory_block(self, session, *, current_request=""):
+        return "<memory>\ndurable preference\n</memory>"
 
 
 def _builder(**kwargs):
-    memory_store = kwargs.pop("memory_store", None)
+    memory_service = kwargs.pop("memory_service", None)
     budgeter = ContextBudgeter.from_env()
     return ContextBuilder(
         budgeter=budgeter,
@@ -32,7 +32,7 @@ def _builder(**kwargs):
             budgeter=budgeter,
             skill_loader=SimpleNamespace(catalog_text=lambda: ""),
         ),
-        memory_service=ContextMemoryService(memory_store=memory_store),
+        memory_service=memory_service or ContextMemoryService(),
         **kwargs,
     )
 
@@ -58,7 +58,7 @@ def test_context_policy_can_exclude_history_and_memory_without_prompt_change():
     session = Session(id="phase5:policy")
     session.add_message("assistant", "old answer")
     session.add_message("user", "current request")
-    builder = _builder(memory_store=_Memory())
+    builder = _builder(memory_service=_Memory())
 
     default = builder.build(session=session, profile=BOT_AGENT_SPEC)
     restricted = builder.build(

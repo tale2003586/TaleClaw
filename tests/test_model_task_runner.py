@@ -3,7 +3,6 @@ import unittest
 from runtime.agent_spec import AgentSpec
 from models.model_task_runner import ModelTaskRunner
 from models.provider import LLMResponse
-from memory.history_summary import HistorySummarizer
 
 
 class RecordingProvider:
@@ -60,27 +59,6 @@ class ModelTaskRunnerTests(unittest.TestCase):
         self.assertIn(("provider", "summary"), pool.purposes)
         self.assertIn(("model", "summary"), pool.purposes)
 
-    def test_history_summarizer_uses_model_task_runner(self):
-        provider = RecordingProvider("compact memory summary")
-        runner = ModelTaskRunner(provider=provider, model="summary-model")
-        summarizer = HistorySummarizer(
-            runner=runner,
-            spec=AgentSpec(
-                name="history_summarizer",
-                profile=None,
-                model_purpose="summary",
-                max_tokens=77,
-            ),
-            direct_limit=5,
-            max_tokens=77,
-        )
-
-        summary = summarizer.summarize("this is a long assistant answer")
-
-        self.assertEqual("compact memory summary", summary)
-        self.assertEqual("summary-model", provider.calls[0]["model"])
-        self.assertEqual(77, provider.calls[0]["max_tokens"])
-
     def test_runner_calls_on_error_before_reraising(self):
         errors = []
         runner = ModelTaskRunner(
@@ -89,7 +67,7 @@ class ModelTaskRunnerTests(unittest.TestCase):
             on_error=lambda exc, spec: errors.append((type(exc).__name__, spec.name)),
         )
         spec = AgentSpec(
-            name="candidate_extractor",
+            name="one_shot_task",
             profile=None,
             model_purpose="summary",
         )
@@ -97,7 +75,7 @@ class ModelTaskRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "model unavailable"):
             runner.run(spec=spec, messages=[{"role": "user", "content": "x"}])
 
-        self.assertEqual([("RuntimeError", "candidate_extractor")], errors)
+        self.assertEqual([("RuntimeError", "one_shot_task")], errors)
 
 
 if __name__ == "__main__":

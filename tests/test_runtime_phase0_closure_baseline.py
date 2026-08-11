@@ -11,7 +11,6 @@ from applications.coding.runner import CodingApplication
 from applications.coding.session import TaskSessionFactory
 from gateway.feishu.adapter import FeishuGateway
 from gateway.telegram.adapter import TelegramGateway
-from memory.store import MemoryStore
 from tests.fakes import make_agent_spec
 from runtime.context import ContextBuilder, PromptAssetsService
 from runtime.context.budget import ContextBudgeter
@@ -79,7 +78,6 @@ def _pipeline(tmp_path: Path, provider: ScriptedModel) -> Runtime:
                 skill_loader=SimpleNamespace(catalog_text=lambda: ""),
             ),
         ),
-        memory_lifecycle=None,
         max_tokens=256,
         max_reasoning_steps=4,
     )
@@ -107,11 +105,9 @@ def test_full_coding_task_lifecycle_is_offline_and_persists_all_artifacts(
     ])
     sessions = InMemorySessionManager()
     pipeline = _pipeline(tmp_path, provider)
-    global_memory = MemoryStore(tmp_path / "global-memory")
     runner = CodingApplication(
         sessions=sessions,
         base_pipeline=pipeline,
-        global_memory=global_memory,
         workspace_resolver=WorkspaceResolver(
             allowed_roots=[tmp_path],
             default_workspace=workspace,
@@ -146,13 +142,16 @@ def test_full_coding_task_lifecycle_is_offline_and_persists_all_artifacts(
 
     task = run_state.metadata["coding_application"]
     coding_application = sessions.get_or_create(task["coding_application_id"])
-    task_root = Path(coding_application.metadata["memory_root"]).parent
+    task_root = runner.factory.root / task["task_id"]
     assert coding_application.metadata["status"] == "completed"
     assert coding_application.id in sessions.saved_ids
     assert (task_root / "TASK_LOG.md").exists()
     conclusions = json.loads((task_root / "CONCLUSIONS.json").read_text(encoding="utf-8"))
-    assert conclusions["promoted"][0]["content"].startswith("Phase 0 coding lifecycle")
-    assert "Phase 0 coding lifecycle" in global_memory.pending_path.read_text(encoding="utf-8")
+    assert conclusions["llm_candidates"][0]["content"].startswith(
+        "Phase 0 coding lifecycle"
+    )
+    assert conclusions["promoted"] == []
+    assert not (task_root / "memory").exists()
     diff = json.loads(
         (trace.run_dir(run_state) / "workspace_diff.json").read_text(encoding="utf-8")
     )

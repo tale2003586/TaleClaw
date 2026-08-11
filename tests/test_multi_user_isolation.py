@@ -6,10 +6,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from runtime.routing.agent_router import AgentRouter
-from runtime.context import ContextBuilder, ContextMemoryService
-from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
-from memory.lifecycle import MemoryLifecycle
-from memory.scoped_store import ScopedMemoryStore
 from plugins.markdown_pdf.plugin import MarkdownPdfPlugin
 from runtime.sessions import Session, SessionManager
 from tests.postgres_utils import temporary_postgres_schema
@@ -88,7 +84,7 @@ class MultiUserIsolationTests(unittest.TestCase):
             self.assertEqual(["default"], [item["chat_id"] for item in alice_sessions])
             self.assertEqual("alice-only", alice_chat["messages"][0]["content"])
 
-    def test_bot_storage_and_memory_tools_follow_session_user(self) -> None:
+    def test_bot_storage_follows_session_user_and_disabled_memory_does_not_write(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             registry = build_lead_tool_registry()
@@ -114,7 +110,7 @@ class MultiUserIsolationTests(unittest.TestCase):
                     session=alice,
                     mode="bot",
                 )
-                registry.execute(
+                memory_result = registry.execute(
                     "memorize",
                     {"content": "alice preference"},
                     session=alice,
@@ -126,37 +122,8 @@ class MultiUserIsolationTests(unittest.TestCase):
             alice_root = workspace / ".users" / "alice"
             self.assertTrue((alice_root / "storage" / "generated" / "reports" / "daily.md").is_file())
             self.assertEqual([], bob_listing["entries"])
+            self.assertEqual("Durable memory is not enabled.", memory_result)
             self.assertNotIn("alice preference", bob_memory)
-
-    def test_context_and_lifecycle_use_current_users_memory(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            stores = ScopedMemoryStore(workspace)
-            alice = _session("alice")
-            bob = _session("bob")
-            stores.for_session(alice).append("memory", "alice-only memory")
-            stores.for_session(bob).append("memory", "bob-only memory")
-
-            profile = SimpleNamespace(system_prompt="system")
-            context = ContextBuilder(
-                context_providers=DEFAULT_CONTEXT_PROVIDERS,
-                memory_service=ContextMemoryService(memory_store=stores),
-            ).build(
-                session=alice,
-                profile=profile,
-            )
-            alice.add_message("user", "remember this turn")
-            alice.add_message("assistant", "noted")
-            MemoryLifecycle(stores).after_turn(alice)
-
-            rendered = json.dumps(context.messages, ensure_ascii=False)
-            alice_history = stores.for_session(alice).read_history()
-            bob_history = stores.for_session(bob).read_history()
-
-            self.assertIn("alice-only memory", rendered)
-            self.assertNotIn("bob-only memory", rendered)
-            self.assertIn("remember this turn", alice_history)
-            self.assertNotIn("remember this turn", bob_history)
 
     def test_regular_user_cannot_enter_coding_or_see_admin_only_tool(self) -> None:
         user_session = _session("guest")

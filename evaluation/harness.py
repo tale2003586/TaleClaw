@@ -15,12 +15,11 @@ from evaluation.metrics import failure_category, summarize_rows
 from evaluation.session_manager import EvaluationSessionManager
 from evaluation.task_schema import BenchmarkTask, load_benchmark
 from evaluation.verifiers import verify_task
-from memory.store import MemoryStore
 from models.provider import LLMResponse, ToolCall
 from agents.definitions import CODING_AGENT_SPEC
 from plugins import PluginManager
 from plugins.eval_report import EvalReportPlugin
-from runtime.context import ContextBuilder, ContextMemoryService
+from runtime.context import ContextBuilder
 from applications.coding.context_state import build_coding_context_view
 from runtime.runtime import Runtime
 from runtime.trace.run_state import RunState
@@ -222,11 +221,6 @@ class CodingBenchmarkHarness:
                 ToolTraceHook(),
             ]),
             context_builder=ContextBuilder(
-                memory_service=ContextMemoryService(
-                    memory_store=MemoryStore(
-                        eval_dir / "memory" / task.id / "task",
-                    ),
-                ),
                 coding_context_view_builder=build_coding_context_view,
             ),
             max_reasoning_steps=effective_step_budget,
@@ -234,7 +228,6 @@ class CodingBenchmarkHarness:
         runner = CodingApplication(
             sessions=sessions,
             base_pipeline=pipeline,
-            global_memory=MemoryStore(eval_dir / "memory" / task.id / "global"),
             workspace_resolver=WorkspaceResolver(
                 allowed_roots=[workspaces_root],
                 default_workspace=workspace,

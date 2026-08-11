@@ -13,7 +13,6 @@
   "model_returned",
   "reasoning.step.completed",
   "reasoning_loop_completed",
-  "memory.lifecycle.completed",
   "workspace.snapshot.captured",
   "workspace.diff.written",
   "coding_application_completed"

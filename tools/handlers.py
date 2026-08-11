@@ -37,14 +37,12 @@ from agents.subagent.orchestration_state import (
     rejection_response,
     rejection_trace_payload,
 )
-from memory.store import MemoryStore
 from runtime.workspace import safe_workspace_path, workspace_root_for_session
 from applications.coding.orchestration.protocols import PROTOCOLS
 from skill_runtime import SKILL_LOADER
 from applications.coding.orchestration.task import TASKS
 from user_scope import (
     explicit_user_id_for_session,
-    memory_root_for_session,
     storage_root_for_session,
 )
 
@@ -2998,34 +2996,6 @@ def make_teammate_handlers(name: str, *, artifact_store=None):
         "read_inbox": lambda **kw: _read_structured_inbox(name),
     }
 
-MEMORY = MemoryStore()
-TASK_MEMORY_ROOT = (WORKDIR / ".coding_applications").resolve()
-
-
-def memory_store_for_session(session=None) -> MemoryStore:
-    metadata = getattr(session, "metadata", {}) or {}
-    if metadata.get("kind") != "coding_application":
-        if explicit_user_id_for_session(session) is None:
-            return MEMORY
-        return MemoryStore(memory_root_for_session(WORKDIR, session))
-
-    task_id = str(metadata.get("task_id", "")).strip()
-    if not task_id:
-        raise ValueError("Task session is missing task_id metadata.")
-
-    configured_root = metadata.get("memory_root")
-    if configured_root:
-        root = Path(str(configured_root))
-        if not root.is_absolute():
-            root = WORKDIR / root
-        root = root.resolve()
-    else:
-        root = (TASK_MEMORY_ROOT / task_id / "memory").resolve()
-    if not root.is_relative_to(TASK_MEMORY_ROOT):
-        raise ValueError("Task memory root escapes .coding_applications.")
-    return MemoryStore(root)
-
-
 SEMANTIC_MEMORY_COMMAND_SERVICE = None
 SEMANTIC_MEMORY_RETRIEVAL_SERVICE = None
 SEMANTIC_MEMORY_INDEX_SYNCHRONIZER = None
@@ -3045,18 +3015,15 @@ def configure_semantic_memory_services(
     SEMANTIC_MEMORY_INDEX_SYNCHRONIZER = index_synchronizer
 
 
-def _is_coding_memory_session(session) -> bool:
-    metadata = getattr(session, "metadata", {}) or {}
-    return metadata.get("kind") == "coding_application"
-
-
 def run_memorize(*, content: str, section: str = "memory", _session=None) -> str:
-    if SEMANTIC_MEMORY_COMMAND_SERVICE is not None and not _is_coding_memory_session(_session):
-        if str(section or "memory").lower() != "memory":
-            return (
-                "Error: semantic memory no longer accepts file sections; "
-                "use durable memory content with section=memory."
-            )
+    if str(section or "memory").lower() != "memory":
+        return (
+            "Error: semantic memory does not accept file sections; "
+            "use durable memory content with section=memory."
+        )
+    if SEMANTIC_MEMORY_COMMAND_SERVICE is None:
+        return "Durable memory is not enabled."
+    if SEMANTIC_MEMORY_COMMAND_SERVICE is not None:
         from memory.commands import MemoryContext, MemoryWriteProposal
         from memory.domain import (
             MemoryEvidence,
@@ -3097,11 +3064,11 @@ def run_memorize(*, content: str, section: str = "memory", _session=None) -> str
         _queue_memory_trace_events(_session, SEMANTIC_MEMORY_COMMAND_SERVICE)
         _queue_memory_trace_events(_session, SEMANTIC_MEMORY_INDEX_SYNCHRONIZER)
         return f"Saved semantic memory {item.id} ({item.status.value})."
-    return memory_store_for_session(_session).append(section, content)
+    return "Durable memory is not enabled."
 
 
 def run_recall_memory(*, query: str | None = None, _session=None) -> str:
-    if SEMANTIC_MEMORY_RETRIEVAL_SERVICE is not None and not _is_coding_memory_session(_session):
+    if SEMANTIC_MEMORY_RETRIEVAL_SERVICE is not None:
         from memory.commands import MemoryContext
 
         result = SEMANTIC_MEMORY_RETRIEVAL_SERVICE.retrieve(
@@ -3111,7 +3078,7 @@ def run_recall_memory(*, query: str | None = None, _session=None) -> str:
         _queue_memory_trace_events(_session, SEMANTIC_MEMORY_RETRIEVAL_SERVICE)
         rendered = SEMANTIC_MEMORY_RETRIEVAL_SERVICE.render(result)
         return rendered or "No relevant memory found."
-    return memory_store_for_session(_session).recall(query)
+    return "Durable memory retrieval is not enabled."
 
 
 def _queue_memory_trace_events(session, service) -> None:

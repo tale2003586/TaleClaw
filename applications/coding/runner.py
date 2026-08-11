@@ -5,7 +5,6 @@ from typing import Any
 from runtime.context import (
     ArtifactStore,
     ContextBuilder,
-    ContextMemoryService,
     EventCompactor,
     LongContentDetector,
     PromptAssetsService,
@@ -43,12 +42,10 @@ from config import (
     LONG_CONTENT_MAX_TOKENS,
     WORKDIR,
 )
-from memory.store import MemoryStore
 from memory.commands import MemoryContext
 from runtime.sessions import SessionManager
 from .artifacts import TaskArtifactPaths, TaskArtifactWriter
 from .conclusions import TaskConclusionExtractor
-from .memory_lifecycle import TaskMemoryLifecycle
 from .promotion import TaskMemoryPromoter, PromotionResult
 from .session import TaskSessionFactory, TaskSessionRecord
 from .context_contributor import CodingRuntimeContributor
@@ -63,7 +60,6 @@ class CodingApplication:
         *,
         sessions: SessionManager,
         base_pipeline: Runtime,
-        global_memory: MemoryStore,
         workspace_root=None,
         workspace_resolver: WorkspaceResolver | None = None,
         semantic_memory_command_service=None,
@@ -72,7 +68,6 @@ class CodingApplication:
     ) -> None:
         self.sessions = sessions
         self.base_pipeline = base_pipeline
-        self.global_memory = global_memory
         self.semantic_memory_command_service = semantic_memory_command_service
         self.artifact_store = artifact_store or ArtifactStore(CONTEXT_ARTIFACT_ROOT)
         self.long_content_detector = long_content_detector or LongContentDetector(
@@ -128,7 +123,6 @@ class CodingApplication:
         user_text = externalized["content"]
         request_artifact_refs = externalized["artifact_refs"]
         original_request_ref = externalized["event_ref"]
-        global_memory = self._global_memory_for(parent_session)
         workspace = self.workspace_resolver.resolve(
             workspace_root,
             session=parent_session,
@@ -197,20 +191,11 @@ class CodingApplication:
                 "file_count": len(workspace_before.files),
                 "skipped_count": len(workspace_before.skipped),
             })
-        task_memory = MemoryStore(record.memory_root)
-        self._seed_task_memory(
-            task_memory=task_memory,
-            parent_session_id=parent_session.id,
-            original_request_ref=original_request_ref,
-            artifact_refs=request_artifact_refs,
-            session_handoff=session_handoff,
-        )
         record.session.add_message(
             "user",
             self._build_task_request(
                 parent_session.id,
                 user_text,
-                global_memory,
                 workspace=workspace,
                 session_handoff=session_handoff,
             ),
@@ -223,7 +208,6 @@ class CodingApplication:
         )
 
         task_pipeline = self._build_task_pipeline(
-            task_memory,
             max_reasoning_steps=_task_reasoning_budget(
                 user_text,
                 default_steps=getattr(self.base_pipeline, "max_reasoning_steps", 24),
@@ -259,11 +243,9 @@ class CodingApplication:
             messages=record.session.messages,
         )
         promotion = TaskMemoryPromoter(
-            global_memory,
             command_service=self.semantic_memory_command_service,
         ).promote(
             task_id=record.task_id,
-            task_memory=task_memory,
             extracted_conclusions=extraction.candidates,
             memory_context=(
                 MemoryContext.from_session(record.session)
@@ -353,7 +335,6 @@ class CodingApplication:
         return self._format_parent_reply(record, reply, promotion, artifacts)
     def _build_task_pipeline(
         self,
-        task_memory: MemoryStore,
         *,
         max_reasoning_steps: int | None = None,
     ) -> Runtime:
@@ -364,20 +345,15 @@ class CodingApplication:
                 budgeter=context_budgeter,
                 skill_loader=SKILL_LOADER,
             ),
-            memory_service=ContextMemoryService(
-                memory_store=task_memory,
-            ),
             coding_context_view_builder=partial(
                 build_coding_context_view,
                 event_compactor=self.event_compactor,
             ),
             context_providers=DEFAULT_CONTEXT_PROVIDERS,
         )
-        memory_lifecycle = TaskMemoryLifecycle(task_memory)
         if hasattr(self.base_pipeline, "fork"):
             return self.base_pipeline.fork(
                 context_builder=context_builder,
-                memory_lifecycle=memory_lifecycle,
                 max_reasoning_steps=max_reasoning_steps,
                 execution_policy_factory=standard_execution_policies,
             )
@@ -387,58 +363,24 @@ class CodingApplication:
             model=self.base_pipeline.model,
             tool_executor=self.base_pipeline.tool_executor,
             context_builder=context_builder,
-            memory_lifecycle=memory_lifecycle,
             max_reasoning_steps=max_reasoning_steps or self.base_pipeline.max_reasoning_steps,
             execution_policy_factory=standard_execution_policies,
-        )
-
-    def _seed_task_memory(
-        self,
-        *,
-        task_memory: MemoryStore,
-        parent_session_id: str,
-        original_request_ref: str,
-        artifact_refs: list[dict[str, Any]],
-        session_handoff,
-    ) -> None:
-        task_memory.append("now", f"Parent session: {parent_session_id}")
-        if original_request_ref:
-            task_memory.append("now", f"Task request event: {original_request_ref}")
-        for ref in artifact_refs:
-            uri = str(ref.get("storage_uri") or ref.get("artifact_id") or "")
-            if uri:
-                task_memory.append("now", f"Task source artifact: {uri}")
-        task_memory.append(
-            "memory",
-            "This task session may read global context but should only write durable "
-            "findings to task-local memory. Useful findings are promoted after completion.",
-        )
-        task_memory.write_recent_context(
-            f"- parent_session: `{parent_session_id}`\n"
-            f"- task_request_ref: `{original_request_ref or '(pending event id)'}`\n"
-            f"- handoff_recent_turns: {len(session_handoff.recent_turns)}\n"
-            f"- handoff_has_prior_summary: {bool(session_handoff.prior_summary.strip())}"
         )
 
     def _build_task_request(
         self,
         parent_session_id: str,
         user_text: str,
-        global_memory: MemoryStore,
         *,
         workspace,
         session_handoff,
     ) -> str:
-        global_memory_text = global_memory.read_all()
         workspace_root = str(workspace.root)
         workspace_display = str(getattr(workspace, "display_name", "") or workspace_root)
         return (
             f"<task-session parent_session=\"{parent_session_id}\">\n"
             "You are running in an isolated coding task session. "
-            "Use the task-local context for intermediate work. "
-            "Only durable project conventions or important findings should be memorized. "
-            "When you discover a reusable project conclusion, call memorize with "
-            "section='pending' so it can be reviewed for global promotion.\n"
+            "Task progress is owned by TaskState and transient evidence stays in session context.\n"
             "</task-session>\n\n"
             f"<coding-workspace root=\"{workspace_root}\" display=\"{workspace_display}\">\n"
             "All file tools use paths relative to this workspace. "
@@ -455,9 +397,6 @@ class CodingApplication:
             "and answer from the evidence already available unless one targeted follow-up "
             "read is necessary.\n"
             "</execution-guidance>\n\n"
-            "<global-memory-snapshot>\n"
-            f"{global_memory_text}\n"
-            "</global-memory-snapshot>\n\n"
             f"User coding task:\n{user_text}"
         )
 
@@ -517,11 +456,6 @@ class CodingApplication:
             "event_ref": event_ref,
         }
 
-    def _global_memory_for(self, session) -> MemoryStore:
-        if hasattr(self.global_memory, "for_session"):
-            return self.global_memory.for_session(session)
-        return self.global_memory
-
     def _format_parent_reply(
         self,
         record: TaskSessionRecord,
@@ -538,11 +472,7 @@ class CodingApplication:
         if promotion.promoted:
             lines.extend([
                 "",
-                (
-                    f"Submitted {len(promotion.promoted)} governed project memory candidate(s)."
-                    if self.semantic_memory_command_service is not None
-                    else f"Promoted {len(promotion.promoted)} task memory item(s) to global PENDING.md."
-                ),
+                f"Submitted {len(promotion.promoted)} durable project conclusion(s).",
             ])
         if promotion.skipped:
             lines.extend([

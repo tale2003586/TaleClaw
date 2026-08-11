@@ -14,9 +14,15 @@ from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
 from runtime.sessions.session import Session
 
 
-class _MemoryStore:
-    def recall(self, request: str) -> str:
+class _MemoryRetriever:
+    def retrieve(self, request, context):
         return f"memory for {request}"
+
+    def render(self, result):
+        return f"<memory>\n{result}\n</memory>"
+
+    def drain_trace_events(self):
+        return []
 
 
 def test_context_builder_delegates_prompt_assets_and_memory_rendering():
@@ -55,7 +61,7 @@ def test_explicit_prompt_assets_service_preserves_instruction_rendering(
 
 def test_explicit_memory_service_preserves_durable_memory_only():
     service = ContextMemoryService(
-        memory_store=_MemoryStore(),
+        semantic_memory_retriever=_MemoryRetriever(),
     )
     builder = ContextBuilder(
         context_providers=DEFAULT_CONTEXT_PROVIDERS,

@@ -11,9 +11,8 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from applications.coding.runner import CodingApplication
-from memory.store import MemoryStore
 from agents.definitions import CODING_AGENT_SPEC
-from runtime.context import ContextBuilder, ContextMemoryService
+from runtime.context import ContextBuilder
 from applications.coding.context_state import build_coding_context_view
 from runtime.runtime import Runtime
 from runtime.trace.run_state import RunState
@@ -301,11 +300,6 @@ def run_swebench_instance(
             ToolTraceHook(),
         ]),
         context_builder=ContextBuilder(
-            memory_service=ContextMemoryService(
-                memory_store=MemoryStore(
-                    eval_dir / "memory" / instance.instance_id / "task",
-                ),
-            ),
             coding_context_view_builder=build_coding_context_view,
         ),
         max_reasoning_steps=max(1, int(max_reasoning_steps)),
@@ -313,7 +307,6 @@ def run_swebench_instance(
     runner = CodingApplication(
         sessions=sessions,
         base_pipeline=pipeline,
-        global_memory=MemoryStore(eval_dir / "memory" / instance.instance_id / "global"),
         workspace_resolver=WorkspaceResolver(
             allowed_roots=[workspace_parent],
             default_workspace=workspace,

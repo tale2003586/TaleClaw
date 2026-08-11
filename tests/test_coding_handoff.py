@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 from applications.coding.runner import CodingApplication
 from applications.coding.session import TaskSessionFactory
-from memory.store import MemoryStore
 from models.provider import LLMResponse
 from applications.turn_coordinator import TurnCoordinator as AgentLoop
 from applications.coding.handoff import (
@@ -128,7 +127,6 @@ class CodingSessionHandoffTests(unittest.TestCase):
                     tool_executor=object(),
                     max_tokens=8000,
                 ),
-                global_memory=MemoryStore(root / "memory"),
                 workspace_root=root,
             )
             runner.factory = TaskSessionFactory(sessions, root=root / ".coding_applications")
