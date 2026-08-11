@@ -163,17 +163,5 @@ class MemoryScopeTests(unittest.TestCase):
             self.assertIn("memory.index.completed", event_names)
             self.assertIn("memory.semantic.retrieved", event_names)
 
-    def test_semantic_memorize_rejects_legacy_file_section(self) -> None:
-        handlers.configure_semantic_memory_services(
-            command_service=MemoryCommandService(InMemoryMemoryRepository()),
-        )
-        result = handlers.run_memorize(
-            content="temporary state",
-            section="now",
-            _session=Session(id="web:default"),
-        )
-
-        self.assertIn("does not accept file sections", result)
-
 if __name__ == "__main__":
     unittest.main()

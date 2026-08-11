@@ -1329,14 +1329,6 @@ MEMORY_TOOLS = [
                 "type": "string",
                 "description": "The memory content to save.",
             },
-            "section": {
-                "type": "string",
-                "enum": ["memory", "self", "now", "pending"],
-                "description": (
-                    "Deprecated compatibility parameter. Normal sessions must use memory; "
-                    "Coding task-local pending remains temporarily supported."
-                ),
-            },
         },
         ["content"],
     ),

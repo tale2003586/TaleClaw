@@ -3015,12 +3015,7 @@ def configure_semantic_memory_services(
     SEMANTIC_MEMORY_INDEX_SYNCHRONIZER = index_synchronizer
 
 
-def run_memorize(*, content: str, section: str = "memory", _session=None) -> str:
-    if str(section or "memory").lower() != "memory":
-        return (
-            "Error: semantic memory does not accept file sections; "
-            "use durable memory content with section=memory."
-        )
+def run_memorize(*, content: str, _session=None) -> str:
     if SEMANTIC_MEMORY_COMMAND_SERVICE is None:
         return "Durable memory is not enabled."
     if SEMANTIC_MEMORY_COMMAND_SERVICE is not None:
