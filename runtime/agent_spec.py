@@ -132,9 +132,5 @@ class AgentSpec:
         )
 
     @property
-    def system_prompt(self) -> str:
-        return self.instructions
-
-    @property
     def tool_mode(self) -> str:
         return str(getattr(self.tool_set, "mode", "bot") or "bot")

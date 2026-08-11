@@ -50,7 +50,6 @@ from .promotion import TaskMemoryPromoter, PromotionResult
 from .session import TaskSessionFactory, TaskSessionRecord
 from .context_contributor import CodingRuntimeContributor
 from user_scope import explicit_user_id_for_session, user_role_for_session
-from skill_runtime import SKILL_LOADER
 
 
 class CodingApplication:
@@ -340,7 +339,6 @@ class CodingApplication:
             budgeter=context_budgeter,
             prompt_assets_service=PromptAssetsService(
                 budgeter=context_budgeter,
-                skill_loader=SKILL_LOADER,
             ),
             coding_context_view_builder=partial(
                 build_coding_context_view,

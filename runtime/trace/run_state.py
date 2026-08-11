@@ -34,7 +34,7 @@ class RunState:
     final_answer: str | None = None
     error: str | None = None
     intent: str = ""
-    profile: str = ""
+    agent: str = ""
     metadata: dict = field(default_factory=dict)
 
     @classmethod
@@ -49,7 +49,7 @@ class RunState:
         mode: str = "",
         execution_path: str = "",
         intent: str = "",
-        profile: str = "",
+        agent: str = "",
         metadata: dict | None = None,
         run_id: str | None = None,
     ) -> "RunState":
@@ -63,7 +63,7 @@ class RunState:
             mode=mode,
             execution_path=execution_path,
             intent=intent,
-            profile=profile,
+            agent=agent,
             metadata=dict(metadata or {}),
         )
 
@@ -76,12 +76,12 @@ class RunState:
         mode: str,
         execution_path: str,
         intent: str = "",
-        profile: str = "",
+        agent: str = "",
     ) -> None:
         self.mode = mode
         self.execution_path = execution_path
         self.intent = intent
-        self.profile = profile
+        self.agent = agent
 
     def record_reasoning_step(self, step: int | None = None) -> None:
         if step is None:

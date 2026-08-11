@@ -206,7 +206,7 @@ class TurnCoordinator:
             mode=session.active_agent,
             execution_path=route.execution,
             intent=route.intent,
-            profile=route.agent_spec.name,
+            agent=route.agent_spec.name,
         )
         self._trace(run_state, "route_selected", {
             "intent": route.intent,

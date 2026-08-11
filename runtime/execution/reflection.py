@@ -19,7 +19,7 @@ class ReflectionDecision:
 class ReflectionContext:
     session_id: str
     agent_name: str
-    profile_name: str
+    spec_name: str
     tool_mode: str
     reasoning_steps: int
     unavailable_tools: tuple[str, ...]
@@ -50,7 +50,7 @@ class ReflectionAgent:
         self,
         *,
         session,
-        profile,
+        agent_spec,
         response,
         execution,
         reasoning_steps: int,
@@ -69,7 +69,7 @@ class ReflectionAgent:
         self,
         *,
         session,
-        profile,
+        agent_spec,
         response,
         execution,
         reasoning_steps: int,
@@ -77,8 +77,8 @@ class ReflectionAgent:
         context = ReflectionContext(
             session_id=str(getattr(session, "id", "")),
             agent_name=str((getattr(session, "metadata", {}) or {}).get("kind", "agent")),
-            profile_name=str(getattr(profile, "name", "")),
-            tool_mode=str(getattr(profile, "tool_mode", "")),
+            spec_name=str(getattr(agent_spec, "name", "")),
+            tool_mode=str(getattr(agent_spec, "tool_mode", "")),
             reasoning_steps=reasoning_steps,
             unavailable_tools=tuple(execution.unavailable_tools),
             loop_guard_denied=execution.loop_guard_denied,

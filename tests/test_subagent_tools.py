@@ -161,7 +161,7 @@ class SubagentToolTests(unittest.TestCase):
                 mode="coding",
             ),
         )
-        self.assertIn("Build a deterministic file map first with repo_map", CODING_AGENT_SPEC.system_prompt)
+        self.assertIn("Use rg/list_files/read_file", CODING_AGENT_SPEC.instructions)
 
     def test_task_handler_invokes_configured_runner(self) -> None:
         fake_runner = FakeRunner()

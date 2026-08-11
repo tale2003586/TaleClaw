@@ -24,7 +24,6 @@ from runtime.context import (
 from runtime.context.budget import ContextBudgeter
 from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
 from runtime.context.retrieval import ContextRetrievalService
-from skill_runtime import SKILL_LOADER
 from applications.coding.context_state import build_coding_context_view
 from runtime.context.snapshots import EventCompactor
 from models.model_task_runner import ModelTaskRunner
@@ -236,7 +235,6 @@ def build_runtime() -> AppRuntime:
         budgeter=context_budgeter,
         prompt_assets_service=PromptAssetsService(
             budgeter=context_budgeter,
-            skill_loader=SKILL_LOADER,
         ),
         memory_service=ContextMemoryService(
             semantic_memory_retriever=(

@@ -64,7 +64,7 @@ def _render_report(
         f"- Mode: `{_value(run_state.get('mode'))}`",
         f"- Execution Path: `{_value(run_state.get('execution_path'))}`",
         f"- Intent: `{_value(run_state.get('intent'))}`",
-        f"- Profile: `{_value(run_state.get('profile'))}`",
+        f"- Agent: `{_value(run_state.get('agent'))}`",
         f"- User: `{_value(run_state.get('user_id'))}` ({_value(run_state.get('user_role'))})",
         f"- Session: `{_value(run_state.get('session_id'))}`",
         f"- Started: {_value(run_state.get('started_at'))}",
@@ -99,7 +99,7 @@ def _render_report(
         "",
         f"- Intent: `{_value(route.get('intent'))}`",
         f"- Execution: `{_value(route.get('execution'))}`",
-        f"- Profile: `{_value(route.get('profile'))}`",
+        f"- Agent: `{_value(route.get('agent'))}`",
         f"- Tool Mode: `{_value(route.get('tool_mode'))}`",
         f"- Confidence: {_value(route.get('confidence'))}",
         f"- Reason: {_value(route.get('reason'))}",
@@ -235,7 +235,7 @@ def _error_section(run_state: dict[str, Any], events: list[dict[str, Any]]) -> s
             for attempt in attempts:
                 lines.append(
                     "- "
-                    f"profile=`{_value(attempt.get('profile'))}`, "
+                    f"model_profile=`{_value(attempt.get('profile'))}`, "
                     f"provider=`{_value(attempt.get('provider'))}`, "
                     f"model=`{_value(attempt.get('model'))}`, "
                     f"status=`{_value(attempt.get('status'))}`"

@@ -46,7 +46,7 @@ class TeammateContextBuilder:
                 "metadata": {"kind": "teammate_inbox"},
             })
         return ContextBundle(messages=[
-            {"role": "system", "content": agent_spec.system_prompt},
+            {"role": "system", "content": agent_spec.instructions},
             *session.messages,
         ])
 

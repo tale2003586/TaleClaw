@@ -82,15 +82,15 @@ def test_evaluator_does_not_mutate_input_and_is_deterministic() -> None:
 def test_observation_adds_report_metadata_without_changing_prompt() -> None:
     session = Session(id="pressure:observation")
     session.add_message("user", "keep this prompt identical")
-    profile = SimpleNamespace(system_prompt="system", tool_mode="bot")
+    agent_spec = SimpleNamespace(instructions="system", tool_mode="bot")
 
     disabled = ContextBuilder(pressure_observation_enabled=False).build(
         session=session,
-        profile=profile,
+        agent_spec=agent_spec,
     )
     enabled = ContextBuilder(pressure_observation_enabled=True).build(
         session=session,
-        profile=profile,
+        agent_spec=agent_spec,
     )
 
     assert enabled.messages == disabled.messages

@@ -14,13 +14,13 @@ from typing import Any, Callable, Protocol, runtime_checkable
 class ContextPort(Protocol):
     def build_prefix(
         self,
-        profile: Any,
+        agent_spec: Any,
         *,
         session: Any,
         active_turn_start_index: int | None,
     ) -> Any: ...
 
-    def build(self, *, session: Any, profile: Any, **kwargs: Any) -> Any: ...
+    def build(self, *, session: Any, agent_spec: Any, **kwargs: Any) -> Any: ...
 
 
 @runtime_checkable

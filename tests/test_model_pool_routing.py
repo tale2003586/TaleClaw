@@ -218,7 +218,6 @@ class RoutedModelProviderTests(unittest.TestCase):
 
         provider, model = runner._provider_and_model(
             None,
-            None,
             SimpleNamespace(model_purpose="chat"),
             run_context=SimpleNamespace(
                 state=RunExecutionState(model_profile="selected")
@@ -556,7 +555,7 @@ class FakeTools:
 
 
 class FakeContextBuilder:
-    def build_prefix(self, profile, *, session, active_turn_start_index):
+    def build_prefix(self, agent_spec, *, session, active_turn_start_index):
         return None
 
     def build(self, **kwargs):

@@ -56,7 +56,7 @@ def test_explicit_retrieval_service_preserves_history_context():
 
     context = builder.build(
         session=session,
-        profile=SimpleNamespace(system_prompt="system", tool_mode="bot"),
+        agent_spec=SimpleNamespace(instructions="system", tool_mode="bot"),
     )
 
     assert "<episodic_history" in context.messages[-2]["content"]

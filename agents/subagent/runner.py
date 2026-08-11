@@ -260,8 +260,6 @@ class TaskSubagentRunner:
             kwargs.update({
                 "budgeter": base_builder.budgeter,
                 "prompt_assets_service": base_builder.prompt_assets_service,
-                "memory_service": base_builder.memory_service,
-                "retrieval_service": base_builder.retrieval_service,
                 "pressure_observation_enabled": base_builder.pressure_observation_enabled,
                 "injection_trace_enabled": base_builder.injection_trace_enabled,
             })
@@ -285,7 +283,7 @@ class TaskSubagentRunner:
         try:
             context = runtime.agent_runner.context_builder.build(
                 session=session,
-                profile=agent_spec,
+                agent_spec=agent_spec,
                 include_security_knowledge=False,
             )
             provider, model = runtime.provider_and_model_for("summary")

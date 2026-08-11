@@ -38,9 +38,7 @@ def test_context_builder_delegates_prompt_assets_and_memory_rendering():
 def test_explicit_prompt_assets_service_preserves_instruction_rendering(
     tmp_path: Path,
 ):
-    agent_dir = tmp_path / ".agent"
-    agent_dir.mkdir()
-    (agent_dir / "assistant.md").write_text("service instruction", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("service instruction", encoding="utf-8")
     budgeter = ContextBudgeter.from_env()
     service = PromptAssetsService(
         budgeter=budgeter,
@@ -53,7 +51,7 @@ def test_explicit_prompt_assets_service_preserves_instruction_rendering(
 
     context = builder.build(
         session=Session(id="phase16:assets"),
-        profile=SimpleNamespace(system_prompt="base", tool_mode="bot"),
+        agent_spec=SimpleNamespace(instructions="base", tool_mode="coding"),
     )
 
     assert "service instruction" in context.messages[0]["content"]
@@ -72,7 +70,7 @@ def test_explicit_memory_service_preserves_durable_memory_only():
 
     context = builder.build(
         session=session,
-        profile=SimpleNamespace(system_prompt="base", tool_mode="bot"),
+        agent_spec=SimpleNamespace(instructions="base", tool_mode="bot"),
     )
 
     rendered = "\n".join(str(message.get("content", "")) for message in context.messages)

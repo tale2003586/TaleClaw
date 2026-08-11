@@ -30,7 +30,6 @@ def _builder(**kwargs):
         context_providers=DEFAULT_CONTEXT_PROVIDERS,
         prompt_assets_service=PromptAssetsService(
             budgeter=budgeter,
-            skill_loader=SimpleNamespace(catalog_text=lambda: ""),
         ),
         memory_service=memory_service or ContextMemoryService(),
         **kwargs,
@@ -60,10 +59,10 @@ def test_context_policy_can_exclude_history_and_memory_without_prompt_change():
     session.add_message("user", "current request")
     builder = _builder(memory_service=_Memory())
 
-    default = builder.build(session=session, profile=BOT_AGENT_SPEC)
+    default = builder.build(session=session, agent_spec=BOT_AGENT_SPEC)
     restricted = builder.build(
         session=session,
-        profile=BOT_AGENT_SPEC,
+        agent_spec=BOT_AGENT_SPEC,
         context_policy=ContextPolicy(
             name="restricted",
             include_history=False,

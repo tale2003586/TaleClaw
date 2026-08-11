@@ -73,12 +73,8 @@ class LoopGuardReflectionAgent:
         return self.decision
 
 
-def _profile(tool_mode="bot"):
-    return make_agent_spec(
-        name=tool_mode,
-        tool_mode=tool_mode,
-        system_prompt="test profile",
-    )
+def _agent_spec(tool_mode="bot"):
+    return make_agent_spec(tool_mode, "test agent", tool_mode)
 
 
 def _registry():
@@ -252,7 +248,7 @@ class ReflectionAgentTests(unittest.TestCase):
 
         decision = agent.reflect(
             session=Session(id="reflect:test"),
-            profile=_profile("bot"),
+            agent_spec=_agent_spec("bot"),
             response=_final_response(""),
             execution=execution,
             reasoning_steps=3,
@@ -278,7 +274,7 @@ class ReflectionAgentTests(unittest.TestCase):
 
         decision = agent.reflect(
             session=Session(id="reflect:repair"),
-            profile=_profile("bot"),
+            agent_spec=_agent_spec("bot"),
             response=_final_response(""),
             execution=execution,
             reasoning_steps=3,

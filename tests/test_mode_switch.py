@@ -24,7 +24,7 @@ class RecordingSessions:
 
 
 class RejectingRuntime:
-    def run(self, session, profile):
+    def run(self, session, agent_spec):
         raise AssertionError("mode switching must not run the runtime")
 
 

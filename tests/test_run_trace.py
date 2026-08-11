@@ -35,7 +35,7 @@ from tools.spec import ToolInjection, ToolRisk, ToolSpec, ToolStateEffect
 
 
 class ContextBuilder:
-    def build_prefix(self, profile, *, session, active_turn_start_index):
+    def build_prefix(self, agent_spec, *, session, active_turn_start_index):
         return None
 
     def build(self, **kwargs):

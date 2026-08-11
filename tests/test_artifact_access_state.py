@@ -132,7 +132,7 @@ def test_context_reconstructs_artifact_access_summary_after_history_compaction(t
 
     context = ContextBuilder().build(
         session=session,
-        profile=SimpleNamespace(system_prompt="base", tool_mode="bot"),
+        agent_spec=SimpleNamespace(instructions="base", tool_mode="bot"),
     )
 
     rendered = "\n".join(str(item.get("content") or "") for item in context.messages)

@@ -78,7 +78,7 @@ def test_semantic_provider_uses_independent_budget() -> None:
     rendered = MemoryContextProvider().provide(
         builder,
         session=Session(id="web:alice:a", metadata={"user_id": "alice"}),
-        profile=object(),
+        agent_spec=object(),
         current_request="concise",
     )
 

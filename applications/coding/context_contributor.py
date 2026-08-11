@@ -10,8 +10,8 @@ from runtime.messaging.team_bus import BUS
 
 
 class CodingRuntimeContributor:
-    def contribute(self, *, session, profile) -> list[ContextContribution]:
-        if str(getattr(profile, "tool_mode", "") or "") != "coding":
+    def contribute(self, *, session, agent_spec) -> list[ContextContribution]:
+        if str(getattr(agent_spec, "tool_mode", "") or "") != "coding":
             return []
         metadata = getattr(session, "metadata", {}) or {}
         if metadata.get("kind") != "coding_application":

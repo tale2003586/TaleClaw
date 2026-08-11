@@ -16,7 +16,7 @@ class ContextContribution:
 
 
 class ContextContributor(Protocol):
-    def contribute(self, *, session: Any, profile: Any) -> list[ContextContribution]: ...
+    def contribute(self, *, session: Any, agent_spec: Any) -> list[ContextContribution]: ...
 
 
 @dataclass(frozen=True)

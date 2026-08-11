@@ -1,4 +1,4 @@
-"""Prompt instruction and skill catalog loading."""
+"""Optional project instruction loading for coding agents."""
 
 from __future__ import annotations
 
@@ -24,127 +24,61 @@ class PromptAssetsService:
         budgeter,
         instruction_root: str | Path | None = None,
         instruction_limit: int = DEFAULT_INSTRUCTION_LIMIT,
-        skill_loader=None,
     ) -> None:
         self.budgeter = budgeter
         self.instruction_root = Path(instruction_root or Path.cwd()).resolve()
         self.instruction_limit = max(1000, int(instruction_limit))
-        self.skill_loader = skill_loader
 
     def build_instruction_block(
         self,
-        profile,
+        agent_spec,
     ) -> tuple[str, list[ContextSection], list[dict[str, Any]]]:
-        mode = str(getattr(profile, "tool_mode", "bot") or "bot")
-        grouped: dict[str, list[dict[str, Any]]] = {
-            "mode_instructions": [],
-            "project_instructions": [],
-        }
-        for section_name, path in self.instruction_files(mode):
-            text, raw_text, truncated = self._read_instruction_file(path)
-            if not text:
-                continue
-            grouped[section_name].append({
-                "source": _relative_or_name(path, self.instruction_root),
-                "text": text,
-                "raw_text": raw_text,
-                "truncated": truncated,
-            })
-
-        blocks = []
-        report_sections = []
-        reductions = []
-        for section_name, items in grouped.items():
-            if not items:
-                continue
-            rendered_text = "\n\n".join(item["text"] for item in items)
-            raw_text = "\n\n".join(item["raw_text"] for item in items)
-            budgeted = self.budgeter.apply(
-                section_name,
-                rendered_text,
-                raw_text=raw_text,
-            )
-            if budgeted.reduction is not None:
-                reductions.append(budgeted.reduction)
-            sources = [item["source"] for item in items]
-            blocks.append(
-                f"<instructions section=\"{section_name}\" sources=\"{','.join(sources)}\">\n"
-                f"{budgeted.rendered_text}\n"
-                "</instructions>"
-            )
-            report_sections.append(
-                ContextSection.from_text(
-                    section_name,
-                    budgeted.rendered_text,
-                    raw_text=raw_text,
-                    budget_chars=(
-                        budgeted.budget_chars
-                        if self.budgeter.enabled
-                        else self.instruction_limit * len(items)
-                    ),
-                    truncated=(
-                        any(item["truncated"] for item in items)
-                        or budgeted.truncated
-                    ),
-                    metadata={
-                        "mode": mode,
-                        "sources": sources,
-                        **budgeted.metadata,
-                        "files": [
-                            {
-                                "source": item["source"],
-                                "raw_chars": len(item["raw_text"]),
-                                "rendered_chars": len(item["text"]),
-                                "truncated": bool(item["truncated"]),
-                            }
-                            for item in items
-                        ],
-                    },
-                )
-            )
-        return "\n\n".join(blocks), report_sections, reductions
-
-    def build_skill_catalog_block(self) -> str:
-        descriptions = self._skill_catalog_signature()
-        if (
-            not descriptions
-            or descriptions == "(no skills available)"
-            or descriptions.startswith("error:")
-        ):
-            return ""
-        return (
-            "<skill-catalog>\n"
-            "Use load_skill(name=\"...\") when the user request matches a skill's "
-            "description, triggers, tags, or required workflow. Load only the relevant "
-            "skill body before applying it.\n\n"
-            "Available skills:\n"
-            f"{descriptions.strip()}\n"
-            "</skill-catalog>"
+        mode = str(getattr(agent_spec, "tool_mode", "bot") or "bot")
+        if mode != "coding":
+            return "", [], []
+        path = self.instruction_root / "AGENTS.md"
+        text, raw_text, truncated = self._read_instruction_file(path)
+        if not text:
+            return "", [], []
+        budgeted = self.budgeter.apply(
+            "project_instructions",
+            text,
+            raw_text=raw_text,
         )
+        source = _relative_or_name(path, self.instruction_root)
+        section = ContextSection.from_text(
+            "project_instructions",
+            budgeted.rendered_text,
+            raw_text=raw_text,
+            budget_chars=budgeted.budget_chars,
+            truncated=truncated or budgeted.truncated,
+            metadata={"mode": mode, "sources": [source], **budgeted.metadata},
+        )
+        block = (
+            f"<instructions section=\"project_instructions\" source=\"{source}\">\n"
+            f"{budgeted.rendered_text}\n</instructions>"
+        )
+        reductions = [budgeted.reduction] if budgeted.reduction is not None else []
+        return block, [section], reductions
 
-    def fingerprint(self, profile, *, runtime_guidance: str) -> str:
-        mode = str(getattr(profile, "tool_mode", "bot") or "bot")
+    def fingerprint(self, agent_spec, *, runtime_guidance: str) -> str:
+        mode = str(getattr(agent_spec, "tool_mode", "bot") or "bot")
         payload = {
-            "profile_name": str(getattr(profile, "name", "") or ""),
+            "agent_name": str(getattr(agent_spec, "name", "") or ""),
             "tool_mode": mode,
-            "profile_prompt": str(getattr(profile, "system_prompt", "") or ""),
+            "agent_instructions": str(getattr(agent_spec, "instructions", "") or ""),
             "runtime_guidance": runtime_guidance,
             "instruction_root": str(self.instruction_root),
             "instruction_limit": self.instruction_limit,
             "budgeter_enabled": self.budgeter.enabled,
             "budget_rules": {
                 name: _budget_rule_signature(self.budgeter.rules.get(name))
-                for name in (
-                    "mode_instructions",
-                    "project_instructions",
-                    "skill_catalog",
-                )
+                for name in ("project_instructions",)
             },
             "instruction_files": [
                 _instruction_file_signature(section, path)
                 for section, path in self.instruction_files(mode)
             ],
-            "skill_catalog": self._skill_catalog_signature(),
         }
         encoded = json.dumps(
             payload,
@@ -156,13 +90,8 @@ class PromptAssetsService:
 
     def instruction_files(self, mode: str) -> list[tuple[str, Path]]:
         if mode == "coding":
-            return [
-                ("mode_instructions", self.instruction_root / ".agent" / "coding.md"),
-                ("project_instructions", self.instruction_root / "AGENTS.md"),
-            ]
-        return [
-            ("mode_instructions", self.instruction_root / ".agent" / "assistant.md"),
-        ]
+            return [("project_instructions", self.instruction_root / "AGENTS.md")]
+        return []
 
     def _read_instruction_file(self, path: Path) -> tuple[str, str, bool]:
         if not path.is_file():
@@ -188,15 +117,6 @@ class PromptAssetsService:
             return text, text, False
         rendered = text[: self.instruction_limit].rstrip() + "\n\n...[truncated]"
         return rendered, text, True
-
-    def _skill_catalog_signature(self) -> str:
-        if self.skill_loader is None:
-            return ""
-        try:
-            return str(self.skill_loader.get_descriptions() or "")
-        except Exception as exc:
-            return f"error:{type(exc).__name__}:{exc}"
-
 
 def _relative_or_name(path: Path, root: Path) -> str:
     try:

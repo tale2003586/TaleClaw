@@ -20,28 +20,28 @@ class ReflectionRateLimitTests(unittest.TestCase):
 
         self.assertFalse(agent.should_reflect(
             session=None,
-            profile=None,
+            agent_spec=None,
             response=None,
             execution=execution,
             reasoning_steps=9,
         ))
         self.assertTrue(agent.should_reflect(
             session=None,
-            profile=None,
+            agent_spec=None,
             response=None,
             execution=execution,
             reasoning_steps=10,
         ))
         self.assertFalse(agent.should_reflect(
             session=None,
-            profile=None,
+            agent_spec=None,
             response=None,
             execution=execution,
             reasoning_steps=11,
         ))
         self.assertTrue(agent.should_reflect(
             session=None,
-            profile=None,
+            agent_spec=None,
             response=None,
             execution=execution,
             reasoning_steps=15,
@@ -62,7 +62,7 @@ class ReflectionRateLimitTests(unittest.TestCase):
 
         self.assertTrue(agent.should_reflect(
             session=None,
-            profile=None,
+            agent_spec=None,
             response=None,
             execution=execution,
             reasoning_steps=1,

@@ -111,7 +111,7 @@ class ReasoningLoop:
         self,
         *,
         session,
-        profile,
+        agent_spec,
         build_context: Callable,
         resolve_provider: Callable,
         after_turn: Callable,
@@ -140,7 +140,7 @@ class ReasoningLoop:
                     session,
                     _partial_result_summary(session),
                     reason=StopReason.USER_CANCELLED,
-                    profile=profile,
+                    agent_spec=agent_spec,
                     after_turn=after_turn,
                     on_text=on_text,
                     run_state=run_state,
@@ -166,7 +166,7 @@ class ReasoningLoop:
                         f"({self.max_reasoning_steps})，已触发循环保护。"
                     ),
                     reason=StopReason.HARD_BUDGET_EXCEEDED,
-                    profile=profile,
+                    agent_spec=agent_spec,
                     after_turn=after_turn,
                     on_text=on_text,
                     run_state=run_state,
@@ -188,7 +188,7 @@ class ReasoningLoop:
             )
             self._checkpoint_reasoning_step(
                 session,
-                profile,
+                agent_spec,
                 step=reasoning_steps,
                 phase="started",
                 message_count=len(session.messages),
@@ -224,12 +224,12 @@ class ReasoningLoop:
                 span_id=context_span_id,
                 parent_span_id=step_span_id,
             )
-            resolved_provider = resolve_provider(session, profile)
-            tools_for_turn = self.tools.schemas_for_turn(session, profile.tool_mode)
+            resolved_provider = resolve_provider(session, agent_spec)
+            tools_for_turn = self.tools.schemas_for_turn(session, agent_spec.tool_mode)
             turn_context = _call_build_context(
                 build_context,
                 session,
-                profile,
+                agent_spec,
                 trace_store=trace_store,
                 run_state=run_state,
                 trace_parent_span_id=context_span_id,
@@ -273,7 +273,7 @@ class ReasoningLoop:
             response = self._reasoning_step(
                 session=session,
                 context=turn_context,
-                profile=profile,
+                agent_spec=agent_spec,
                 resolve_provider=resolve_provider,
                 on_text=on_text,
                 run_state=run_state,
@@ -288,7 +288,7 @@ class ReasoningLoop:
                 empty_model_responses += 1
                 self._checkpoint_reasoning_step(
                     session,
-                    profile,
+                    agent_spec,
                     step=reasoning_steps,
                     phase="empty_model_response",
                     message_count=len(session.messages),
@@ -316,7 +316,7 @@ class ReasoningLoop:
                         session,
                         "本轮已停止：模型连续返回空回复且没有工具调用。",
                         reason=StopReason.NON_RETRYABLE_FAILURE,
-                        profile=profile,
+                        agent_spec=agent_spec,
                         after_turn=after_turn,
                         on_text=on_text,
                         run_state=run_state,
@@ -348,7 +348,7 @@ class ReasoningLoop:
             if not response.tool_calls:
                 self._checkpoint_reasoning_step(
                     session,
-                    profile,
+                    agent_spec,
                     step=reasoning_steps,
                     phase="assistant_final",
                     message_count=len(session.messages),
@@ -372,7 +372,7 @@ class ReasoningLoop:
                 })
                 self._complete_shared_task_state(
                     session,
-                    profile,
+                    agent_spec,
                     final_answer=response.content or "",
                 )
                 if execution_state is not None:
@@ -381,7 +381,7 @@ class ReasoningLoop:
                         message=response.content or "",
                         task_state_version=_task_state_version(session),
                     )
-                if _task_mode(profile) and checkpoint_callback is not None:
+                if _task_mode(agent_spec) and checkpoint_callback is not None:
                     checkpoint_callback(session)
                 after_turn(session)
                 return
@@ -389,14 +389,14 @@ class ReasoningLoop:
             execution = self._execute_tool_calls(
                 session,
                 response,
-                profile,
+                agent_spec,
                 run_state=run_state,
                 trace_store=trace_store,
                 reasoning_step=reasoning_steps,
             )
             self._checkpoint_reasoning_step(
                 session,
-                profile,
+                agent_spec,
                 step=reasoning_steps,
                 phase="tools_executed",
                 message_count=len(session.messages),
@@ -431,7 +431,7 @@ class ReasoningLoop:
             if execution.loop_guard_denied:
                 decision = None
                 if execution_state is not None:
-                    provider, model = resolve_provider(session, profile)
+                    provider, model = resolve_provider(session, agent_spec)
                     execution_state.task_state_version = _task_state_version(session)
                     decision = self.recovery_controller.duplicate_tool_call(
                         calls=response.tool_calls,
@@ -468,7 +468,7 @@ class ReasoningLoop:
                     session,
                     "本轮已停止：重复工具调用无法安全恢复。",
                     reason=(decision.reason if decision is not None else StopReason.NO_PROGRESS),
-                    profile=profile,
+                    agent_spec=agent_spec,
                     after_turn=after_turn,
                     on_text=on_text,
                     run_state=run_state,
@@ -489,7 +489,7 @@ class ReasoningLoop:
                             "或让助手使用 `tool_search` 选择当前模式可用的工具。"
                         ),
                         reason=StopReason.TOOL_UNAVAILABLE,
-                        profile=profile,
+                        agent_spec=agent_spec,
                         after_turn=after_turn,
                         on_text=on_text,
                         run_state=run_state,
@@ -502,7 +502,7 @@ class ReasoningLoop:
             if self._apply_reflection(
                 reflection_agent,
                 session=session,
-                profile=profile,
+                agent_spec=agent_spec,
                 response=response,
                 execution=execution,
                 reasoning_steps=reasoning_steps,
@@ -524,11 +524,11 @@ class ReasoningLoop:
     def _complete_shared_task_state(
         self,
         session,
-        profile,
+        agent_spec,
         *,
         final_answer: str,
     ) -> None:
-        if str(getattr(profile, "tool_mode", "") or "") not in {"coding", "teammate"}:
+        if str(getattr(agent_spec, "tool_mode", "") or "") not in {"coding", "teammate"}:
             return
         from runtime.task_state import (
             TaskStateCorePatch,
@@ -563,7 +563,7 @@ class ReasoningLoop:
         *,
         session,
         context,
-        profile,
+        agent_spec,
         resolve_provider: Callable,
         on_text=None,
         run_state=None,
@@ -573,12 +573,12 @@ class ReasoningLoop:
         resolved_provider=None,
         tools_for_turn=None,
     ):
-        provider, model = resolved_provider or resolve_provider(session, profile)
+        provider, model = resolved_provider or resolve_provider(session, agent_spec)
         use_stream = supports_streaming(provider, on_text)
         tools = (
             list(tools_for_turn)
             if tools_for_turn is not None
-            else self.tools.schemas_for_turn(session, profile.tool_mode)
+            else self.tools.schemas_for_turn(session, agent_spec.tool_mode)
         )
         context_messages, dropped_messages = sanitize_context_messages(context.messages)
         context_summary = _context_summary(context_messages, provider=provider)
@@ -708,7 +708,7 @@ class ReasoningLoop:
         self._trace(trace_store, run_state, "model_requested", {
             "model": model,
             "provider": provider_name,
-            "tool_mode": profile.tool_mode,
+            "tool_mode": agent_spec.tool_mode,
             "tool_count": len(tools),
             "tool_names": _tool_names(tools),
             "message_count": len(context_messages),
@@ -724,7 +724,7 @@ class ReasoningLoop:
             {
                 "model": model,
                 "provider": provider_name,
-                "tool_mode": profile.tool_mode,
+                "tool_mode": agent_spec.tool_mode,
                 "tool_count": len(tools),
                 "tool_names": _tool_names(tools),
                 "message_count": len(context_messages),
@@ -748,7 +748,7 @@ class ReasoningLoop:
                 thinking_enabled=bool(
                     getattr(getattr(self, "run_context", None), "state", None)
                     and getattr(self.run_context.state, "thinking_enabled", False)
-                ) or bool(getattr(profile, "thinking_enabled", False)),
+                ) or bool(getattr(agent_spec, "thinking_enabled", False)),
             )
         except Exception as exc:
             route_attempts = getattr(exc, "attempts", None)
@@ -784,7 +784,7 @@ class ReasoningLoop:
             )
             self._checkpoint_reasoning_step(
                 session,
-                profile,
+                agent_spec,
                 step=reasoning_step,
                 phase="model_error",
                 message_count=len(session.messages),
@@ -846,7 +846,7 @@ class ReasoningLoop:
     def _checkpoint_reasoning_step(
         self,
         session,
-        profile,
+        agent_spec,
         *,
         step: int,
         phase: str,
@@ -857,7 +857,7 @@ class ReasoningLoop:
         note: str = "",
         checkpoint_callback: Callable | None = None,
     ) -> None:
-        if not _task_mode(profile):
+        if not _task_mode(agent_spec):
             return
         append_event = getattr(session, "append_event", None)
         if callable(append_event):
@@ -886,7 +886,7 @@ class ReasoningLoop:
         self,
         session,
         response,
-        profile,
+        agent_spec,
         *,
         run_state=None,
         trace_store=None,
@@ -896,12 +896,12 @@ class ReasoningLoop:
         if self._should_auto_parallelize_task_calls(
             tool_calls,
             session=session,
-            mode=profile.tool_mode,
+            mode=agent_spec.tool_mode,
         ):
             return self._execute_auto_parallelized_task_calls(
                 session,
                 tool_calls,
-                profile,
+                agent_spec,
                 run_state=run_state,
                 trace_store=trace_store,
                 reasoning_step=reasoning_step,
@@ -909,12 +909,12 @@ class ReasoningLoop:
         if self._should_auto_batch_read_file_calls(
             tool_calls,
             session=session,
-            mode=profile.tool_mode,
+            mode=agent_spec.tool_mode,
         ):
             return self._execute_auto_batched_read_file_calls(
                 session,
                 tool_calls,
-                profile,
+                agent_spec,
                 run_state=run_state,
                 trace_store=trace_store,
                 reasoning_step=reasoning_step,
@@ -994,7 +994,7 @@ class ReasoningLoop:
                 execution_error = self._tool_execution_error(
                     call.name,
                     session=session,
-                    mode=profile.tool_mode,
+                    mode=agent_spec.tool_mode,
                 )
                 search_budget_denial = self._web_search_budget_denial(
                     session,
@@ -1022,7 +1022,7 @@ class ReasoningLoop:
                             name,
                             args,
                             session=session,
-                            mode=profile.tool_mode,
+                            mode=agent_spec.tool_mode,
                             trace_store=trace_store,
                             run_state=run_state,
                             parent_span_id=span_id,
@@ -1157,7 +1157,7 @@ class ReasoningLoop:
         self,
         session,
         tool_calls: list,
-        profile,
+        agent_spec,
         *,
         run_state=None,
         trace_store=None,
@@ -1209,7 +1209,7 @@ class ReasoningLoop:
                 name,
                 args,
                 session=session,
-                mode=profile.tool_mode,
+                mode=agent_spec.tool_mode,
                 trace_store=trace_store,
                 run_state=run_state,
                 parent_span_id=parent_span_id,
@@ -1322,7 +1322,7 @@ class ReasoningLoop:
         self,
         session,
         tool_calls: list,
-        profile,
+        agent_spec,
         *,
         run_state=None,
         trace_store=None,
@@ -1373,7 +1373,7 @@ class ReasoningLoop:
                 name,
                 args,
                 session=session,
-                mode=profile.tool_mode,
+                mode=agent_spec.tool_mode,
                 trace_store=trace_store,
                 run_state=run_state,
                 parent_span_id=parent_span_id,
@@ -1618,7 +1618,7 @@ class ReasoningLoop:
         message: str,
         *,
         reason: str | StopReason,
-        profile=None,
+        agent_spec=None,
         after_turn: Callable,
         on_text: Callable[[str], None] | None,
         run_state=None,
@@ -1636,7 +1636,7 @@ class ReasoningLoop:
             },
         )
         state = getattr(getattr(self, "run_context", None), "state", None)
-        task_state_version = self._stop_shared_task_state(session, profile, reason_value)
+        task_state_version = self._stop_shared_task_state(session, agent_spec, reason_value)
         if state is not None:
             state.stop_decision = StopDecision(
                 reason=_coerce_stop_reason(reason),
@@ -1649,7 +1649,7 @@ class ReasoningLoop:
                 },
                 task_state_version=task_state_version,
             )
-        if _task_mode(profile) and checkpoint_callback is not None:
+        if _task_mode(agent_spec) and checkpoint_callback is not None:
             checkpoint_callback(session)
         if on_text is not None:
             on_text(message)
@@ -1663,8 +1663,8 @@ class ReasoningLoop:
         })
         after_turn(session)
 
-    def _stop_shared_task_state(self, session, profile, reason: str) -> int | None:
-        if str(getattr(profile, "tool_mode", "") or "") not in {"coding", "teammate"}:
+    def _stop_shared_task_state(self, session, agent_spec, reason: str) -> int | None:
+        if str(getattr(agent_spec, "tool_mode", "") or "") not in {"coding", "teammate"}:
             return None
         from runtime.task_state import (
             TaskStateCorePatch,
@@ -1703,7 +1703,7 @@ class ReasoningLoop:
         reflection_agent,
         *,
         session,
-        profile,
+        agent_spec,
         response,
         execution: ToolExecutionSummary,
         reasoning_steps: int,
@@ -1721,7 +1721,7 @@ class ReasoningLoop:
         should_reflect = getattr(reflection_agent, "should_reflect", None)
         if not force and should_reflect is not None and not should_reflect(
             session=session,
-            profile=profile,
+            agent_spec=agent_spec,
             response=response,
             execution=execution,
             reasoning_steps=reasoning_steps,
@@ -1730,7 +1730,7 @@ class ReasoningLoop:
 
         decision = reflection_agent.reflect(
             session=session,
-            profile=profile,
+            agent_spec=agent_spec,
             response=response,
             execution=execution,
             reasoning_steps=reasoning_steps,
@@ -1753,7 +1753,7 @@ class ReasoningLoop:
                 session,
                 message or reason or "本轮已停止：reflection agent 建议暂停当前流程。",
                 reason=f"reflection_{action}",
-                profile=profile,
+                agent_spec=agent_spec,
                 after_turn=after_turn,
                 on_text=on_text,
                 run_state=run_state,
@@ -1984,8 +1984,8 @@ def _task_state_version(session) -> int | None:
     return getattr(state, "version", None)
 
 
-def _task_mode(profile) -> bool:
-    return str(getattr(profile, "tool_mode", "") or "") in {"coding", "teammate"}
+def _task_mode(agent_spec) -> bool:
+    return str(getattr(agent_spec, "tool_mode", "") or "") in {"coding", "teammate"}
 
 
 def _recovery_error_type(execution: ToolExecutionSummary) -> str:
@@ -2064,10 +2064,10 @@ def _span_prefix(run_state) -> str:
 def _call_build_context(
     build_context,
     session,
-    profile,
+    agent_spec,
     **kwargs,
 ):
-    return build_context(session, profile, **kwargs)
+    return build_context(session, agent_spec, **kwargs)
 
 
 def _int_metadata(session, key: str, default: int) -> int:

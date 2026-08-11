@@ -18,9 +18,9 @@ from tools.spec import ToolSpec
 
 
 class TinyContextBuilder:
-    def build(self, *, session, profile, **kwargs):
+    def build(self, *, session, agent_spec, **kwargs):
         return ContextBundle(messages=[
-            {"role": "system", "content": profile.system_prompt},
+            {"role": "system", "content": agent_spec.instructions},
             *session.messages,
         ])
 
@@ -309,7 +309,7 @@ class SubagentRunnerTests(unittest.TestCase):
 
         context = runner._sub_context_builder().build(
             session=session,
-            profile=agent_spec,
+            agent_spec=agent_spec,
             active_turn_start_index=0,
         )
 

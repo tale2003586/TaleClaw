@@ -114,9 +114,9 @@ class Runtime:
         self.agent_runner.run(
             session=session,
             spec=agent,
-            build_context=lambda session, profile, **trace_kwargs: self._before_reasoning(
+            build_context=lambda session, agent_spec, **trace_kwargs: self._before_reasoning(
                 session,
-                profile,
+                agent_spec,
                 active_turn_start_index=active_turn_start_index,
                 context_prefix=context_prefix,
                 context_policy=agent.context_policy,
@@ -146,13 +146,13 @@ class Runtime:
     def _build_context_prefix(
         self,
         session,
-        profile,
+        agent_spec,
         *,
         active_turn_start_index=None,
     ):
         context_builder = self.agent_runner.context_builder
         return context_builder.build_prefix(
-            profile,
+            agent_spec,
             session=session,
             active_turn_start_index=active_turn_start_index,
         )
@@ -160,7 +160,7 @@ class Runtime:
     def _before_reasoning(
         self,
         session,
-        profile,
+        agent_spec,
         *,
         active_turn_start_index=None,
         context_prefix=None,
@@ -179,10 +179,10 @@ class Runtime:
         include_security_knowledge = not already_used
         contributions: list[ContextContribution] = []
         for contributor in run_context.extensions.context_contributors:
-            contributions.extend(contributor.contribute(session=session, profile=profile))
+            contributions.extend(contributor.contribute(session=session, agent_spec=agent_spec))
         build_kwargs = {
             "session": session,
-            "profile": profile,
+            "agent_spec": agent_spec,
             "active_turn_start_index": active_turn_start_index,
             "include_security_knowledge": include_security_knowledge,
             "contributions": contributions,

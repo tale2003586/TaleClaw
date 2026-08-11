@@ -22,7 +22,7 @@ from tools.tool_registry import build_lead_tool_registry
 
 
 def _profile(mode: str):
-    return SimpleNamespace(system_prompt="base", tool_mode=mode)
+    return SimpleNamespace(instructions="base", tool_mode=mode)
 
 
 def test_chat_context_does_not_create_task_state_core() -> None:
@@ -30,9 +30,9 @@ def test_chat_context_does_not_create_task_state_core() -> None:
     session.add_message("user", "回答 123")
     builder = ContextBuilder()
 
-    first = builder.build(session=session, profile=_profile("bot"))
+    first = builder.build(session=session, agent_spec=_profile("bot"))
     state = load_task_state_core(session)
-    second = builder.build(session=session, profile=_profile("bot"))
+    second = builder.build(session=session, agent_spec=_profile("bot"))
 
     assert state is None
     assert "task_state" not in session.metadata
@@ -44,7 +44,7 @@ def test_hybrid_uses_core_schema_without_coding_phase() -> None:
     registry = build_lead_tool_registry()
     session = Session("hybrid:core", active_agent="hybrid")
     session.add_message("user", "回答问题")
-    ContextBuilder().build(session=session, profile=_profile("hybrid"))
+    ContextBuilder().build(session=session, agent_spec=_profile("hybrid"))
     registry.execute(
         "tool_search",
         {"query": "select:update_task_state"},
@@ -186,7 +186,7 @@ def test_attachment_metadata_is_separate_and_instruction_free(tmp_path) -> None:
 
     session = Session("chat:attachment")
     session.add_message("user", inbound.content, metadata=inbound.metadata)
-    context = ContextBuilder().build(session=session, profile=_profile("bot"))
+    context = ContextBuilder().build(session=session, agent_spec=_profile("bot"))
     rendered = "\n".join(str(item.get("content") or "") for item in context.messages)
     attachment_block = next(
         item["content"] for item in context.messages

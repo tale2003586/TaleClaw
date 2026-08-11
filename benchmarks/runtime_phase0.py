@@ -159,7 +159,6 @@ def runtime_for(responses):
             prompt_assets_service=PromptAssetsService(
                 budgeter=budgeter,
                 instruction_root=ROOT,
-                skill_loader=SimpleNamespace(catalog_text=lambda: ""),
             ),
         ),
         max_tokens=256,
@@ -314,8 +313,8 @@ def subagent_run():
     )
 
 
-def context_sample(profile=PROFILE):
-    session = Session(id="bench:context", active_agent=profile.tool_mode)
+def context_sample(agent_spec=PROFILE):
+    session = Session(id="bench:context", active_agent=agent_spec.tool_mode)
     session.add_message("user", "measure deterministic context")
     budgeter = ContextBudgeter.from_env()
     builder = ContextBuilder(
@@ -324,11 +323,10 @@ def context_sample(profile=PROFILE):
         prompt_assets_service=PromptAssetsService(
             budgeter=budgeter,
             instruction_root=ROOT,
-            skill_loader=SimpleNamespace(catalog_text=lambda: ""),
         ),
         coding_context_view_builder=build_coding_context_view,
     )
-    return builder.build(session=session, profile=profile)
+    return builder.build(session=session, agent_spec=agent_spec)
 
 
 def benchmarks(iterations: int) -> tuple[list[dict], dict]:
@@ -410,14 +408,13 @@ def benchmarks(iterations: int) -> tuple[list[dict], dict]:
                 prompt_assets_service=PromptAssetsService(
                     budgeter=ContextBudgeter.from_env(),
                     instruction_root=ROOT,
-                    skill_loader=SimpleNamespace(catalog_text=lambda: ""),
                 ),
             ).build(
                 session=Session(
                     id="bench:memory",
                     messages=[{"role": "user", "content": "hello"}],
                 ),
-                profile=PROFILE,
+                agent_spec=PROFILE,
             ),
             note="Local in-memory text only; no vector retrieval.",
         ),

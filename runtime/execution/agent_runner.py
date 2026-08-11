@@ -78,12 +78,11 @@ class AgentRunner:
         )
         loop.run(
             session=session,
-            profile=spec,
+            agent_spec=spec,
             build_context=context_builder,
-            resolve_provider=lambda session, profile: self._provider_and_model(
+            resolve_provider=lambda session, agent_spec: self._provider_and_model(
                 session,
-                profile,
-                spec,
+                agent_spec,
                 run_context=run_context,
             ),
             after_turn=turn_finished,
@@ -109,7 +108,6 @@ class AgentRunner:
     def _provider_and_model(
         self,
         session,
-        profile,
         spec: AgentSpec,
         *,
         run_context=None,
@@ -129,10 +127,10 @@ class AgentRunner:
     ):
         if self.model_pool is not None:
             if profile_name:
-                profile = self.model_pool.profile_named(profile_name)
+                model_profile = self.model_pool.profile_named(profile_name)
                 return (
-                    self.model_pool.provider_for_profile(profile.name),
-                    profile.model,
+                    self.model_pool.provider_for_profile(model_profile.name),
+                    model_profile.model,
                 )
             return (
                 self.model_pool.routed_provider(purpose),
@@ -142,10 +140,14 @@ class AgentRunner:
             raise RuntimeError("AgentRunner has no provider or model_pool.")
         return self.provider, self.model
 
-    def _build_context(self, session, profile, **kwargs):
+    def _build_context(self, session, agent_spec, **kwargs):
         if self.context_builder is None:
             raise RuntimeError("AgentRunner has no context_builder.")
-        return self.context_builder.build(session=session, profile=profile, **kwargs)
+        return self.context_builder.build(
+            session=session,
+            agent_spec=agent_spec,
+            **kwargs,
+        )
 
     def _touch_session(self, session) -> None:
         session.touch()

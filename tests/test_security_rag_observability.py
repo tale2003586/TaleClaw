@@ -185,7 +185,7 @@ class SecurityRagObservabilityTests(unittest.TestCase):
             ),
         ).build(
             session=session,
-            profile=SimpleNamespace(system_prompt="base", tool_mode="coding"),
+            agent_spec=SimpleNamespace(instructions="base", tool_mode="coding"),
             trace_store=trace_store,
             run_state=run_state,
             trace_parent_span_id="run-test:context:1",

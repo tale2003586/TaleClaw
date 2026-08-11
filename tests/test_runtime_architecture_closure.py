@@ -51,12 +51,12 @@ class RuntimeArchitectureClosureTests(unittest.TestCase):
     def test_plain_bot_context_does_not_create_task_state(self):
         session = Session(id="chat:plain", active_agent="bot")
         session.add_message("user", "hello")
-        profile = SimpleNamespace(
+        agent_spec = SimpleNamespace(
             name="bot",
             tool_mode="bot",
-            system_prompt="You are helpful.",
+            instructions="You are helpful.",
         )
-        ContextBuilder().build(session=session, profile=profile)
+        ContextBuilder().build(session=session, agent_spec=agent_spec)
         self.assertNotIn("task_state", session.metadata)
 
     def test_plain_bot_reasoning_does_not_create_run_checkpoint(self):

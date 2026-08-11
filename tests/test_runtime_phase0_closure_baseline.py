@@ -75,7 +75,6 @@ def _runtime(tmp_path: Path, provider: ScriptedModel) -> Runtime:
             prompt_assets_service=PromptAssetsService(
                 budgeter=budgeter,
                 instruction_root=tmp_path,
-                skill_loader=SimpleNamespace(catalog_text=lambda: ""),
             ),
         ),
         max_tokens=256,
