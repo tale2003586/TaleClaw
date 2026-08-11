@@ -1,4 +1,7 @@
-# TaleClaw Phase 11：Execution 无状态协作者
+# TaleClaw Phase 11：Execution 无状态协作者（历史）
+
+> 本文记录 Phase 11 当时的实现。Phase 2 aggressive pruning 已删除
+> `tool_batch.py` 及 ReasoningLoop 的隐式 Task/Read 批处理；显式批量工具仍可按需启用。
 
 Phase 11 将 ReasoningLoop 中可以独立验证的纯逻辑提取为：
 

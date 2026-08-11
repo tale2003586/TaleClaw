@@ -313,7 +313,6 @@ class RunTraceTests(unittest.TestCase):
                 "duration_ms": 1,
                 "final_arguments_preview": json.dumps({"tasks": []}),
                 "output_preview": "{}",
-                "subagent_incomplete_count": 2,
             })
             run_state.finish_success("done")
             trace_store.write_run_state(run_state)
@@ -326,7 +325,6 @@ class RunTraceTests(unittest.TestCase):
             self.assertEqual(1, metrics["duplicate_tool_call_count"])
             self.assertEqual(0.3333, metrics["duplicate_tool_call_ratio"])
             self.assertEqual(1, metrics["truncated_tool_output_count"])
-            self.assertEqual(2, metrics["subagent_incomplete_count"])
             self.assertEqual(1, metrics["subagent_fanout_count"])
 
     def test_trace_metrics_include_context_compression_and_file(self) -> None:

@@ -21,26 +21,16 @@ class NoFinishingPolicy:
         return 2**31 - 1
 
 
-class SequentialToolBatchPolicy:
-    def should_parallelize_tasks(self, tool_calls: list, *, available: bool) -> bool:
-        return False
-
-    def should_batch_reads(self, tool_calls: list, *, available: bool) -> bool:
-        return False
-
-
 @dataclass(frozen=True)
 class ExecutionPolicies:
     web_search: object
     finishing: object
-    tool_batch: object
 
     @classmethod
     def minimal(cls, max_reasoning_steps: int = 1) -> "ExecutionPolicies":
         return cls(
             web_search=NoWebSearchPolicy(),
             finishing=NoFinishingPolicy(),
-            tool_batch=SequentialToolBatchPolicy(),
         )
 
 

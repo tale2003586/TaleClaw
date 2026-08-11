@@ -75,7 +75,6 @@ def _render_report(
         f"- Tool Calls: {_value(metrics.get('tool_calls'))} total, {_value(metrics.get('tool_failures'))} failed, {_value(metrics.get('tool_denials'))} denied",
         f"- Duplicate Tool Call Ratio: {_value(metrics.get('duplicate_tool_call_ratio'))}",
         f"- Truncated Tool Outputs: {_value(metrics.get('truncated_tool_output_count'))}",
-        f"- Subagent Incomplete: {_value(metrics.get('subagent_incomplete_count'))}",
         f"- Subagent Fan-out: {_value(metrics.get('subagent_fanout_count'))}",
         f"- Tokens: {_value(metrics.get('total_tokens'))} total ({_value(metrics.get('input_tokens'))} in / {_value(metrics.get('output_tokens'))} out)",
         f"- Sanitized Messages: {_value(metrics.get('sanitized_messages'))}",

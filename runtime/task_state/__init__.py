@@ -17,6 +17,7 @@ from .patch import (
 )
 from .rendering import render_task_state_core_message
 from .service import (
+    TaskStateRunObserver,
     ensure_task_state_core,
     load_task_state_core,
     save_task_state_core,
@@ -30,6 +31,7 @@ __all__ = (
     "TaskProgressItem",
     "TaskStateCore",
     "TaskStateCorePatch",
+    "TaskStateRunObserver",
     "TaskStateValidationError",
     "TaskStatus",
     "apply_task_state_core_patch",

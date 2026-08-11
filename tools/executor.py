@@ -16,6 +16,7 @@ class ToolExecutionRequest:
     session_id: str = ""
     source: str = "passive"
     metadata: dict[str, Any] = field(default_factory=dict)
+    session: Any = None
 
 
 @dataclass

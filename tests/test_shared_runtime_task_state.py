@@ -8,13 +8,17 @@ from applications.coding.task_state import Objective, TaskPhase, TaskState, load
 from applications.coding.task_state import ensure_task_state
 from runtime.context.builder import ContextBuilder
 from runtime.context import ArtifactStore, LongContentDetector
+from runtime.execution.failure_reasons import StopDecision, StopReason
+from runtime.execution.state import RunExecutionState
 from applications.turn_coordinator import TurnCoordinator as AgentLoop
 from runtime.messaging.events import InboundMessage
 from runtime.sessions import Session
 from runtime.task_state import (
+    TaskStateRunObserver,
     TaskStateCorePatch,
     TaskStateValidationError,
     apply_task_state_core_patch,
+    ensure_task_state_core,
     load_task_state_core,
 )
 from runtime.task_state.models import TaskStatus
@@ -126,6 +130,30 @@ def test_core_lifecycle_has_no_task_phase_and_rejects_conflicts_or_terminal_revi
             base_version=completed.version,
             requested_status=TaskStatus.ACTIVE,
         ))
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        (StopReason.COMPLETED, TaskStatus.COMPLETED),
+        (StopReason.USER_CANCELLED, TaskStatus.CANCELLED),
+        (StopReason.HARD_BUDGET_EXCEEDED, TaskStatus.FAILED),
+        (StopReason.TOOL_UNAVAILABLE, TaskStatus.BLOCKED),
+    ],
+)
+def test_task_state_observer_owns_run_status_projection(reason, expected) -> None:
+    session = Session(f"task-observer:{reason}")
+    ensure_task_state_core(session, objective="finish the task")
+    execution = RunExecutionState(
+        stop_decision=StopDecision(reason=reason, message="finished or stopped"),
+    )
+
+    TaskStateRunObserver().after_run(session=session, execution=execution)
+
+    state = load_task_state_core(session)
+    assert state is not None
+    assert state.status is expected
+    assert execution.stop_decision.task_state_version == state.version
 
 
 def test_coding_context_snapshot_does_not_replace_task_state_authority() -> None:

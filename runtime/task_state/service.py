@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from typing import Any, Iterable, Mapping
 
 from .legacy import (
@@ -19,6 +20,63 @@ from .models import (
     task_state_envelope,
     utc_now,
 )
+from .patch import TaskStateCorePatch, apply_task_state_core_patch
+
+
+class TaskStateRunObserver:
+    """Project a generic run decision into optional durable task state."""
+
+    def state_version(self, session: Any) -> int | None:
+        state = load_task_state_core(session)
+        return getattr(state, "version", None)
+
+    def after_run(self, *, session: Any, execution: Any) -> None:
+        decision = getattr(execution, "stop_decision", None)
+        state = load_task_state_core(session)
+        if decision is None or state is None:
+            return
+
+        from runtime.execution.failure_reasons import StopReason
+        from .models import TERMINAL_TASK_STATUSES
+
+        if state.status in TERMINAL_TASK_STATUSES:
+            execution.stop_decision = replace(decision, task_state_version=state.version)
+            return
+        reason = str(decision.reason)
+        if decision.reason is StopReason.COMPLETED:
+            if state.pending_actions or state.blockers or not str(decision.message or "").strip():
+                return
+            patch = TaskStateCorePatch(
+                base_version=state.version,
+                current_focus="",
+                completion_basis_add=[
+                    "A final assistant response was produced with no pending actions or blockers."
+                ],
+                requested_status=TaskStatus.COMPLETED,
+                stop_reason="assistant_final_message",
+            )
+        else:
+            if decision.reason is StopReason.USER_CANCELLED:
+                requested = TaskStatus.CANCELLED
+            elif decision.reason in {
+                StopReason.HARD_BUDGET_EXCEEDED,
+                StopReason.NON_RETRYABLE_FAILURE,
+            }:
+                requested = TaskStatus.FAILED
+            else:
+                requested = TaskStatus.BLOCKED
+            patch = TaskStateCorePatch(
+                base_version=state.version,
+                current_focus="",
+                requested_status=requested,
+                stop_reason=reason,
+            )
+        try:
+            updated = apply_task_state_core_patch(state, patch)
+        except ValueError:
+            return
+        save_task_state_core(session, updated)
+        execution.stop_decision = replace(decision, task_state_version=updated.version)
 
 
 def load_task_state_core(session: Any) -> TaskStateCore | None:

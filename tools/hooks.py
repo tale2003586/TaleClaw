@@ -439,10 +439,62 @@ class ToolResultStoreHook(ToolHook):
                     result.metadata["artifact_ref"] = externalized.artifact_ref.to_dict()
                     result.metadata["artifact_offloaded_chars"] = externalized.assessment.char_count
                     result.metadata["artifact_offloaded_tokens"] = externalized.assessment.token_count
+                    record_tool_result_artifact(
+                        request,
+                        result,
+                        replacement_output=externalized.content,
+                    )
                     return HookOutcome(updated_output=externalized.content)
         except Exception as exc:
             result.metadata["tool_result_store_error"] = str(exc)
         return None
+
+
+def record_tool_result_artifact(
+    request: ToolExecutionRequest,
+    result: ToolExecutionResult,
+    *,
+    replacement_output: str | None = None,
+) -> None:
+    metadata = result.metadata if isinstance(result.metadata, dict) else {}
+    artifact_ref = metadata.get("artifact_ref")
+    session = request.session
+    append_event = getattr(session, "append_event", None)
+    if not isinstance(artifact_ref, dict) or not callable(append_event):
+        return
+
+    from runtime.context.events import ContextEventType
+
+    backfill = getattr(session, "_backfill_legacy_messages", None)
+    if callable(backfill):
+        backfill()
+    append_event(ContextEventType.ARTIFACT_CREATED, {
+        "artifact_ref": dict(artifact_ref),
+        "source": "tool_result",
+        "tool_call_id": str(request.call_id or ""),
+        "tool_name": str(request.tool_name or ""),
+        "status": str(result.status or ""),
+        "related_tool_call_ids": [str(request.call_id)] if request.call_id else [],
+        **{
+            key: metadata[key]
+            for key in ("artifact_offloaded_chars", "artifact_offloaded_tokens")
+            if key in metadata
+        },
+    })
+    session_metadata = getattr(session, "metadata", None)
+    if not isinstance(session_metadata, dict):
+        session_metadata = {}
+        session.metadata = session_metadata
+    metrics = session_metadata.get("context_metrics")
+    if not isinstance(metrics, dict):
+        metrics = {}
+    offloaded_chars = max(0, int(metadata.get("artifact_offloaded_chars") or 0))
+    offloaded_tokens = max(0, int(metadata.get("artifact_offloaded_tokens") or 0))
+    replacement_chars = len(str(replacement_output if replacement_output is not None else result.output or ""))
+    metrics["artifact_offloaded_chars"] = int(metrics.get("artifact_offloaded_chars", 0) or 0) + offloaded_chars
+    metrics["artifact_offloaded_tokens"] = int(metrics.get("artifact_offloaded_tokens", 0) or 0) + offloaded_tokens
+    metrics["duplicate_content_saved_chars"] = int(metrics.get("duplicate_content_saved_chars", 0) or 0) + max(0, offloaded_chars - replacement_chars)
+    session_metadata["context_metrics"] = metrics
 
 
 def _absolute_cd_targets(command: str) -> list[str]:

@@ -9,7 +9,6 @@ from typing import Callable
 from runtime.execution.policy_set import ExecutionPolicies
 from runtime.execution.recovery import RecoveryAction, RecoveryController
 from runtime.execution.failure_reasons import (
-    INCOMPLETE_STEP_LIMIT_PREFIX,
     StopDecision,
     StopReason,
 )
@@ -18,12 +17,6 @@ from runtime.execution.message_sanitizer import (
     sanitize_context_messages,
 )
 from runtime.execution.model_invocation import invoke_model, supports_streaming
-from runtime.execution.tool_batch import (
-    read_file_call_arguments,
-    split_parallel_task_outputs,
-    split_read_files_outputs,
-    task_call_arguments,
-)
 from config import (
     DYNAMIC_PROMPT_BUDGET_ENABLED,
     PROMPT_COMPACTION_TARGET_RATIO,
@@ -31,7 +24,6 @@ from config import (
     PROMPT_SAFETY_MARGIN_TOKENS,
     PROMPT_SOFT_COMPACTION_RATIO,
 )
-from runtime.context.events import ContextEventType
 from runtime.context.dynamic_budget import (
     PromptBudgetExceeded,
     calculate_dynamic_prompt_budget,
@@ -104,7 +96,6 @@ class ReasoningLoop:
         policies = policies or ExecutionPolicies.minimal(self.max_reasoning_steps)
         self.web_search_policy = policies.web_search
         self.finishing_policy = policies.finishing
-        self.tool_batch_policy = policies.tool_batch
         self.recovery_controller = recovery_controller or RecoveryController()
 
     def run(
@@ -370,17 +361,13 @@ class ReasoningLoop:
                     "step": reasoning_steps,
                     "reason": "assistant_final_message",
                 })
-                self._complete_shared_task_state(
-                    session,
-                    agent_spec,
-                    final_answer=response.content or "",
-                )
                 if execution_state is not None:
                     execution_state.stop_decision = StopDecision(
                         reason=StopReason.COMPLETED,
                         message=response.content or "",
-                        task_state_version=_task_state_version(session),
+                        task_state_version=self._observed_state_version(session),
                     )
+                self._notify_run_observers(session, execution_state)
                 if _task_mode(agent_spec) and checkpoint_callback is not None:
                     checkpoint_callback(session)
                 after_turn(session)
@@ -432,7 +419,7 @@ class ReasoningLoop:
                 decision = None
                 if execution_state is not None:
                     provider, model = resolve_provider(session, agent_spec)
-                    execution_state.task_state_version = _task_state_version(session)
+                    execution_state.task_state_version = self._observed_state_version(session)
                     decision = self.recovery_controller.duplicate_tool_call(
                         calls=response.tool_calls,
                         specs=[
@@ -520,43 +507,6 @@ class ReasoningLoop:
                     "step": reasoning_steps,
                     "handled_by": "context_budget",
                 })
-
-    def _complete_shared_task_state(
-        self,
-        session,
-        agent_spec,
-        *,
-        final_answer: str,
-    ) -> None:
-        if str(getattr(agent_spec, "tool_mode", "") or "") not in {"coding", "teammate"}:
-            return
-        from runtime.task_state import (
-            TaskStateCorePatch,
-            apply_task_state_core_patch,
-            load_task_state_core,
-            save_task_state_core,
-        )
-        from runtime.task_state.models import TaskStatus
-
-        state = load_task_state_core(session)
-        if (
-            state is None
-            or state.status != TaskStatus.ACTIVE
-            or state.pending_actions
-            or state.blockers
-            or not str(final_answer or "").strip()
-        ):
-            return
-        patch = TaskStateCorePatch(
-            base_version=state.version,
-            current_focus="",
-            completion_basis_add=[
-                "A final assistant response was produced with no pending actions or blockers."
-            ],
-            requested_status=TaskStatus.COMPLETED,
-            stop_reason="assistant_final_message",
-        )
-        save_task_state_core(session, apply_task_state_core_patch(state, patch))
 
     def _reasoning_step(
         self,
@@ -893,33 +843,6 @@ class ReasoningLoop:
         reasoning_step: int = 0,
     ) -> ToolExecutionSummary:
         tool_calls = list(response.tool_calls or [])
-        if self._should_auto_parallelize_task_calls(
-            tool_calls,
-            session=session,
-            mode=agent_spec.tool_mode,
-        ):
-            return self._execute_auto_parallelized_task_calls(
-                session,
-                tool_calls,
-                agent_spec,
-                run_state=run_state,
-                trace_store=trace_store,
-                reasoning_step=reasoning_step,
-            )
-        if self._should_auto_batch_read_file_calls(
-            tool_calls,
-            session=session,
-            mode=agent_spec.tool_mode,
-        ):
-            return self._execute_auto_batched_read_file_calls(
-                session,
-                tool_calls,
-                agent_spec,
-                run_state=run_state,
-                trace_store=trace_store,
-                reasoning_step=reasoning_step,
-            )
-
         summary = ToolExecutionSummary()
 
         for call in tool_calls:
@@ -1007,6 +930,7 @@ class ReasoningLoop:
                     session_id=session.id,
                     source=str((session.metadata or {}).get("kind", "passive")),
                     metadata=session.metadata,
+                    session=session,
                 )
                 if search_budget_denial:
                     started = time.perf_counter()
@@ -1028,12 +952,6 @@ class ReasoningLoop:
                             parent_span_id=span_id,
                         ),
                     )
-                self._append_tool_result_artifact_event(
-                    session,
-                    request=request,
-                    result=result,
-                    related_tool_call_ids=[call.id],
-                )
                 output = self._with_web_search_budget_notice(
                     session,
                     call.name,
@@ -1065,10 +983,6 @@ class ReasoningLoop:
                     "error_message": result.error_message,
                     "metadata": dict(result.metadata or {}),
                     "truncated_output": _tool_output_truncated(output),
-                    "subagent_incomplete_count": _subagent_incomplete_count(
-                        call.name,
-                        output,
-                    ),
                     "pre_hook_trace": [
                         item.__dict__ for item in result.pre_hook_trace
                     ],
@@ -1121,367 +1035,6 @@ class ReasoningLoop:
                 })
         return summary
 
-    def _should_auto_parallelize_task_calls(
-        self,
-        tool_calls: list,
-        *,
-        session,
-        mode: str,
-    ) -> bool:
-        return self.tool_batch_policy.should_parallelize_tasks(
-            tool_calls,
-            available=not self._tool_execution_error(
-                "parallel_tasks",
-                session=session,
-                mode=mode,
-            ),
-        )
-
-    def _should_auto_batch_read_file_calls(
-        self,
-        tool_calls: list,
-        *,
-        session,
-        mode: str,
-    ) -> bool:
-        return self.tool_batch_policy.should_batch_reads(
-            tool_calls,
-            available=not self._tool_execution_error(
-                "read_files",
-                session=session,
-                mode=mode,
-            ),
-        )
-
-    def _execute_auto_parallelized_task_calls(
-        self,
-        session,
-        tool_calls: list,
-        agent_spec,
-        *,
-        run_state=None,
-        trace_store=None,
-        reasoning_step: int = 0,
-    ) -> ToolExecutionSummary:
-        summary = ToolExecutionSummary()
-        parent_span_id = _step_span_id(run_state, reasoning_step)
-        source = str((session.metadata or {}).get("kind", "passive"))
-        call_contexts = []
-        for call in tool_calls:
-            span_id = _tool_span_id(run_state, reasoning_step, call.id)
-            call_contexts.append((call, span_id))
-            self._trace(
-                trace_store,
-                run_state,
-                TOOL_CALL_STARTED,
-                {
-                    "tool_call_id": call.id,
-                    "tool_name": call.name,
-                    "arguments_preview": event_preview(call.arguments),
-                    "source": source,
-                    "auto_parallelized_task_batch": True,
-                    "parallel_task_count": len(tool_calls),
-                },
-                step=reasoning_step,
-                span_id=span_id,
-                parent_span_id=parent_span_id,
-            )
-
-        tasks = [task_call_arguments(call) for call in tool_calls]
-        parallel_arguments = {
-            "tasks": tasks,
-            "max_workers": len(tasks),
-        }
-        request = ToolExecutionRequest(
-            call_id=f"auto_parallel:{getattr(tool_calls[0], 'id', 'task')}",
-            tool_name="parallel_tasks",
-            arguments=parallel_arguments,
-            session_id=session.id,
-            source=source,
-            metadata={
-                **dict(session.metadata or {}),
-                "auto_parallelized_task_batch": True,
-            },
-        )
-        result = self.tool_executor.execute(
-            request,
-            lambda name, args: self.tools.execute(
-                name,
-                args,
-                session=session,
-                mode=agent_spec.tool_mode,
-                trace_store=trace_store,
-                run_state=run_state,
-                parent_span_id=parent_span_id,
-            ),
-        )
-        self._append_tool_result_artifact_event(
-            session,
-            request=request,
-            result=result,
-            related_tool_call_ids=[call.id for call in tool_calls],
-        )
-        outputs = split_parallel_task_outputs(result.output, len(tool_calls))
-        hook_metadata = {
-            **dict(result.metadata or {}),
-            "auto_parallelized_task_batch": True,
-            "parallel_task_count": len(tool_calls),
-        }
-        if _is_loop_guard_denial(result):
-            summary.loop_guard_denied = True
-
-        for index, (call, span_id) in enumerate(call_contexts):
-            output = outputs[index]
-            summary.tool_results.append({
-                "name": call.name,
-                "output": output,
-                "status": result.status,
-                "final_arguments": call.arguments,
-            })
-            if run_state is not None:
-                run_state.record_tool(call.name)
-                if trace_store is not None:
-                    trace_store.write_run_state(run_state)
-            tool_payload = {
-                "tool_call_id": call.id,
-                "tool_name": call.name,
-                "status": result.status,
-                "duration_ms": result.duration_ms,
-                "execution_error": None,
-                "final_arguments_preview": event_preview(call.arguments),
-                "output_preview": event_preview(output),
-                "error_type": result.error_type,
-                "error_message": result.error_message,
-                "metadata": {
-                    **hook_metadata,
-                    "parallel_batch_index": index,
-                },
-                "truncated_output": _tool_output_truncated(output),
-                "subagent_incomplete_count": _subagent_incomplete_count(
-                    call.name,
-                    output,
-                ),
-                "pre_hook_trace": [
-                    item.__dict__ for item in result.pre_hook_trace
-                ],
-                "post_hook_trace": [
-                    item.__dict__ for item in result.post_hook_trace
-                ],
-            }
-            self._trace(
-                trace_store,
-                run_state,
-                (
-                    TOOL_CALL_FAILED
-                    if result.status == "error"
-                    else TOOL_CALL_COMPLETED
-                ),
-                tool_payload,
-                step=reasoning_step,
-                span_id=span_id,
-                parent_span_id=parent_span_id,
-            )
-            self._trace(trace_store, run_state, "tool_executed", {
-                "call_id": call.id,
-                "name": call.name,
-                "status": result.status,
-                "execution_error": None,
-                "final_arguments": call.arguments,
-                "output_preview": event_preview(output),
-                "metadata": {
-                    **hook_metadata,
-                    "parallel_batch_index": index,
-                },
-                "pre_hook_trace": [
-                    item.__dict__ for item in result.pre_hook_trace
-                ],
-                "post_hook_trace": [
-                    item.__dict__ for item in result.post_hook_trace
-                ],
-            })
-            session.messages.append({
-                "role": "tool",
-                "tool_call_id": call.id,
-                "content": output,
-                "status": result.status,
-                "final_arguments": call.arguments,
-                "metadata": {
-                    **hook_metadata,
-                    "parallel_batch_index": index,
-                },
-                "pre_hook_trace": [
-                    item.__dict__ for item in result.pre_hook_trace
-                ],
-                "post_hook_trace": [
-                    item.__dict__ for item in result.post_hook_trace
-                ],
-            })
-        return summary
-
-    def _execute_auto_batched_read_file_calls(
-        self,
-        session,
-        tool_calls: list,
-        agent_spec,
-        *,
-        run_state=None,
-        trace_store=None,
-        reasoning_step: int = 0,
-    ) -> ToolExecutionSummary:
-        summary = ToolExecutionSummary()
-        parent_span_id = _step_span_id(run_state, reasoning_step)
-        source = str((session.metadata or {}).get("kind", "passive"))
-        call_contexts = []
-        for call in tool_calls:
-            span_id = _tool_span_id(run_state, reasoning_step, call.id)
-            call_contexts.append((call, span_id))
-            self._trace(
-                trace_store,
-                run_state,
-                TOOL_CALL_STARTED,
-                {
-                    "tool_call_id": call.id,
-                    "tool_name": call.name,
-                    "arguments_preview": event_preview(call.arguments),
-                    "source": source,
-                    "auto_batched_read_file": True,
-                    "batch_read_count": len(tool_calls),
-                },
-                step=reasoning_step,
-                span_id=span_id,
-                parent_span_id=parent_span_id,
-            )
-
-        batch_arguments = {
-            "files": [read_file_call_arguments(call) for call in tool_calls],
-            "format": "json",
-        }
-        request = ToolExecutionRequest(
-            call_id=f"auto_read_files:{getattr(tool_calls[0], 'id', 'read_file')}",
-            tool_name="read_files",
-            arguments=batch_arguments,
-            session_id=session.id,
-            source=source,
-            metadata={
-                **dict(session.metadata or {}),
-                "auto_batched_read_file": True,
-            },
-        )
-        result = self.tool_executor.execute(
-            request,
-            lambda name, args: self.tools.execute(
-                name,
-                args,
-                session=session,
-                mode=agent_spec.tool_mode,
-                trace_store=trace_store,
-                run_state=run_state,
-                parent_span_id=parent_span_id,
-            ),
-        )
-        self._append_tool_result_artifact_event(
-            session,
-            request=request,
-            result=result,
-            related_tool_call_ids=[call.id for call in tool_calls],
-        )
-        outputs = split_read_files_outputs(result.output, len(tool_calls))
-        hook_metadata = {
-            **dict(result.metadata or {}),
-            "auto_batched_read_file": True,
-            "batch_read_count": len(tool_calls),
-        }
-        if _is_loop_guard_denial(result):
-            summary.loop_guard_denied = True
-
-        for index, (call, span_id) in enumerate(call_contexts):
-            output = outputs[index]
-            summary.tool_results.append({
-                "name": call.name,
-                "output": output,
-                "status": result.status,
-                "final_arguments": call.arguments,
-            })
-            if run_state is not None:
-                run_state.record_tool(call.name)
-                if trace_store is not None:
-                    trace_store.write_run_state(run_state)
-            tool_payload = {
-                "tool_call_id": call.id,
-                "tool_name": call.name,
-                "status": result.status,
-                "duration_ms": result.duration_ms,
-                "execution_error": None,
-                "final_arguments_preview": event_preview(call.arguments),
-                "output_preview": event_preview(output),
-                "error_type": result.error_type,
-                "error_message": result.error_message,
-                "metadata": {
-                    **hook_metadata,
-                    "batch_read_index": index,
-                },
-                "truncated_output": _tool_output_truncated(output),
-                "subagent_incomplete_count": _subagent_incomplete_count(
-                    call.name,
-                    output,
-                ),
-                "pre_hook_trace": [
-                    item.__dict__ for item in result.pre_hook_trace
-                ],
-                "post_hook_trace": [
-                    item.__dict__ for item in result.post_hook_trace
-                ],
-            }
-            self._trace(
-                trace_store,
-                run_state,
-                (
-                    TOOL_CALL_FAILED
-                    if result.status == "error"
-                    else TOOL_CALL_COMPLETED
-                ),
-                tool_payload,
-                step=reasoning_step,
-                span_id=span_id,
-                parent_span_id=parent_span_id,
-            )
-            self._trace(trace_store, run_state, "tool_executed", {
-                "call_id": call.id,
-                "name": call.name,
-                "status": result.status,
-                "execution_error": None,
-                "final_arguments": call.arguments,
-                "output_preview": event_preview(output),
-                "metadata": {
-                    **hook_metadata,
-                    "batch_read_index": index,
-                },
-                "pre_hook_trace": [
-                    item.__dict__ for item in result.pre_hook_trace
-                ],
-                "post_hook_trace": [
-                    item.__dict__ for item in result.post_hook_trace
-                ],
-            })
-            session.messages.append({
-                "role": "tool",
-                "tool_call_id": call.id,
-                "content": output,
-                "status": result.status,
-                "final_arguments": call.arguments,
-                "metadata": {
-                    **hook_metadata,
-                    "batch_read_index": index,
-                },
-                "pre_hook_trace": [
-                    item.__dict__ for item in result.pre_hook_trace
-                ],
-                "post_hook_trace": [
-                    item.__dict__ for item in result.post_hook_trace
-                ],
-            })
-        return summary
-
     def _tool_execution_error(self, name: str, *, session, mode: str) -> str | None:
         checker = getattr(self.tools, "execution_error_for_turn", None)
         if checker is None:
@@ -1525,6 +1078,24 @@ class ReasoningLoop:
     def _finishing_reminder_step(self) -> int:
         return self.finishing_policy._reminder_step()
 
+    def _run_observers(self) -> tuple:
+        extensions = getattr(getattr(self, "run_context", None), "extensions", None)
+        return tuple(getattr(extensions, "run_observers", ()) or ())
+
+    def _observed_state_version(self, session) -> int | None:
+        versions = [
+            observer.state_version(session)
+            for observer in self._run_observers()
+            if callable(getattr(observer, "state_version", None))
+        ]
+        return max((version for version in versions if version is not None), default=None)
+
+    def _notify_run_observers(self, session, execution_state) -> None:
+        if execution_state is None:
+            return
+        for observer in self._run_observers():
+            observer.after_run(session=session, execution=execution_state)
+
     def _web_search_budget_denial(self, session, tool_name: str) -> str:
         return self.web_search_policy.denial(
             session,
@@ -1555,63 +1126,6 @@ class ReasoningLoop:
             error_message=output,
         )
 
-    def _append_tool_result_artifact_event(
-        self,
-        session,
-        *,
-        request: ToolExecutionRequest,
-        result: ToolExecutionResult,
-        related_tool_call_ids: list[str],
-    ) -> None:
-        metadata = result.metadata if isinstance(result.metadata, dict) else {}
-        artifact_ref = metadata.get("artifact_ref")
-        if not isinstance(artifact_ref, dict):
-            return
-
-        # Preserve event chronology: the assistant tool-call message precedes
-        # artifact creation, while the corresponding tool result follows it.
-        backfill = getattr(session, "_backfill_legacy_messages", None)
-        if callable(backfill):
-            backfill()
-        append_event = getattr(session, "append_event", None)
-        if not callable(append_event):
-            return
-
-        payload = {
-            "artifact_ref": dict(artifact_ref),
-            "source": "tool_result",
-            "tool_call_id": str(request.call_id or ""),
-            "tool_name": str(request.tool_name or ""),
-            "status": str(result.status or ""),
-            "related_tool_call_ids": [
-                str(call_id) for call_id in related_tool_call_ids if call_id
-            ],
-        }
-        for key in ("artifact_offloaded_chars", "artifact_offloaded_tokens"):
-            if key in metadata:
-                payload[key] = metadata[key]
-        append_event(ContextEventType.ARTIFACT_CREATED, payload)
-        session_metadata = getattr(session, "metadata", None)
-        if not isinstance(session_metadata, dict):
-            session_metadata = {}
-            session.metadata = session_metadata
-        metrics = session_metadata.get("context_metrics")
-        if not isinstance(metrics, dict):
-            metrics = {}
-        offloaded_chars = max(0, int(metadata.get("artifact_offloaded_chars") or 0))
-        offloaded_tokens = max(0, int(metadata.get("artifact_offloaded_tokens") or 0))
-        metrics["artifact_offloaded_chars"] = (
-            int(metrics.get("artifact_offloaded_chars", 0) or 0) + offloaded_chars
-        )
-        metrics["artifact_offloaded_tokens"] = (
-            int(metrics.get("artifact_offloaded_tokens", 0) or 0) + offloaded_tokens
-        )
-        metrics["duplicate_content_saved_chars"] = (
-            int(metrics.get("duplicate_content_saved_chars", 0) or 0)
-            + max(0, offloaded_chars - len(str(result.output or "")))
-        )
-        session_metadata["context_metrics"] = metrics
-
     def _stop_turn(
         self,
         session,
@@ -1636,7 +1150,6 @@ class ReasoningLoop:
             },
         )
         state = getattr(getattr(self, "run_context", None), "state", None)
-        task_state_version = self._stop_shared_task_state(session, agent_spec, reason_value)
         if state is not None:
             state.stop_decision = StopDecision(
                 reason=_coerce_stop_reason(reason),
@@ -1647,8 +1160,9 @@ class ReasoningLoop:
                     StopReason.TOOL_UNAVAILABLE,
                     StopReason.PARTIAL_RESULT_ACCEPTED,
                 },
-                task_state_version=task_state_version,
+                task_state_version=self._observed_state_version(session),
             )
+        self._notify_run_observers(session, state)
         if _task_mode(agent_spec) and checkpoint_callback is not None:
             checkpoint_callback(session)
         if on_text is not None:
@@ -1662,41 +1176,6 @@ class ReasoningLoop:
             "message_preview": event_preview(message),
         })
         after_turn(session)
-
-    def _stop_shared_task_state(self, session, agent_spec, reason: str) -> int | None:
-        if str(getattr(agent_spec, "tool_mode", "") or "") not in {"coding", "teammate"}:
-            return None
-        from runtime.task_state import (
-            TaskStateCorePatch,
-            apply_task_state_core_patch,
-            load_task_state_core,
-            save_task_state_core,
-        )
-        from runtime.task_state.models import TERMINAL_TASK_STATUSES, TaskStatus
-
-        state = load_task_state_core(session)
-        if state is None or state.status in TERMINAL_TASK_STATUSES:
-            return getattr(state, "version", None)
-        if reason == StopReason.USER_CANCELLED.value:
-            requested = TaskStatus.CANCELLED
-        elif reason in {
-            StopReason.HARD_BUDGET_EXCEEDED.value,
-            StopReason.NON_RETRYABLE_FAILURE.value,
-        }:
-            requested = TaskStatus.FAILED
-        else:
-            requested = TaskStatus.BLOCKED
-        try:
-            updated = apply_task_state_core_patch(state, TaskStateCorePatch(
-                base_version=state.version,
-                current_focus="",
-                requested_status=requested,
-                stop_reason=reason,
-            ))
-        except ValueError:
-            return state.version
-        save_task_state_core(session, updated)
-        return updated.version
 
     def _apply_reflection(
         self,
@@ -1913,17 +1392,6 @@ def _tool_output_truncated(output: str) -> bool:
     )
 
 
-def _subagent_incomplete_count(tool_name: str, output: str) -> int:
-    if tool_name != "parallel_tasks":
-        return 0
-    text = str(output or "")
-    return max(
-        text.count('"truncated": true'),
-        text.count(INCOMPLETE_STEP_LIMIT_PREFIX),
-        text.count('"incomplete": true'),
-    )
-
-
 def _xml_escape(value: str) -> str:
     return (
         str(value or "")
@@ -1972,16 +1440,6 @@ def _coerce_stop_reason(reason: str | StopReason) -> StopReason:
         return StopReason(str(reason))
     except ValueError:
         return StopReason.NON_RETRYABLE_FAILURE
-
-
-def _task_state_version(session) -> int | None:
-    try:
-        from runtime.task_state import load_task_state_core
-
-        state = load_task_state_core(session)
-    except (ImportError, ValueError, TypeError):
-        return None
-    return getattr(state, "version", None)
 
 
 def _task_mode(agent_spec) -> bool:

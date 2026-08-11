@@ -19,6 +19,7 @@ from runtime.runtime import get_last_assistant_text
 from runtime.agent_spec import AgentSpec
 from runtime.runtime import RunContext, Runtime
 from runtime.extensions import RuntimeExtensions
+from runtime.task_state import TaskStateRunObserver
 from applications.coding.handoff import (
     CODING_CONVERSATION_SUMMARY_METADATA_KEY,
     CODING_HANDOFF_METADATA_KEY,
@@ -221,6 +222,7 @@ class CodingApplication:
                 trace_store=trace_store,
                 extensions=RuntimeExtensions(
                     context_contributors=(CodingRuntimeContributor(),),
+                    run_observers=(TaskStateRunObserver(),),
                 ),
             ),
         )

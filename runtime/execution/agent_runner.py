@@ -8,6 +8,7 @@ from runtime.ports import ContextPort, ModelPort, ToolExecutorPort, ToolPort
 from runtime.execution.reasoning_loop import DEFAULT_MAX_REASONING_STEPS, ReasoningLoop
 from runtime.execution.policy_set import ExecutionPolicies
 from runtime.execution.state import RunExecutionState
+from runtime.extensions import RuntimeExtensions
 
 
 class AgentRunner:
@@ -64,7 +65,10 @@ class AgentRunner:
                 messages=getattr(session, "messages", []),
             )
             execution_state.reset(web_search_limit=0)
-            run_context = SimpleNamespace(state=execution_state)
+            run_context = SimpleNamespace(
+                state=execution_state,
+                extensions=RuntimeExtensions(),
+            )
         context_builder = build_context or self._build_context
         turn_finished = after_turn or self._touch_session
         effective_max_steps = spec.max_reasoning_steps or self.max_reasoning_steps
