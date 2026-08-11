@@ -106,14 +106,14 @@ class ToolSpecTests(unittest.TestCase):
         self.assertIs(base, tool_spec.schema_for("coding"))
         self.assertEqual(bot, registry._schema_for_mode(tool_spec, "bot"))
 
-    def test_default_chat_surface_only_exposes_tool_search(self):
+    def test_default_chat_surface_hides_memory_management_tools(self):
         registry = build_lead_tool_registry()
         session = Session(id="chat")
 
-        self.assertEqual(
-            {"tool_search"},
-            registry.visible_names_for_turn(session, "bot"),
-        )
+        visible = registry.visible_names_for_turn(session, "bot")
+        self.assertIn("tool_search", visible)
+        self.assertNotIn("memorize", visible)
+        self.assertNotIn("recall_memory", visible)
         catalog = registry.tool_catalog_text(session, "bot")
         self.assertIn("recall_memory", catalog)
         self.assertNotIn("Search active, in-scope", catalog)
@@ -130,10 +130,10 @@ class ToolSpecTests(unittest.TestCase):
         )
 
         self.assertIn("Unlocked", result)
-        self.assertEqual(
-            {"tool_search", "recall_memory"},
-            registry.visible_names_for_turn(session, "bot"),
-        )
+        visible = registry.visible_names_for_turn(session, "bot")
+        self.assertIn("tool_search", visible)
+        self.assertIn("recall_memory", visible)
+        self.assertNotIn("memorize", visible)
 
 
 if __name__ == "__main__":

@@ -353,10 +353,7 @@ _DEFERRED_TOOLS = {
     "bash", "write_file", "edit_file", "background_run", "git_add",
     "git_commit", "spawn_teammate", "list_teammates", "broadcast",
     "shutdown_request", "shutdown_status", "plan_approval", "claim_task",
-    "load_skill", "update_task_state", "memorize", "recall_memory",
-    "read_artifact", "retrieve_tool_result", "storage_list_files",
-    "storage_read_file", "storage_write_file", "sandbox_list_files",
-    "sandbox_read_file", "sandbox_write_file", "publish_artifact",
+    "load_skill", "memorize", "recall_memory", "retrieve_tool_result",
 }
 
 

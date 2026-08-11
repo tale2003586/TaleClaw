@@ -97,6 +97,12 @@ class MultiUserIsolationTests(unittest.TestCase):
 
             with patch.object(handlers, "WORKDIR", workspace):
                 registry.execute(
+                    "tool_search",
+                    {"query": "select:memorize"},
+                    session=alice,
+                    mode="bot",
+                )
+                registry.execute(
                     "storage_write_file",
                     {"path": "reports/daily.md", "content": "alice-only"},
                     session=alice,
