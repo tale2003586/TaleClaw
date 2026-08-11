@@ -144,7 +144,7 @@ class TaskStateCoreTests(unittest.TestCase):
             ]
         )
 
-        updated = reduce_task_state(state, patch, max_tokens=1)
+        updated = reduce_task_state(state, patch)
 
         self.assertEqual("hypothesis:large", updated.hypotheses[0].id)
 

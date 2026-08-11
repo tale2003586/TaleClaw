@@ -43,11 +43,11 @@ def extract_structured_result(summary: str, *, agent_type: str = "explore") -> d
     payload = _payload_from_envelope(envelope)
     common = _common_fields(envelope, payload)
     normalized_payload = _normalize_payload(agent_type, payload)
-    compatibility = _compatibility_fields(agent_type, normalized_payload, envelope)
+    result_view = _result_view_fields(agent_type, normalized_payload, envelope)
     return {
         **_empty_structured_result(agent_type=agent_type, output_schema=schema),
         **common,
-        **compatibility,
+        **result_view,
         "payload": normalized_payload,
         "format_valid": True,
         "format_error": "",
@@ -118,7 +118,7 @@ def _normalize_payload(agent_type: str, payload: dict[str, Any]) -> dict[str, An
     }
 
 
-def _compatibility_fields(
+def _result_view_fields(
     agent_type: str,
     payload: dict[str, Any],
     envelope: dict[str, Any],

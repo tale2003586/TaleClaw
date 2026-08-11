@@ -349,13 +349,7 @@ class DeterministicEventExtractor:
 def validate_state_patch(
     state: TaskState,
     patch: StatePatch,
-    *,
-    max_tokens: int | None = None,
 ) -> None:
-    # Kept for API compatibility. StatePatch validation is structural and must not
-    # reject an otherwise valid task state merely because its serialized form is
-    # large; prompt budgeting/compaction owns context size.
-    del max_tokens
     core_patch = TaskStateCorePatch(
         base_version=patch.base_version,
         current_focus=patch.current_focus,
@@ -425,10 +419,8 @@ def validate_state_patch(
 def reduce_task_state(
     state: TaskState,
     patch: StatePatch,
-    *,
-    max_tokens: int | None = None,
 ) -> TaskState:
-    validate_state_patch(state, patch, max_tokens=max_tokens)
+    validate_state_patch(state, patch)
     return _apply_patch(state, patch, validate=False)
 
 

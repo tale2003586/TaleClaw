@@ -933,15 +933,6 @@ def auth_users() -> dict[str, ConfiguredAuthUser]:
     }
 
 
-def auth_credentials() -> tuple[str, str] | None:
-    """Backward-compatible view for callers that still expect one credential."""
-    users = auth_users()
-    if not users:
-        return None
-    first = next(iter(users.values()))
-    return first.user_id, first.password
-
-
 def web_auth_store() -> WebAuthStore:
     return WebAuthStore(None)
 
