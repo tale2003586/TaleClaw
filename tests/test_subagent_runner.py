@@ -314,7 +314,7 @@ class SubagentRunnerTests(unittest.TestCase):
         )
 
         report = context.report.to_dict()
-        self.assertTrue(report["metadata"]["coding_context_state_enabled"])
+        self.assertTrue(report["metadata"]["coding_context_enabled"])
         self.assertEqual(
             "task_state_token_window",
             report["sections"]["active_turn"]["metadata"]["strategy"],

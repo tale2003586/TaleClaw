@@ -22,6 +22,13 @@ from runtime.task_state.models import (
     TaskStatus,
     task_state_envelope,
 )
+from runtime.task_state.legacy import (
+    LegacyTaskState,
+    parse_legacy_task_state,
+    persist_task_state_migration_checkpoint,
+    read_legacy_task_state,
+    remove_legacy_task_state_keys,
+)
 
 
 TASK_STATE_VERSION = TASK_STATE_INITIAL_VERSION
@@ -312,10 +319,11 @@ class TaskState(TaskStateCore):
                 legacy_source = extensions.get("legacy_source")
                 if isinstance(legacy_source, dict):
                     source = str(legacy_source.get("source") or "")
-                    migrated = migrate_legacy_task_state(
+                    legacy = parse_legacy_task_state(
                         legacy_source.get("payload"),
                         source=source,
                     ) if source in {"working_memory", "coding_context_state"} else None
+                    migrated = _task_state_from_legacy(legacy) if legacy else None
                     if migrated is not None:
                         _merge_shared_core_payload(migrated, core_data)
                     return migrated
@@ -361,91 +369,53 @@ class TaskState(TaskStateCore):
             return None
 
 
-def migrate_working_memory_payload(
-    payload: Any,
-    *,
-    original_request_ref: str = "",
-) -> TaskState | None:
-    """Create a state snapshot from the legacy WorkingMemory representation.
-
-    It deliberately stores a shortened objective and retains only event/tool refs;
-    the original request itself remains in the event log or artifact store.
-    """
-    data = _payload_dict(payload)
-    if data is None:
-        return None
-    objective = Objective(
-        summary=_text(data.get("objective"), OBJECTIVE_SUMMARY_LIMIT),
-        original_request_ref=original_request_ref,
+def _task_state_from_legacy(legacy: LegacyTaskState) -> TaskState:
+    state = TaskState(
+        objective=Objective(
+            summary=legacy.objective,
+            original_request_ref=legacy.original_request_ref,
+            finish_condition=legacy.finish_condition,
+        ),
+        status=legacy.status,
+        phase=(
+            TaskPhase.FINALIZATION
+            if legacy.status == TaskStatus.COMPLETED
+            else _phase(legacy.phase)
+            if legacy.phase
+            else TaskPhase.EXPLORATION
+        ),
+        updated_at=legacy.updated_at,
     )
-    state = TaskState(objective=objective)
-    # Migration must be repeatable even when legacy records lack timestamps.
-    state.updated_at = str(data.get("updated_at") or "migration:unknown-time")
-    for item in data.get("completed_units") or []:
-        if not isinstance(item, dict):
-            continue
-        item_id = str(item.get("unit_id") or _stable_id("completed", item))
-        state.completed.append(CompletedItem(
-            id=item_id,
-            description=_text(item.get("conclusion") or item.get("description")),
-            evidence_refs=[str(ref) for ref in item.get("evidence_refs") or []],
-        ))
-    for item in data.get("pending_units") or []:
-        if not isinstance(item, dict):
-            continue
-        item_id = str(item.get("unit_id") or _stable_id("action", item))
-        state.pending_actions.append(Action(
-            id=item_id,
-            description=_text(item.get("description")),
-            status=_status(item.get("state") or item.get("status")),
-            priority=_text(item.get("priority"), 8) or "P1",
-        ))
-    # Legacy execution traces intentionally stay in the event log.  Migration
-    # only promotes durable task semantics into TaskState.
-    findings = data.get("archived_findings") or {}
-    if isinstance(findings, dict):
-        for key, value in findings.items():
-            if key in {"last_reasoning_step", "last_stop", "final_answer"}:
-                continue
-            state.hypotheses.append(Hypothesis(
-                id=f"legacy-hypothesis:{key}",
-                claim=_text(value, 500),
-                rationale="migrated legacy finding without an EvidenceRef",
-            ))
-    state.phase = TaskPhase.FINALIZATION if data.get("status") == "completed" else TaskPhase.EXPLORATION
-    return state
-
-
-def migrate_coding_context_state_payload(
-    payload: Any,
-    *,
-    original_request_ref: str = "",
-) -> TaskState | None:
-    """Migrate old CodingContextState data without promoting unproven claims."""
-    data = _payload_dict(payload)
-    if data is None:
-        return None
-    state = TaskState(objective=Objective(
-        summary=_text(data.get("objective"), OBJECTIVE_SUMMARY_LIMIT),
-        original_request_ref=original_request_ref,
-        finish_condition=_text(data.get("finish_condition"), 480),
-    ), phase=_phase(data.get("phase")))
-    state.updated_at = str(data.get("updated_at") or "migration:unknown-time")
-    evidence = data.get("evidence_index") or {}
-    if isinstance(evidence, dict):
-        for key, item in evidence.items():
-            if not isinstance(item, dict):
-                continue
-            state.evidence_index[str(key)] = EvidenceRef(
-                id=str(key), event_id=str(item.get("event_id") or item.get("source_event_id") or ""),
-                kind=_text(item.get("kind"), 64) or "legacy",
-                summary=_text(item.get("summary"), 500),
-                artifact_ref=_text(item.get("artifact_ref") or item.get("tool_result"), 500),
-                path=_text(item.get("path"), 500), lines=_text(item.get("lines"), 64),
-            )
-    for item in data.get("findings") or []:
-        if not isinstance(item, dict):
-            continue
+    state.completed = [CompletedItem(**item) for item in legacy.completed]
+    state.pending_actions = [
+        Action(
+            id=str(item["id"]),
+            description=str(item["description"]),
+            status=_status(item["status"]),
+            priority=str(item["priority"]),
+            evidence_refs=list(item["evidence_refs"]),
+        )
+        for item in legacy.pending_actions
+    ]
+    state.hypotheses.extend(
+        Hypothesis(
+            id=f"legacy-hypothesis:{key}",
+            claim=value,
+            rationale="migrated legacy finding without an EvidenceRef",
+        )
+        for key, value in legacy.archived_findings
+    )
+    for key, item in legacy.evidence_index:
+        state.evidence_index[key] = EvidenceRef(
+            id=key,
+            event_id=str(item.get("event_id") or item.get("source_event_id") or ""),
+            kind=_text(item.get("kind"), 64) or "legacy",
+            summary=_text(item.get("summary"), 500),
+            artifact_ref=_text(item.get("artifact_ref") or item.get("tool_result"), 500),
+            path=_text(item.get("path"), 500),
+            lines=_text(item.get("lines"), 64),
+        )
+    for item in legacy.findings:
         refs = _refs(item.get("evidence_refs") or item.get("evidence"))
         claim = _text(item.get("claim") or item.get("summary"), 600)
         item_id = str(item.get("id") or _stable_id("legacy-finding", item))
@@ -453,41 +423,26 @@ def migrate_coding_context_state_payload(
             state.findings.append(Finding(item_id, claim, refs))
         else:
             state.hypotheses.append(Hypothesis(
-                item_id, claim, "migrated unsupported CodingContextState finding", refs
-            ))
-    for item in data.get("pending_actions") or []:
-        if isinstance(item, dict):
-            state.pending_actions.append(Action(
-                id=str(item.get("id") or _stable_id("legacy-action", item)),
-                description=_text(item.get("description") or item.get("summary")),
-                status=_status(item.get("status")),
+                item_id,
+                claim,
+                "migrated unsupported coding context finding",
+                refs,
             ))
     state.open_questions = [
-        OpenQuestion(f"legacy-question:{index}", _text(value, 600))
-        for index, value in enumerate(data.get("open_questions") or [])
-        if _text(value, 600)
+        OpenQuestion(f"legacy-question:{index}", value)
+        for index, value in enumerate(legacy.open_questions)
     ]
     state.coverage = CoverageState(entries=[
         CoverageEntry(
             id=str(item.get("id") or _stable_id("coverage", item)),
             area=_text(item.get("area") or item.get("scope"), 500),
             status=_text(item.get("status"), 64) or "observed",
-            evidence_refs=[str(ref) for ref in item.get("evidence_refs") or []],
+            evidence_refs=_refs(item.get("evidence_refs")),
             summary=_text(item.get("summary"), 500),
         )
-        for item in data.get("coverage") or [] if isinstance(item, dict)
+        for item in legacy.coverage
     ])
     return state
-
-
-def migrate_legacy_task_state(
-    payload: Any, *, source: str, original_request_ref: str = ""
-) -> TaskState | None:
-    if source == "working_memory":
-        return migrate_working_memory_payload(payload, original_request_ref=original_request_ref)
-    if source == "coding_context_state":
-        return migrate_coding_context_state_payload(payload, original_request_ref=original_request_ref)
-    raise ValueError(f"unsupported legacy state source: {source}")
 
 
 def load_task_state(session: Any) -> TaskState | None:
@@ -518,8 +473,6 @@ def save_task_state(session: Any, state: TaskState) -> TaskState:
         session.metadata = metadata
     state.updated_at = _now()
     metadata[TASK_STATE_METADATA_KEY] = state.to_dict()
-    # Legacy WorkingMemory is a one-time migration source, not a second writer.
-    metadata.pop("working_memory", None)
     touch = getattr(session, "touch", None)
     if callable(touch):
         touch()
@@ -540,36 +493,36 @@ def ensure_task_state(
         persisted = _payload_dict(metadata.get(TASK_STATE_METADATA_KEY))
         if persisted is not None and persisted.get("schema") != TASK_STATE_SCHEMA:
             save_task_state(session, existing)
+        legacy = read_legacy_task_state(
+            metadata,
+            original_request_ref=original_request_ref,
+        )
+        if legacy is not None:
+            previous = _migration_session_snapshot(session)
+            try:
+                remove_legacy_task_state_keys(session.metadata)
+                persist_task_state_migration_checkpoint(
+                    session,
+                    task_state_payload=existing.to_dict(),
+                    source=legacy.source,
+                    source_payload=legacy.source_payload,
+                    checkpoint_persister=checkpoint_persister,
+                )
+            except Exception:
+                _restore_migration_session_snapshot(session, previous)
+                raise
         return existing
     metadata = getattr(session, "metadata", {}) or {}
-    source = ""
-    source_payload: dict[str, Any] | None = None
     source_info: dict[str, Any] = {}
-    working_memory_payload = _payload_dict(metadata.get("working_memory"))
-    migrated = migrate_working_memory_payload(
-        working_memory_payload, original_request_ref=original_request_ref
+    legacy = read_legacy_task_state(
+        metadata,
+        original_request_ref=original_request_ref,
     )
-    if migrated is not None:
-        source = "working_memory"
-        source_payload = working_memory_payload
-    if migrated is None:
-        coding_context_payload = _payload_dict(metadata.get("coding_context_state"))
-        migrated = migrate_coding_context_state_payload(
-            coding_context_payload, original_request_ref=original_request_ref
-        )
-        if migrated is not None:
-            source = "coding_context_state"
-            source_payload = coding_context_payload
+    migrated = _task_state_from_legacy(legacy) if legacy is not None else None
     refs = [str(ref) for ref in artifact_refs if ref]
     if migrated is None:
         history = _latest_real_user_history(session)
         if history is not None:
-            source = "session_history"
-            source_payload = {
-                "message": history["message"],
-                "message_index": history["message_index"],
-                "event_ref": history["event_ref"],
-            }
             source_info = {
                 "message_index": history["message_index"],
                 "event_ref": history["event_ref"],
@@ -590,109 +543,35 @@ def ensure_task_state(
         source_artifacts=refs,
     ))
     state.artifact_refs = list(dict.fromkeys([*state.artifact_refs, *refs]))
-    if not source:
+    if legacy is None and not source_info:
         return save_task_state(session, state)
 
     previous = _migration_session_snapshot(session)
     try:
         save_task_state(session, state)
-        if source == "coding_context_state":
-            session.metadata.pop("coding_context_state", None)
-        _persist_migration_checkpoint(
-            session,
-            state=state,
-            source=source,
-            source_payload=source_payload or {},
-            source_info=source_info,
-            checkpoint_persister=checkpoint_persister,
-        )
+        if legacy is not None:
+            remove_legacy_task_state_keys(session.metadata)
+            persist_task_state_migration_checkpoint(
+                session,
+                task_state_payload=state.to_dict(),
+                source=legacy.source,
+                source_payload=legacy.source_payload,
+                source_info=source_info,
+                checkpoint_persister=checkpoint_persister,
+            )
+        else:
+            persist_task_state_migration_checkpoint(
+                session,
+                task_state_payload=state.to_dict(),
+                source="session_history",
+                source_payload=source_info,
+                source_info=source_info,
+                checkpoint_persister=checkpoint_persister,
+            )
     except Exception:
         _restore_migration_session_snapshot(session, previous)
         raise
     return state
-
-
-def _persist_migration_checkpoint(
-    session: Any,
-    *,
-    state: TaskState,
-    source: str,
-    source_payload: dict[str, Any],
-    source_info: dict[str, Any],
-    checkpoint_persister: Callable[..., Any] | None,
-) -> dict[str, Any]:
-    source_sha256 = _canonical_checksum(source_payload)
-    state_payload = state.to_dict()
-    migration = {
-        "kind": "legacy_task_state_migration",
-        "source": source,
-        "source_sha256": source_sha256,
-        "task_state_sha256": _canonical_checksum(state_payload),
-        "task_state_version": TASK_STATE_VERSION,
-        "source_info": dict(source_info),
-    }
-    for checkpoint in list(getattr(session, "checkpoints", []) or []):
-        checkpoint_metadata = checkpoint.get("metadata") if isinstance(checkpoint, dict) else None
-        existing = checkpoint_metadata.get("migration") if isinstance(checkpoint_metadata, dict) else None
-        if isinstance(existing, dict) and (
-            existing.get("kind") == migration["kind"]
-            and existing.get("source") == source
-            and existing.get("source_sha256") == source_sha256
-        ):
-            return checkpoint
-
-    checkpoint_payload = {"task_state": state_payload, "migration": migration}
-    boundary = max(0, int(getattr(session, "archive_boundary_seq", 0) or 0))
-    persister = checkpoint_persister or getattr(
-        session, "_context_checkpoint_persister", None
-    )
-    if callable(persister):
-        return persister(
-            session=session,
-            checkpoint=checkpoint_payload,
-            archive_boundary_seq=boundary,
-            metadata={"migration": migration},
-        )
-
-    append_event = getattr(session, "append_event", None)
-    checkpoints = getattr(session, "checkpoints", None)
-    if not callable(append_event) or not isinstance(checkpoints, list):
-        raise RuntimeError("task-state migration requires checkpoint persistence")
-    created_at = _now()
-    state_sha256 = _canonical_checksum(checkpoint_payload)
-    checkpoint_id = f"migration:{source}:{source_sha256[:20]}"
-    checkpoint_event = append_event(
-        "task_state_checkpoint",
-        {
-            "checkpoint_id": checkpoint_id,
-            "archive_boundary_seq": boundary,
-            "state_sha256": state_sha256,
-            "migration": migration,
-        },
-        created_at=created_at,
-    )
-    completion_event = append_event(
-        "compaction_completed",
-        {
-            "checkpoint_id": checkpoint_id,
-            "checkpoint_event_id": checkpoint_event.event_id,
-            "archive_boundary_seq": boundary,
-            "state_sha256": state_sha256,
-            "migration": True,
-        },
-        created_at=created_at,
-    )
-    checkpoint = {
-        "checkpoint_id": checkpoint_id,
-        "archive_boundary_seq": boundary,
-        "completion_event_id": completion_event.event_id,
-        "created_at": created_at,
-        "state": checkpoint_payload,
-        "state_sha256": state_sha256,
-        "metadata": {"migration": migration},
-    }
-    checkpoints.insert(0, checkpoint)
-    return checkpoint
 
 
 def _migration_session_snapshot(session: Any) -> dict[str, Any]:
@@ -721,17 +600,6 @@ def _restore_migration_session_snapshot(session: Any, snapshot: dict[str, Any]) 
     refresh = getattr(session, "_refresh_active_event_window", None)
     if callable(refresh):
         refresh()
-
-
-def _canonical_checksum(value: Any) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _latest_real_user_history(session: Any) -> dict[str, Any] | None:

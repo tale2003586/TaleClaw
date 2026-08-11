@@ -398,7 +398,7 @@ class RunTraceTests(unittest.TestCase):
                 context_metrics["builds"][0]["reduced_sections"][0]["section"],
             )
 
-    def test_trace_metrics_include_coding_context_state(self) -> None:
+    def test_trace_metrics_include_coding_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             trace_store = TraceStore(Path(tmp) / ".runs")
             run_state = RunState.create(session_id="task:coding")
@@ -410,7 +410,7 @@ class RunTraceTests(unittest.TestCase):
                     "duration_ms": 9.25,
                     "context_summary": {
                         "message_count": 5,
-                        "coding_context_state": {
+                        "coding_context": {
                             "enabled": True,
                             "compacted": True,
                             "generation": 2,
@@ -419,7 +419,7 @@ class RunTraceTests(unittest.TestCase):
                     "context_report": {
                         "total_chars": 1200,
                         "sections": {
-                            "coding_context_state": {
+                            "coding_context": {
                                 "raw_chars": 3000,
                                 "rendered_chars": 1200,
                                 "budget_chars": 8000,
@@ -438,7 +438,7 @@ class RunTraceTests(unittest.TestCase):
                         },
                         "reductions": [
                             {
-                                "section": "coding_context_state",
+                                "section": "coding_context",
                                 "reason": "coding_prompt_state_compaction",
                                 "before_tokens": 13000,
                                 "after_tokens": 7600,
@@ -446,7 +446,7 @@ class RunTraceTests(unittest.TestCase):
                             }
                         ],
                         "metadata": {
-                            "coding_context_state_enabled": True,
+                            "coding_context_enabled": True,
                             "coding_context_generation": 2,
                             "coding_context_prompt_tail_start_index": 17,
                             "coding_context_compacted_until_index": 17,
@@ -477,10 +477,10 @@ class RunTraceTests(unittest.TestCase):
             self.assertEqual(17, metrics["coding_context_latest_prompt_tail_start_index"])
             self.assertEqual([4], context_metrics["aggregate"]["token_compressed_steps"])
             self.assertEqual([4], context_metrics["aggregate"]["coding_context_compacted_steps"])
-            self.assertTrue(context_metrics["builds"][0]["coding_context_state_enabled"])
+            self.assertTrue(context_metrics["builds"][0]["coding_context_enabled"])
             self.assertEqual(
                 5400,
-                context_metrics["builds"][0]["coding_context_state"]["saved_tokens"],
+                context_metrics["builds"][0]["coding_context"]["saved_tokens"],
             )
             self.assertEqual(
                 5400,

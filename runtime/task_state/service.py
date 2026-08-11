@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import json
 from typing import Any, Iterable, Mapping
 
+from .legacy import (
+    persist_task_state_migration_checkpoint,
+    read_legacy_task_state,
+    remove_legacy_task_state_keys,
+)
 from .models import (
     TASK_STATE_METADATA_KEY,
     TASK_STATE_SCHEMA,
-    TaskAction,
-    TaskProgressItem,
     TaskStateCore,
     TaskStatus,
     payload_dict,
@@ -71,7 +73,6 @@ def save_task_state_core(
             previous_core,
         )
     metadata[TASK_STATE_METADATA_KEY] = envelope
-    metadata.pop("working_memory", None)
     touch = getattr(session, "touch", None)
     if callable(touch):
         touch()
@@ -84,6 +85,7 @@ def ensure_task_state_core(
     objective: str,
     artifact_refs: Iterable[str] = (),
     current_focus: str | None = "Understand the current request",
+    checkpoint_persister=None,
 ) -> TaskStateCore:
     existing = load_task_state_core(session)
     refs = [str(item) for item in artifact_refs if str(item).strip()]
@@ -119,8 +121,8 @@ def ensure_task_state_core(
         return existing
 
     metadata = getattr(session, "metadata", {}) or {}
-    migrated, source, source_payload = _migrate_legacy_core(metadata)
-    state = migrated or TaskStateCore(
+    legacy = read_legacy_task_state(metadata)
+    state = legacy.to_core() if legacy is not None else TaskStateCore(
         task_id=current_task_id,
         objective=_objective_text(objective),
         current_focus=current_focus,
@@ -130,69 +132,25 @@ def ensure_task_state_core(
     raw_task_state = payload_dict(metadata.get(TASK_STATE_METADATA_KEY))
     if raw_task_state is not None and raw_task_state.get("schema") != TASK_STATE_SCHEMA:
         extensions["coding_legacy"] = deepcopy(raw_task_state)
-    if source:
-        extensions["legacy_source"] = {
-            "source": source,
-            "payload": deepcopy(source_payload),
-        }
-    save_task_state_core(session, state, extensions=extensions)
+    if legacy is None:
+        save_task_state_core(session, state, extensions=extensions)
+        return state
+
+    previous = _migration_session_snapshot(session)
+    try:
+        save_task_state_core(session, state, extensions=extensions)
+        remove_legacy_task_state_keys(session.metadata)
+        persist_task_state_migration_checkpoint(
+            session,
+            task_state_payload=dict(session.metadata[TASK_STATE_METADATA_KEY]),
+            source=legacy.source,
+            source_payload=legacy.source_payload,
+            checkpoint_persister=checkpoint_persister,
+        )
+    except Exception:
+        _restore_migration_session_snapshot(session, previous)
+        raise
     return state
-
-
-def _migrate_legacy_core(
-    metadata: Mapping[str, Any],
-) -> tuple[TaskStateCore | None, str, dict[str, Any]]:
-    working = _json_mapping(metadata.get("working_memory"))
-    if working is not None:
-        state = TaskStateCore(
-            task_id=str(working.get("task_id") or ""),
-            objective=_objective_text(working.get("objective")),
-            status=(
-                TaskStatus.COMPLETED
-                if str(working.get("status") or "") == "completed"
-                else TaskStatus.ACTIVE
-            ),
-            completed=[
-                TaskProgressItem(
-                    id=str(item.get("unit_id") or f"legacy-progress:{index}"),
-                    description=str(item.get("conclusion") or item.get("description") or ""),
-                    evidence_refs=[str(ref) for ref in item.get("evidence_refs") or []],
-                )
-                for index, item in enumerate(working.get("completed_units") or [])
-                if isinstance(item, Mapping)
-            ],
-            pending_actions=[
-                TaskAction(
-                    id=str(item.get("unit_id") or f"legacy-action:{index}"),
-                    description=str(item.get("description") or ""),
-                    status=str(item.get("state") or item.get("status") or "pending"),
-                )
-                for index, item in enumerate(working.get("pending_units") or [])
-                if isinstance(item, Mapping)
-            ],
-            current_focus="Resume migrated task progress",
-            updated_at=str(working.get("updated_at") or "migration:unknown-time"),
-        )
-        return state, "working_memory", working
-    coding_context = _json_mapping(metadata.get("coding_context_state"))
-    if coding_context is not None and coding_context.get("objective"):
-        state = TaskStateCore(
-            task_id=str(coding_context.get("task_id") or ""),
-            objective=_objective_text(coding_context.get("objective")),
-            status=(
-                TaskStatus.BLOCKED
-                if str(coding_context.get("phase") or "") == "blocked"
-                else TaskStatus.ACTIVE
-            ),
-            open_questions=[
-                str(item.get("question") if isinstance(item, Mapping) else item)
-                for item in coding_context.get("open_questions") or []
-            ],
-            current_focus="Resume migrated coding context",
-            updated_at=str(coding_context.get("updated_at") or "migration:unknown-time"),
-        )
-        return state, "coding_context_state", coding_context
-    return None, "", {}
 
 
 def _preserved_extensions(payload: Any) -> dict[str, Any]:
@@ -203,15 +161,6 @@ def _preserved_extensions(payload: Any) -> dict[str, Any]:
         extensions = data.get("extensions")
         return deepcopy(dict(extensions)) if isinstance(extensions, Mapping) else {}
     return {"coding_legacy": deepcopy(data)}
-
-
-def _json_mapping(value: Any) -> dict[str, Any] | None:
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except json.JSONDecodeError:
-            return None
-    return dict(value) if isinstance(value, Mapping) else None
 
 
 def _objective_text(value: Any) -> str:
@@ -268,3 +217,22 @@ def _merge_coding_core_details(
             for item in new_items
         ]
     return merged
+
+
+def _migration_session_snapshot(session: Any) -> dict[str, Any]:
+    return {
+        "metadata": deepcopy(getattr(session, "metadata", {}) or {}),
+        "event_log": list(getattr(session, "event_log", []) or []),
+        "checkpoints": deepcopy(getattr(session, "checkpoints", []) or []),
+        "archive_boundary_seq": getattr(session, "archive_boundary_seq", 0),
+        "updated_at": getattr(session, "updated_at", None),
+    }
+
+
+def _restore_migration_session_snapshot(session: Any, snapshot: Mapping[str, Any]) -> None:
+    session.metadata = snapshot["metadata"]
+    session.event_log = snapshot["event_log"]
+    session.checkpoints = snapshot["checkpoints"]
+    session.archive_boundary_seq = snapshot["archive_boundary_seq"]
+    if snapshot["updated_at"] is not None:
+        session.updated_at = snapshot["updated_at"]

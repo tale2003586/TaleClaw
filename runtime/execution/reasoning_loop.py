@@ -248,9 +248,9 @@ class ReasoningLoop:
                 duration_ms=context_duration_ms,
             )
             context_summary = _context_summary(context_messages)
-            if context_metrics.get("coding_context_state_enabled"):
-                context_summary["coding_context_state"] = context_metrics.get(
-                    "coding_context_state",
+            if context_metrics.get("coding_context_enabled"):
+                context_summary["coding_context"] = context_metrics.get(
+                    "coding_context",
                     {},
                 )
             self._trace(

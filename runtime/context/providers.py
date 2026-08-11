@@ -190,7 +190,7 @@ class CodingContextProvider:
     name = "coding"
 
     def enabled(self, builder, *, session, profile) -> bool:
-        return builder._coding_context_state_enabled(profile, session=session)
+        return builder._coding_context_enabled(profile, session=session)
 
 
 class EmptyMemoryContextProvider:

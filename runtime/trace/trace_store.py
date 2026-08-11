@@ -337,8 +337,8 @@ class TraceStore:
         metrics["context_token_compression_savings_ratio"] = _float(
             context_aggregate.get("token_compression_savings_ratio")
         )
-        metrics["coding_context_state_builds"] = _int(
-            context_aggregate.get("coding_context_state_build_count")
+        metrics["coding_context_builds"] = _int(
+            context_aggregate.get("coding_context_build_count")
         )
         metrics["coding_context_compacted_count"] = _int(
             context_aggregate.get("coding_context_compacted_count")

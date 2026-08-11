@@ -6,6 +6,7 @@ from unittest.mock import patch
 from runtime.sessions.session import Session
 from applications.coding import session as coding_application_module
 from applications.coding.session import TaskSessionFactory
+from applications.coding.task_state import ensure_task_state
 from tools import handlers
 from tools.tool_registry import ToolRegistry
 from tools.spec import ToolSpec
@@ -79,6 +80,30 @@ class MemoryScopeTests(unittest.TestCase):
             self.assertTrue(record.task_root.is_dir())
             self.assertNotIn("memory_root", record.session.metadata)
             self.assertFalse((record.task_root / "memory").exists())
+
+    def test_new_task_session_never_writes_retired_state_keys(self) -> None:
+        class RecordingSessions:
+            def get_or_create(self, session_id: str) -> Session:
+                return Session(id=session_id)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(coding_application_module, "WORKDIR", root):
+                record = TaskSessionFactory(RecordingSessions()).create(
+                    parent_session_id="web:default",
+                    task_type="coding",
+                    user_request="inspect the runtime",
+                )
+            ensure_task_state(
+                record.session,
+                objective_summary="inspect the runtime",
+            )
+
+        self.assertTrue(
+            {"working_memory", "coding_context_state", "memory_root"}.isdisjoint(
+                record.session.metadata
+            )
+        )
 
     def test_disabled_memory_tool_does_not_create_legacy_markdown(self) -> None:
         registry = _memory_registry()

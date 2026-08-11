@@ -164,7 +164,7 @@ def build_coding_context_view(
         artifact_refs=artifact_refs,
     )
     snapshot = _snapshot(session, task_state, prompt_tail_start_index=tail_start)
-    state_message = render_coding_context_state_message(task_state, snapshot=snapshot)
+    state_message = render_coding_context_message(task_state, snapshot=snapshot)
     groups = group_messages(messages, start_index=tail_start)
     recent_messages = _pin_latest_user(_flatten(groups), pinned_user)
     before_tokens = estimate_tokens([*static_messages, state_message, *recent_messages])
@@ -226,12 +226,12 @@ def build_coding_context_view(
                     prompt_tail_start_index=kept_start,
                     checkpoint=checkpoint,
                 )
-                state_message = render_coding_context_state_message(
+                state_message = render_coding_context_message(
                     task_state, snapshot=snapshot
                 )
                 compacted = True
                 reduction = {
-                    "section": "coding_context_state",
+                    "section": "coding_context",
                     "reason": "task_state_semantic_compaction",
                     "before_tokens": before_tokens,
                     "after_tokens": estimate_tokens([
@@ -276,7 +276,7 @@ def build_coding_context_view(
     return CodingContextView(
         state=snapshot,
         task_state=task_state,
-        state_message=render_coding_context_state_message(task_state, snapshot=snapshot),
+        state_message=render_coding_context_message(task_state, snapshot=snapshot),
         recent_messages=recent_messages,
         active_messages=active_messages,
         compacted=compacted,
@@ -286,7 +286,7 @@ def build_coding_context_view(
     )
 
 
-def render_coding_context_state_message(
+def render_coding_context_message(
     state: TaskState,
     *,
     snapshot: CodingContextSnapshot | None = None,

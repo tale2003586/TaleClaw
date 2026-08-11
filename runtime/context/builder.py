@@ -361,7 +361,7 @@ class ContextBuilder:
         )
 
         if coding_context_enabled:
-            bundle = self._build_coding_context_state_bundle(
+            bundle = self._build_coding_context_bundle(
                 session=session,
                 profile=profile,
                 prefix=prefix,
@@ -546,7 +546,7 @@ class ContextBuilder:
                 tool_output_tokens=tokens("task_runtime_events"),
                 memory_tokens=tokens("memory"),
                 retrieval_tokens=retrieval_tokens,
-                code_context_tokens=tokens("coding_context_state"),
+                code_context_tokens=tokens("coding_context"),
             ),
             retrieved_note_count=int(
                 (sections.get("episodic_history").metadata or {}).get("hit_count", 0)
@@ -564,7 +564,7 @@ class ContextBuilder:
                 step=reasoning_step,
             )
 
-    def _build_coding_context_state_bundle(
+    def _build_coding_context_bundle(
         self,
         *,
         session,
@@ -744,7 +744,7 @@ class ContextBuilder:
             prefix_metadata=dict(prefix.metadata),
         )
         report = self._build_report(build_state)
-        self._append_coding_context_state_report(report, view)
+        self._append_coding_context_report(report, view)
         self._append_runtime_state_reports(report, runtime_state_messages)
         context_metrics = {
             **dict(view.state.metrics or {}),
@@ -817,14 +817,14 @@ class ContextBuilder:
                 },
             ))
 
-    def _append_coding_context_state_report(
+    def _append_coding_context_report(
         self,
         report: ContextBuildReport,
         view: Any,
     ) -> None:
         report.sections.append(
             ContextSection.from_text(
-                "coding_context_state",
+                "coding_context",
                 str(view.state_message.get("content") or ""),
                 raw_text=json.dumps(
                     view.task_state.to_dict(),
@@ -854,7 +854,7 @@ class ContextBuilder:
         )
         report.metadata = {
             **dict(report.metadata or {}),
-            "coding_context_state_enabled": True,
+            "coding_context_enabled": True,
             "coding_context_generation": view.state.generation,
             "coding_context_prompt_tail_start_index": view.state.prompt_tail_start_index,
             "coding_context_compacted_until_index": view.state.compacted_until_index,
@@ -1275,7 +1275,7 @@ class ContextBuilder:
             reduction=reduction,
         )
 
-    def _coding_context_state_enabled(self, profile, *, session=None) -> bool:
+    def _coding_context_enabled(self, profile, *, session=None) -> bool:
         return (
             bool(
                 str(getattr(profile, "tool_mode", "") or "")

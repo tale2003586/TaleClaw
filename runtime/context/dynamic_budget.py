@@ -193,7 +193,7 @@ def reduce_prompt_to_hard_limit(
     system = [item for item in items if str(item.get("role") or "") == "system"]
     non_system = [item for item in items if str(item.get("role") or "") != "system"]
     state_messages = [item for item in non_system if _message_kind(item) in {
-        "task_state_context", "coding_context_state",
+        "task_state_context", "coding_context",
     }]
     evidence_messages = [item for item in non_system if _message_kind(item) == "retrieved_evidence_context"]
     conversation = [

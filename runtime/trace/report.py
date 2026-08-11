@@ -86,7 +86,7 @@ def _render_report(
         f"- Context Compression Savings: {_value(metrics.get('context_compression_savings_ratio'))}",
         f"- Context Token Compression Saved: {_value(metrics.get('context_token_compression_saved_tokens'))}",
         f"- Context Token Compression Ratio: {_value(metrics.get('context_token_compression_ratio'))}",
-        f"- Coding Context State Builds: {_value(metrics.get('coding_context_state_builds'))}",
+        f"- Coding Context Builds: {_value(metrics.get('coding_context_builds'))}",
         f"- Coding Context Compactions: {_value(metrics.get('coding_context_compacted_count'))}",
         f"- Coding Context Generation: {_value(metrics.get('coding_context_latest_generation'))} / max {_value(metrics.get('coding_context_max_generation'))}",
         f"- Coding Context Tail: prompt_tail={_value(metrics.get('coding_context_latest_prompt_tail_start_index'))}, compacted_until={_value(metrics.get('coding_context_latest_compacted_until_index'))}",
@@ -181,7 +181,7 @@ def _context_section(context: dict[str, Any], sanitized: list[dict[str, Any]]) -
         f"- Empty Assistant Messages: {_value(context.get('empty_assistant_messages'))}",
         f"- Role Breakdown: `{json.dumps(roles, ensure_ascii=False, default=str)}`",
     ]
-    coding_context = context.get("coding_context_state")
+    coding_context = context.get("coding_context")
     if isinstance(coding_context, dict) and coding_context.get("enabled"):
         lines.extend([
             f"- Coding Context Compacted: {_value(coding_context.get('compacted'))}",
