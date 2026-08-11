@@ -101,28 +101,16 @@ class ToolRegistry:
     def tool_catalog_text(self, session, mode: str = "coding") -> str:
         allowed = self.policy._allowed_names(session=session, mode=mode)
         visible = self.visible_names_for_turn(session, mode) if session is not None else set()
-        direct = sorted(name for name in visible if name in allowed)
         deferred = sorted(name for name in allowed if name not in visible)
 
-        if not direct and not deferred:
+        if not deferred:
             return ""
 
         lines = [
             '<tool_catalog>',
-            "Tools are workspace-scoped when they operate on files. Use relative paths.",
-            "Call visible tools directly. Use tool_search with help:<tool_name> for parameters.",
+            "Deferred tools can be unlocked with tool_search select:<name>:",
+            ", ".join(deferred),
         ]
-        if direct:
-            lines.append("Visible now:")
-            for name in direct:
-                lines.append(f"- {name}: {self._tool_description(name, mode=mode)}")
-        if deferred:
-            lines.append("Available after unlock:")
-            for name in deferred:
-                lines.append(
-                    f"- {name}: {self._tool_description(name, mode=mode)} "
-                    f"(unlock with tool_search select:{name})"
-                )
         lines.append("</tool_catalog>")
         return "\n".join(lines)
 
@@ -360,11 +348,15 @@ _NON_IDEMPOTENT_TOOLS = {
     "shutdown_response", "plan_approval", "plan_approval_request",
 }
 
-_ALWAYS_TOOLS = {"recall_memory", "memorize", "tool_search"}
+_ALWAYS_TOOLS = {"tool_search"}
 _DEFERRED_TOOLS = {
     "bash", "write_file", "edit_file", "background_run", "git_add",
     "git_commit", "spawn_teammate", "list_teammates", "broadcast",
     "shutdown_request", "shutdown_status", "plan_approval", "claim_task",
+    "load_skill", "update_task_state", "memorize", "recall_memory",
+    "read_artifact", "retrieve_tool_result", "storage_list_files",
+    "storage_read_file", "storage_write_file", "sandbox_list_files",
+    "sandbox_read_file", "sandbox_write_file", "publish_artifact",
 }
 
 

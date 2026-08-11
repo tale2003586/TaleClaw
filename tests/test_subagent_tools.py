@@ -152,7 +152,7 @@ class SubagentToolTests(unittest.TestCase):
         self.assertIn("read_files", visible)
         self.assertIn("parallel_tasks", visible)
         self.assertIn("task", visible)
-        self.assertIn("parallel_tasks", registry.tool_catalog_text(session, "coding"))
+        self.assertNotIn("parallel_tasks", registry.tool_catalog_text(session, "coding"))
         self.assertIn("Build a deterministic file map first with repo_map", CODING_AGENT_SPEC.system_prompt)
 
     def test_task_handler_invokes_configured_runner(self) -> None:

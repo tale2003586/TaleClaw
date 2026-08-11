@@ -9,7 +9,8 @@ from runtime.execution.state import RunExecutionState
 from models.provider import ToolCall
 from tools.schema import function_tool
 from tools.spec import ToolInjection, ToolRisk, ToolSpec, ToolStateEffect
-from tools.tool_registry import ToolRegistry
+from tools.tool_registry import ToolRegistry, build_lead_tool_registry
+from runtime.sessions import Session
 
 
 class SpecPlugin(Plugin):
@@ -104,6 +105,35 @@ class ToolSpecTests(unittest.TestCase):
         self.assertIs(bot, tool_spec.schema_for("bot"))
         self.assertIs(base, tool_spec.schema_for("coding"))
         self.assertEqual(bot, registry._schema_for_mode(tool_spec, "bot"))
+
+    def test_default_chat_surface_only_exposes_tool_search(self):
+        registry = build_lead_tool_registry()
+        session = Session(id="chat")
+
+        self.assertEqual(
+            {"tool_search"},
+            registry.visible_names_for_turn(session, "bot"),
+        )
+        catalog = registry.tool_catalog_text(session, "bot")
+        self.assertIn("recall_memory", catalog)
+        self.assertNotIn("Search active, in-scope", catalog)
+
+    def test_specialized_tool_can_be_unlocked_for_one_turn(self):
+        registry = build_lead_tool_registry()
+        session = Session(id="chat")
+
+        result = registry.execute(
+            "tool_search",
+            {"query": "select:recall_memory"},
+            session=session,
+            mode="bot",
+        )
+
+        self.assertIn("Unlocked", result)
+        self.assertEqual(
+            {"tool_search", "recall_memory"},
+            registry.visible_names_for_turn(session, "bot"),
+        )
 
 
 if __name__ == "__main__":

@@ -66,10 +66,6 @@ class ContextPrefix:
 class ContextBuilder:
     _instruction_cache = PromptAssetsService._instruction_cache
     _guidance_registry: list[str] = [
-        "Use recall_memory when the user asks about prior preferences or project conventions.",
-        "Use memorize when the user states a durable preference or important fact.",
-        "Some tools are deferred. Use tool_search to find or unlock tools that are not currently visible.",
-        "For code-security questions involving vulnerabilities, CVE/CWE/GHSA, dependencies, auth, authorization, injection, XSS, SSRF, tokens, secrets, file upload, path traversal, or secure coding guidance, call security_rag_search for local evidence before giving a final answer.",
         "Search-like tools are limited opportunities. Batch queries and gather enough evidence before deciding whether another search is necessary.",
         (
             "An attachment reference indicates that the user supplied a file. "
