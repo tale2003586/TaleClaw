@@ -128,9 +128,11 @@ class AgentRunnerTests(unittest.TestCase):
         )
         session = Session(id="agent:test")
         session.add_message("user", "hello")
+        spec = make_agent_spec("worker", "test", "bot")
         spec = AgentSpec(
-            name="worker",
-            profile=_profile("bot"),
+            name=spec.name,
+            instructions=spec.instructions,
+            tool_set=spec.tool_set,
             model_purpose="teammate",
         )
 
@@ -159,7 +161,7 @@ class AgentRunnerTests(unittest.TestCase):
         )
         session = Session(id="agent:reflect")
         session.add_message("user", "do it")
-        spec = AgentSpec(name="main", profile=_profile("bot"), model_purpose="chat")
+        spec = make_agent_spec("main", "test", "bot")
 
         runner.run(session=session, spec=spec)
 
@@ -190,7 +192,7 @@ class AgentRunnerTests(unittest.TestCase):
         )
         session = Session(id="agent:stop")
         session.add_message("user", "do it")
-        spec = AgentSpec(name="main", profile=_profile("bot"), model_purpose="chat")
+        spec = make_agent_spec("main", "test", "bot")
 
         runner.run(session=session, spec=spec)
 
@@ -224,7 +226,7 @@ class AgentRunnerTests(unittest.TestCase):
             metadata={"unlocked_tools": ["echo"]},
         )
         session.add_message("user", "do it")
-        spec = AgentSpec(name="main", profile=_profile("bot"), model_purpose="chat")
+        spec = make_agent_spec("main", "test", "bot")
 
         runner.run(session=session, spec=spec)
 

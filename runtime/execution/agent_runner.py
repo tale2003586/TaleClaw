@@ -78,7 +78,7 @@ class AgentRunner:
         )
         loop.run(
             session=session,
-            profile=spec.profile or spec,
+            profile=spec,
             build_context=context_builder,
             resolve_provider=lambda session, profile: self._provider_and_model(
                 session,

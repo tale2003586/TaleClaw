@@ -92,8 +92,7 @@ class Runtime:
             raise TypeError("Runtime.run context must be a RunContext.")
         context.state.input_text = user_input
         context.state.messages = context.session.messages
-        profile = context.profile or agent.profile or agent
-        self._execute(agent=agent, profile=profile, context=context)
+        self._execute(agent=agent, context=context)
         output = get_last_assistant_text(context.session.messages)
         return RunResult(
             output=str(output or ""),
@@ -103,13 +102,13 @@ class Runtime:
             run_state=context.run_state,
         )
 
-    def _execute(self, *, agent: AgentSpec, profile: Any, context: "RunContext") -> None:
+    def _execute(self, *, agent: AgentSpec, context: "RunContext") -> None:
         session = context.session
         active_turn_start_index = _last_user_message_index(session.messages)
         self._before_turn(session, run_context=context)
         context_prefix = self._build_context_prefix(
             session,
-            profile,
+            agent,
             active_turn_start_index=active_turn_start_index,
         )
         self.agent_runner.run(
@@ -266,7 +265,6 @@ def _section_rendered(context, name: str) -> bool:
 @dataclass(frozen=True)
 class RunContext:
     session: Any
-    profile: Any = None
     on_text: Callable[[str], None] | None = None
     cancel_requested: Callable[[], bool] | None = None
     checkpoint_callback: Callable | None = None

@@ -59,7 +59,7 @@ class CodingApplication:
         self,
         *,
         sessions: SessionManager,
-        base_pipeline: Runtime,
+        base_runtime: Runtime,
         workspace_root=None,
         workspace_resolver: WorkspaceResolver | None = None,
         semantic_memory_command_service=None,
@@ -67,7 +67,7 @@ class CodingApplication:
         long_content_detector: LongContentDetector | None = None,
     ) -> None:
         self.sessions = sessions
-        self.base_pipeline = base_pipeline
+        self.base_runtime = base_runtime
         self.semantic_memory_command_service = semantic_memory_command_service
         self.artifact_store = artifact_store or ArtifactStore(CONTEXT_ARTIFACT_ROOT)
         self.long_content_detector = long_content_detector or LongContentDetector(
@@ -86,16 +86,16 @@ class CodingApplication:
         else:
             self.workspace_resolver = WorkspaceResolver()
         self.factory = TaskSessionFactory(sessions)
-        conclusion_provider, conclusion_model = _pipeline_model_for(
-            base_pipeline,
+        conclusion_provider, conclusion_model = _runtime_model_for(
+            base_runtime,
             "task_conclusion",
         )
         self.conclusion_extractor = TaskConclusionExtractor(
             provider=conclusion_provider,
             model=conclusion_model,
         )
-        compaction_provider, compaction_model = _pipeline_model_for(
-            base_pipeline,
+        compaction_provider, compaction_model = _runtime_model_for(
+            base_runtime,
             "summary",
         )
         self.event_compactor = EventCompactor(
@@ -109,8 +109,7 @@ class CodingApplication:
         *,
         parent_session,
         user_text: str,
-        profile,
-        agent_spec=None,
+        agent_spec: AgentSpec,
         workspace_root=None,
         cancel_requested=None,
         run_state=None,
@@ -207,19 +206,17 @@ class CodingApplication:
             },
         )
 
-        task_pipeline = self._build_task_pipeline(
+        task_runtime = self._build_task_runtime(
             max_reasoning_steps=_task_reasoning_budget(
                 user_text,
-                default_steps=getattr(self.base_pipeline, "max_reasoning_steps", 24),
+                default_steps=self.base_runtime.max_reasoning_steps,
             ),
         )
-        resolved_agent = agent_spec or AgentSpec.from_profile(profile)
-        run_result = task_pipeline.run(
-            resolved_agent,
+        run_result = task_runtime.run(
+            agent_spec,
             user_text,
             RunContext(
                 session=record.session,
-                profile=profile,
                 cancel_requested=cancel_requested,
                 checkpoint_callback=lambda session: self.sessions.save(session),
                 run_state=run_state,
@@ -333,7 +330,7 @@ class CodingApplication:
                 trace_store.append_event(run_state, "coding_application_completed", task_report)
                 trace_store.write_run_state(run_state)
         return self._format_parent_reply(record, reply, promotion, artifacts)
-    def _build_task_pipeline(
+    def _build_task_runtime(
         self,
         *,
         max_reasoning_steps: int | None = None,
@@ -351,19 +348,9 @@ class CodingApplication:
             ),
             context_providers=DEFAULT_CONTEXT_PROVIDERS,
         )
-        if hasattr(self.base_pipeline, "fork"):
-            return self.base_pipeline.fork(
-                context_builder=context_builder,
-                max_reasoning_steps=max_reasoning_steps,
-                execution_policy_factory=standard_execution_policies,
-            )
-        return Runtime(
-            tools=self.base_pipeline.tools,
-            provider=self.base_pipeline.provider,
-            model=self.base_pipeline.model,
-            tool_executor=self.base_pipeline.tool_executor,
+        return self.base_runtime.fork(
             context_builder=context_builder,
-            max_reasoning_steps=max_reasoning_steps or self.base_pipeline.max_reasoning_steps,
+            max_reasoning_steps=max_reasoning_steps,
             execution_policy_factory=standard_execution_policies,
         )
 
@@ -514,10 +501,8 @@ def _repository_identity(root) -> tuple[str, str]:
         return "", ""
 
 
-def _pipeline_model_for(pipeline: Runtime, purpose: str):
-    if hasattr(pipeline, "provider_and_model_for"):
-        return pipeline.provider_and_model_for(purpose)
-    return pipeline.provider, pipeline.model
+def _runtime_model_for(runtime: Runtime, purpose: str):
+    return runtime.provider_and_model_for(purpose)
 
 
 def _request_summary(value: str) -> str:

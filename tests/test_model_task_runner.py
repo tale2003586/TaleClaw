@@ -41,7 +41,6 @@ class ModelTaskRunnerTests(unittest.TestCase):
         runner = ModelTaskRunner(model_pool=pool)
         spec = AgentSpec(
             name="history_summarizer",
-            profile=None,
             model_purpose="summary",
             max_tokens=123,
         )
@@ -68,7 +67,6 @@ class ModelTaskRunnerTests(unittest.TestCase):
         )
         spec = AgentSpec(
             name="one_shot_task",
-            profile=None,
             model_purpose="summary",
         )
 

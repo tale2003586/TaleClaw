@@ -96,8 +96,7 @@ class TeammateReasoningLoopTests(unittest.TestCase):
                 max_reasoning_steps=5,
             )
             session = manager._new_session("alice", "tester", "Finish and idle.")
-            profile = manager._profile_for("alice", "tester", "default")
-            spec = manager._agent_spec(name="alice", role="tester", profile=profile)
+            spec = manager._agent_spec_for("alice", "tester", "default")
             registry = build_teammate_tool_registry("alice")
             with contextlib.redirect_stdout(io.StringIO()):
                 state = manager._run_reasoning_cycle(

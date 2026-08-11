@@ -286,7 +286,7 @@ def _registry(read_file_handler=None) -> ToolRegistry:
     return registry
 
 
-def _pipeline(provider=None, registry=None) -> Runtime:
+def _runtime(provider=None, registry=None) -> Runtime:
     return Runtime(
         tools=registry or _registry(),
         provider=provider or FinalAnswerProvider(),
@@ -299,17 +299,17 @@ def _pipeline(provider=None, registry=None) -> Runtime:
 
 class SubagentRunnerTests(unittest.TestCase):
     def test_subagent_uses_coding_task_state_context(self) -> None:
-        runner = TaskSubagentRunner(base_pipeline=_pipeline())
+        runner = TaskSubagentRunner(base_runtime=_runtime())
         session = runner._new_session(
             prompt="inspect runtime",
             agent_type="explore",
             description="stateful scout",
         )
-        profile = runner._profile("explore")
+        agent_spec = runner._agent_spec("explore")
 
         context = runner._sub_context_builder().build(
             session=session,
-            profile=profile,
+            profile=agent_spec,
             active_turn_start_index=0,
         )
 
@@ -322,7 +322,7 @@ class SubagentRunnerTests(unittest.TestCase):
         self.assertIn("task_state", session.metadata)
 
     def test_unknown_agent_type_returns_structured_error(self) -> None:
-        runner = TaskSubagentRunner(base_pipeline=_pipeline())
+        runner = TaskSubagentRunner(base_runtime=_runtime())
 
         result = runner.run(prompt="inspect", agent_type="researcher")
 
@@ -334,7 +334,7 @@ class SubagentRunnerTests(unittest.TestCase):
         self.assertTrue(result.recoverable)
 
     def test_tool_whitelists_prevent_recursion_and_limit_write_tools(self) -> None:
-        runner = TaskSubagentRunner(base_pipeline=_pipeline())
+        runner = TaskSubagentRunner(base_runtime=_runtime())
 
         explore = runner._filtered_tools("explore")._tools
         plan = runner._filtered_tools("plan")._tools
@@ -354,7 +354,7 @@ class SubagentRunnerTests(unittest.TestCase):
 
     def test_run_uses_isolated_session_and_returns_summary(self) -> None:
         provider = FinalAnswerProvider(_explore_answer("done from subagent"))
-        runner = TaskSubagentRunner(base_pipeline=_pipeline(provider))
+        runner = TaskSubagentRunner(base_runtime=_runtime(provider))
         parent = Session(
             id="parent",
             metadata={
@@ -385,7 +385,7 @@ class SubagentRunnerTests(unittest.TestCase):
 
     def test_plain_text_output_is_recoverable_format_failure(self) -> None:
         provider = FinalAnswerProvider("done from subagent")
-        runner = TaskSubagentRunner(base_pipeline=_pipeline(provider))
+        runner = TaskSubagentRunner(base_runtime=_runtime(provider))
 
         result = runner.run(
             prompt="List files",
@@ -426,7 +426,7 @@ class SubagentRunnerTests(unittest.TestCase):
             "incomplete": False,
         })
         provider = FinalAnswerProvider(answer)
-        runner = TaskSubagentRunner(base_pipeline=_pipeline(provider))
+        runner = TaskSubagentRunner(base_runtime=_runtime(provider))
 
         result = runner.run(
             prompt="extract facts",
@@ -466,7 +466,7 @@ class SubagentRunnerTests(unittest.TestCase):
             "incomplete": False,
         })
         provider = FinalAnswerProvider(answer)
-        runner = TaskSubagentRunner(base_pipeline=_pipeline(provider))
+        runner = TaskSubagentRunner(base_runtime=_runtime(provider))
 
         result = runner.run(prompt="plan work", agent_type="plan")
 
@@ -499,7 +499,7 @@ class SubagentRunnerTests(unittest.TestCase):
             "incomplete": False,
         })
         provider = FinalAnswerProvider(answer)
-        runner = TaskSubagentRunner(base_pipeline=_pipeline(provider))
+        runner = TaskSubagentRunner(base_runtime=_runtime(provider))
 
         result = runner.run(prompt="edit result", agent_type="code")
 
@@ -527,7 +527,7 @@ class SubagentRunnerTests(unittest.TestCase):
             "evidence": [{"files_seen": 1}],
         })
         provider = FinalAnswerProvider(answer)
-        runner = TaskSubagentRunner(base_pipeline=_pipeline(provider))
+        runner = TaskSubagentRunner(base_runtime=_runtime(provider))
 
         result = runner.run(
             prompt="extract facts",
@@ -545,7 +545,7 @@ class SubagentRunnerTests(unittest.TestCase):
     def test_step_limit_marks_subagent_result_incomplete(self) -> None:
         provider = RepeatingToolProvider()
         runner = TaskSubagentRunner(
-            base_pipeline=_pipeline(provider),
+            base_runtime=_runtime(provider),
             max_reasoning_steps=2,
         )
 
@@ -577,7 +577,7 @@ class SubagentRunnerTests(unittest.TestCase):
                 "Error: ValueError: Path escapes workspace: /outside/workspace.py"
             )
         )
-        runner = TaskSubagentRunner(base_pipeline=_pipeline(provider, registry=registry))
+        runner = TaskSubagentRunner(base_runtime=_runtime(provider, registry=registry))
 
         result = runner.run(
             prompt="read target",
@@ -601,7 +601,7 @@ class SubagentRunnerTests(unittest.TestCase):
                 "Error: FileNotFoundError: File not found: wrong/Mapper.xml"
             )
         )
-        runner = TaskSubagentRunner(base_pipeline=_pipeline(provider, registry=registry))
+        runner = TaskSubagentRunner(base_runtime=_runtime(provider, registry=registry))
 
         result = runner.run(
             prompt="explore module",
@@ -630,7 +630,7 @@ class SubagentRunnerTests(unittest.TestCase):
             trace_store.start_run(parent_run)
             provider = ToolThenFinalProvider()
             runner = TaskSubagentRunner(
-                base_pipeline=_pipeline(provider),
+                base_runtime=_runtime(provider),
                 max_reasoning_steps=4,
             )
             parent = Session(id="web:parent", metadata={"user_role": "admin"})

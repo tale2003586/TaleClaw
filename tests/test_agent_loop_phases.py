@@ -75,7 +75,7 @@ class FakePluginManager:
 class FakeRouter:
     def __init__(self, *, switched=False) -> None:
         self.switched = switched
-        self.profile = make_agent_spec(
+        self.agent_spec = make_agent_spec(
             name="chat",
             system_prompt="You are helpful.",
             tool_mode="bot",
@@ -85,7 +85,7 @@ class FakeRouter:
         return SimpleNamespace(
             execution="chat",
             intent="answer",
-            profile=self.profile,
+            agent_spec=self.agent_spec,
             confidence=0.9,
             reason="test",
             switched=self.switched,
@@ -100,7 +100,7 @@ class FakeRuntime:
     def run(self, agent, input, context):
         session = context.session
         self.calls.append((session, agent, context.run_state, context.trace_store))
-        reply = "pipeline reply"
+        reply = "runtime reply"
         session.add_message(
             "assistant",
             reply,
@@ -125,14 +125,14 @@ class AgentLoopPhaseTests(unittest.TestCase):
         inbound = self._inbound()
         bus = FakeBus(inbound)
         sessions = FakeSessions()
-        pipeline = FakeRuntime()
+        runtime = FakeRuntime()
         plugin_manager = FakePluginManager()
         trace_store = FakeTraceStore()
         emitted = []
         loop = AgentLoop(
             bus,
             sessions,
-            pipeline,
+            runtime,
             FakeRouter(),
             plugin_manager,
             trace_store=trace_store,
@@ -140,25 +140,25 @@ class AgentLoopPhaseTests(unittest.TestCase):
 
         asyncio.run(loop.run_once(on_text=emitted.append))
 
-        self.assertEqual(["pipeline reply"], emitted)
-        self.assertEqual("pipeline reply", bus.outbound[0].content)
+        self.assertEqual(["runtime reply"], emitted)
+        self.assertEqual("runtime reply", bus.outbound[0].content)
         self.assertEqual(["user", "assistant"], [
             message["role"] for message in sessions.session.messages
         ])
-        self.assertEqual(1, len(pipeline.calls))
+        self.assertEqual(1, len(runtime.calls))
         self.assertEqual(1, len(plugin_manager.after_turn_calls))
         self.assertTrue(any(event[0] == "route_selected" for event in trace_store.events))
         self.assertEqual("chat", trace_store.reports[-1]["execution_path"])
 
-    def test_preprocess_abort_finishes_without_pipeline(self) -> None:
+    def test_preprocess_abort_finishes_without_runtime(self) -> None:
         inbound = self._inbound()
         bus = FakeBus(inbound)
         sessions = FakeSessions()
-        pipeline = FakeRuntime()
+        runtime = FakeRuntime()
         loop = AgentLoop(
             bus,
             sessions,
-            pipeline,
+            runtime,
             FakeRouter(),
             FakePluginManager(abort=True),
             trace_store=FakeTraceStore(),
@@ -166,7 +166,7 @@ class AgentLoopPhaseTests(unittest.TestCase):
 
         asyncio.run(loop.run_once())
 
-        self.assertEqual([], pipeline.calls)
+        self.assertEqual([], runtime.calls)
         self.assertEqual("blocked by plugin", bus.outbound[0].content)
         self.assertEqual([], sessions.session.messages)
 

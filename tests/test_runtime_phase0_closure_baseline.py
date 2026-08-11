@@ -59,7 +59,7 @@ class InMemoryOutbox:
             self.item["status"] = "failed"
 
 
-def _pipeline(tmp_path: Path, provider: ScriptedModel) -> Runtime:
+def _runtime(tmp_path: Path, provider: ScriptedModel) -> Runtime:
     budgeter = ContextBudgeter.from_env()
     return Runtime(
         tools=registry_with_tool(
@@ -104,10 +104,10 @@ def test_full_coding_task_lifecycle_is_offline_and_persists_all_artifacts(
         })),
     ])
     sessions = InMemorySessionManager()
-    pipeline = _pipeline(tmp_path, provider)
+    runtime = _runtime(tmp_path, provider)
     runner = CodingApplication(
         sessions=sessions,
-        base_pipeline=pipeline,
+        base_runtime=runtime,
         workspace_resolver=WorkspaceResolver(
             allowed_roots=[tmp_path],
             default_workspace=workspace,
@@ -131,7 +131,7 @@ def test_full_coding_task_lifecycle_is_offline_and_persists_all_artifacts(
     reply = runner.run_coding_task(
         parent_session=parent,
         user_text="validate the complete lifecycle",
-        profile=CODING_AGENT_SPEC,
+        agent_spec=CODING_AGENT_SPEC,
         workspace_root=workspace,
         run_state=run_state,
         trace_store=trace,

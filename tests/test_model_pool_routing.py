@@ -478,15 +478,15 @@ class RoutedModelProviderTests(unittest.TestCase):
 
 
 class RuntimeModelRoutingTests(unittest.TestCase):
-    def test_pipeline_uses_coding_route_for_coding_profile(self) -> None:
+    def test_runtime_uses_coding_route_for_coding_profile(self) -> None:
         model_pool = FakeModelPool()
-        pipeline = _pipeline_with_pool(model_pool)
+        runtime = _runtime_with_pool(model_pool)
         session = Session(id="task:test", active_agent="coding")
         session.add_message("user", "edit code")
 
         from runtime.agent_spec import AgentSpec, ModelPolicy, ToolSet
         from runtime.runtime import RunContext
-        reply = pipeline.run(
+        reply = runtime.run(
             AgentSpec(
                 name="coding",
                 tool_set=ToolSet(mode="coding"),
@@ -575,7 +575,7 @@ class FakeModelPool:
         return f"{purpose}-model"
 
 
-def _pipeline_with_pool(model_pool) -> Runtime:
+def _runtime_with_pool(model_pool) -> Runtime:
     return Runtime(
         tools=FakeTools(),
         provider=RecordingProvider("default"),

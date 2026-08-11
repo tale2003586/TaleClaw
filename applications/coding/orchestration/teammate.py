@@ -36,7 +36,7 @@ class TeammateContextBuilder:
     def __init__(self, name: str) -> None:
         self.name = name
 
-    def build(self, *, session, profile, **kwargs) -> ContextBundle:
+    def build(self, *, session, agent_spec, **kwargs) -> ContextBundle:
         inbox = BUS.read_inbox(self.name)
         for msg in inbox:
             PROTOCOLS.notify_message(msg)
@@ -46,7 +46,7 @@ class TeammateContextBuilder:
                 "metadata": {"kind": "teammate_inbox"},
             })
         return ContextBundle(messages=[
-            {"role": "system", "content": profile.system_prompt},
+            {"role": "system", "content": agent_spec.system_prompt},
             *session.messages,
         ])
 
@@ -163,8 +163,7 @@ class TeammateManager:
     
     def _run_member(self, name: str, role: str, prompt: str):
         team_name = self.config["team_name"]
-        profile = self._profile_for(name, role, team_name)
-        spec = self._agent_spec(name=name, role=role, profile=profile)
+        spec = self._agent_spec_for(name, role, team_name)
         session = self._new_session(name, role, prompt)
         tools = build_teammate_tool_registry(name)
         context_builder = TeammateContextBuilder(name)
@@ -247,7 +246,7 @@ class TeammateManager:
         session.add_message("user", _render_initial_prompt(prompt))
         return session
 
-    def _profile_for(self, name: str, role: str, team_name: str) -> AgentSpec:
+    def _agent_spec_for(self, name: str, role: str, team_name: str) -> AgentSpec:
         return AgentSpec(
             name=f"teammate:{name}",
             role=role,
@@ -292,9 +291,9 @@ class TeammateManager:
         runner.run(
             session=session,
             spec=spec,
-            build_context=lambda session, profile, **kwargs: context_builder.build(
+            build_context=lambda session, agent_spec, **kwargs: context_builder.build(
                 session=session,
-                profile=profile,
+                agent_spec=agent_spec,
                 **kwargs,
             ),
             after_turn=lambda session: session.touch(),
@@ -303,9 +302,6 @@ class TeammateManager:
             ),
         )
         return state
-
-    def _agent_spec(self, *, name: str, role: str, profile: AgentSpec) -> AgentSpec:
-        return profile
 
     def _after_teammate_tool_calls(
         self,

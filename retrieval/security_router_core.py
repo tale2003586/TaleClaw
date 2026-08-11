@@ -171,7 +171,7 @@ class SecurityRetrievalRouter:
     ) -> RoutedRetrievalPlan:
         """Route a query with cheap retrieval evidence before escalating.
 
-        Pipeline:
+        Runtime:
         1. Block unsafe/out-of-scope/insufficient-evidence prompts.
         2. Run fast dense retrieval by default.
         3. Use retrieval confidence to decide direct/rewrite/hybrid/reranker/abstain.

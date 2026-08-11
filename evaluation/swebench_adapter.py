@@ -285,7 +285,7 @@ def run_swebench_instance(
     model = model_name or model_pool.model_for("coding")
     trace_store = TraceStore(eval_dir / "runs")
     sessions = SessionManager()
-    pipeline = Runtime(
+    runtime = Runtime(
         tools=build_lead_tool_registry(),
         provider=provider,
         model=model,
@@ -306,7 +306,7 @@ def run_swebench_instance(
     )
     runner = CodingApplication(
         sessions=sessions,
-        base_pipeline=pipeline,
+        base_runtime=runtime,
         workspace_resolver=WorkspaceResolver(
             allowed_roots=[workspace_parent],
             default_workspace=workspace,
@@ -346,7 +346,7 @@ def run_swebench_instance(
         reply = runner.run_coding_task(
             parent_session=parent,
             user_text=build_swebench_prompt(instance),
-            profile=CODING_AGENT_SPEC,
+            agent_spec=CODING_AGENT_SPEC,
             workspace_root=str(workspace),
             run_state=run_state,
             trace_store=trace_store,

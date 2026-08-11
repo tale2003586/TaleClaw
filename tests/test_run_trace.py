@@ -20,6 +20,7 @@ from runtime.trace.trace_store import TraceStore
 from runtime.trace.workspace import capture_workspace_snapshot, diff_workspace_snapshots
 from runtime.workspace import WorkspaceResolver
 from runtime.routing.agent_router import AgentRouter
+from tests.fakes import make_agent_spec
 from runtime.sessions.session import Session, SessionManager
 from tests.postgres_utils import temporary_postgres_schema
 from applications.coding.conclusions import ConclusionExtraction
@@ -91,18 +92,17 @@ def _final_response(content="done") -> LLMResponse:
     )
 
 
-def _run_pipeline(pipeline, session, profile, *, run_state=None, trace_store=None):
+def _run_runtime(runtime, session, agent_spec, *, run_state=None, trace_store=None):
     user_input = next(
         str(message.get("content") or "")
         for message in reversed(session.messages)
         if message.get("role") == "user"
     )
-    return pipeline.run(
-        AgentSpec(name="test", profile=profile),
+    return runtime.run(
+        agent_spec,
         user_input,
         RunContext(
             session=session,
-            profile=profile,
             run_state=run_state,
             trace_store=trace_store,
         ),
@@ -130,7 +130,7 @@ def _registry() -> ToolRegistry:
     return registry
 
 
-def _pipeline(provider) -> Runtime:
+def _runtime(provider) -> Runtime:
     return Runtime(
         tools=_registry(),
         provider=provider,
@@ -140,7 +140,7 @@ def _pipeline(provider) -> Runtime:
     )
 
 
-def _real_context_pipeline(provider) -> Runtime:
+def _real_context_runtime(provider) -> Runtime:
     return Runtime(
         tools=_registry(),
         provider=provider,
@@ -150,7 +150,7 @@ def _real_context_pipeline(provider) -> Runtime:
     )
 
 
-def _workspace_pipeline(provider) -> Runtime:
+def _workspace_runtime(provider) -> Runtime:
     registry = ToolRegistry()
     write_schema = function_tool(
             "write_file",
@@ -627,9 +627,13 @@ class RunTraceTests(unittest.TestCase):
             _tool_response(1, arguments={"text": "hello"}),
             _final_response("done"),
         ])
-        pipeline = _real_context_pipeline(provider)
+        runtime = _real_context_runtime(provider)
 
-        _run_pipeline(pipeline, session, SimpleNamespace(tool_mode="bot"))
+        _run_runtime(
+            runtime,
+            session,
+            make_agent_spec("test", "test", "bot"),
+        )
 
         self.assertEqual(2, len(provider.calls))
         second_call_messages = provider.calls[1]["messages"]
@@ -656,7 +660,7 @@ class RunTraceTests(unittest.TestCase):
             loop = AgentLoop(
                 bus,
                 sessions,
-                _pipeline(provider),
+                _runtime(provider),
                 AgentRouter(),
                 plugin_manager=PluginManager(
                     [RunReportPlugin()],
@@ -729,10 +733,10 @@ class RunTraceTests(unittest.TestCase):
             root = Path(tmp)
             sessions = SessionManager(dsn)
             provider = ScriptedProvider([_final_response("coding done")])
-            base_pipeline = _pipeline(provider)
+            base_runtime = _runtime(provider)
             runner = CodingApplication(
                 sessions=sessions,
-                base_pipeline=base_pipeline,
+                base_runtime=base_runtime,
                 workspace_root=root,
             )
             runner.factory = TaskSessionFactory(sessions, root=root / ".coding_applications")
@@ -755,11 +759,7 @@ class RunTraceTests(unittest.TestCase):
                 reply = runner.run_coding_task(
                     parent_session=parent,
                     user_text="fix code",
-                    profile=SimpleNamespace(
-                        name="coding",
-                        tool_mode="coding",
-                        system_prompt="coding",
-                    ),
+                    agent_spec=make_agent_spec("coding", "coding", "coding"),
                     run_state=run_state,
                     trace_store=trace_store,
                 )
@@ -803,7 +803,7 @@ class RunTraceTests(unittest.TestCase):
             loop = AgentLoop(
                 bus,
                 sessions,
-                _pipeline(provider),
+                _runtime(provider),
                 AgentRouter(),
                 trace_store=trace_store,
             )
@@ -851,7 +851,7 @@ class RunTraceTests(unittest.TestCase):
             loop = AgentLoop(
                 bus,
                 sessions,
-                _pipeline(provider),
+                _runtime(provider),
                 AgentRouter(),
                 trace_store=trace_store,
             )
@@ -903,7 +903,7 @@ class RunTraceTests(unittest.TestCase):
             loop = AgentLoop(
                 bus,
                 sessions,
-                _pipeline(provider),
+                _runtime(provider),
                 AgentRouter(),
                 trace_store=trace_store,
             )
@@ -1044,7 +1044,7 @@ class RunTraceTests(unittest.TestCase):
             ])
             runner = CodingApplication(
                 sessions=sessions,
-                base_pipeline=_workspace_pipeline(provider),
+                base_runtime=_workspace_runtime(provider),
                 workspace_root=workspace,
             )
             runner.factory = TaskSessionFactory(sessions, root=root / ".coding_applications")
@@ -1067,11 +1067,7 @@ class RunTraceTests(unittest.TestCase):
                 runner.run_coding_task(
                     parent_session=parent,
                     user_text="create answer file",
-                    profile=SimpleNamespace(
-                        name="coding",
-                        tool_mode="coding",
-                        system_prompt="coding",
-                    ),
+                    agent_spec=make_agent_spec("coding", "coding", "coding"),
                     workspace_root=str(workspace),
                     run_state=run_state,
                     trace_store=trace_store,

@@ -29,8 +29,6 @@ from runtime.context import (
 )
 from runtime.context.budget import ContextBudgeter
 from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
-from runtime.runtime import Runtime
-from runtime.agent_spec import AgentSpec
 from runtime.runtime import RunContext, Runtime
 from runtime.token_estimator import estimate_tokens
 from runtime.trace.run_state import RunState
@@ -143,7 +141,7 @@ def measure(name: str, iterations: int, function, *, note: str = "") -> dict:
     }
 
 
-def pipeline_for(responses):
+def runtime_for(responses):
     provider = ScriptedModel(responses)
     budgeter = ContextBudgeter.from_env()
     registry = registry_with_tool(
@@ -151,7 +149,7 @@ def pipeline_for(responses):
         RecordingTool(output="ok"),
         modes={"bot"},
     )
-    pipeline = Runtime(
+    runtime = Runtime(
         tools=registry,
         provider=provider,
         model="fake-model",
@@ -167,56 +165,56 @@ def pipeline_for(responses):
         max_tokens=256,
         max_reasoning_steps=8,
     )
-    return pipeline, provider
+    return runtime, provider
 
 
-def run_pipeline(responses):
-    pipeline, _ = pipeline_for(responses)
+def run_runtime(responses):
+    runtime, _ = runtime_for(responses)
     session = Session(id="bench:chat", active_agent="bot")
     session.add_message("user", "hello")
-    pipeline.run(AgentSpec.from_profile(PROFILE), "hello", RunContext(session=session))
+    runtime.run(PROFILE, "hello", RunContext(session=session))
 
 
 def run_runtime_facade():
-    pipeline, _ = pipeline_for([FinalResponse("ok")])
+    runtime, _ = runtime_for([FinalResponse("ok")])
     session = Session(id="bench:runtime-facade", active_agent="bot")
     session.add_message("user", "hello")
-    pipeline.run(
-        AgentSpec.from_profile(PROFILE),
+    runtime.run(
+        PROFILE,
         "hello",
         RunContext(session=session),
     )
 
 
-def run_streaming_pipeline():
-    pipeline, provider = pipeline_for([FinalResponse("streamed")])
+def run_streaming_runtime():
+    runtime, provider = runtime_for([FinalResponse("streamed")])
     provider.stream_chunks = ["stream", "ed"]
     session = Session(id="bench:stream", active_agent="bot")
     session.add_message("user", "hello")
-    pipeline.run(
-        AgentSpec.from_profile(PROFILE),
+    runtime.run(
+        PROFILE,
         "hello",
         RunContext(session=session, on_text=lambda chunk: None),
     )
 
 
-def run_cancelled_pipeline():
-    pipeline, _ = pipeline_for([FinalResponse("unused")])
+def run_cancelled_runtime():
+    runtime, _ = runtime_for([FinalResponse("unused")])
     session = Session(id="bench:cancel", active_agent="bot")
     session.add_message("user", "cancel")
-    pipeline.run(
-        AgentSpec.from_profile(PROFILE),
+    runtime.run(
+        PROFILE,
         "cancel",
         RunContext(session=session, cancel_requested=lambda: True),
     )
 
 
-def run_traced_pipeline():
-    pipeline, _ = pipeline_for([FinalResponse("ok")])
+def run_traced_runtime():
+    runtime, _ = runtime_for([FinalResponse("ok")])
     session = Session(id="bench:trace", active_agent="bot")
     session.add_message("user", "hello")
-    pipeline.run(
-        AgentSpec.from_profile(PROFILE),
+    runtime.run(
+        PROFILE,
         "hello",
         RunContext(session=session, run_state=__import__(
             "runtime.trace.run_state",
@@ -226,9 +224,9 @@ def run_traced_pipeline():
     )
 
 
-def run_disk_traced_pipeline():
+def run_disk_traced_runtime():
     with tempfile.TemporaryDirectory() as tmp:
-        pipeline, _ = pipeline_for([FinalResponse("ok")])
+        runtime, _ = runtime_for([FinalResponse("ok")])
         session = Session(id="bench:disk-trace", active_agent="bot")
         session.add_message("user", "hello")
         run_state = RunState.create(session_id=session.id)
@@ -242,8 +240,8 @@ def run_disk_traced_pipeline():
             else:
                 os.environ["TRACE_INDEX_ENABLED"] = previous
         trace.start_run(run_state)
-        reply = pipeline.run(
-            AgentSpec.from_profile(PROFILE),
+        reply = runtime.run(
+            PROFILE,
             "hello",
             RunContext(session=session, run_state=run_state, trace_store=trace),
         ).output
@@ -305,8 +303,8 @@ def subagent_run():
         },
         "incomplete": False,
     })
-    pipeline, _ = pipeline_for([FinalResponse(answer)])
-    TaskSubagentRunner(base_pipeline=pipeline, max_reasoning_steps=4).run(
+    runtime, _ = runtime_for([FinalResponse(answer)])
+    TaskSubagentRunner(base_runtime=runtime, max_reasoning_steps=4).run(
         prompt="inspect",
         agent_type="explore",
         parent_session=Session(
@@ -338,15 +336,15 @@ def benchmarks(iterations: int) -> tuple[list[dict], dict]:
     tool = RecordingTool(output="ok")
     scenarios = [
         measure(
-            "pipeline_construction",
+            "runtime_construction",
             iterations,
-            lambda: pipeline_for([FinalResponse("ok")]),
+            lambda: runtime_for([FinalResponse("ok")]),
             note="Current Runtime + AgentRunner fixture; excludes model pool and external stores.",
         ),
         measure(
             "chat_no_tool_runtime",
             iterations,
-            lambda: run_pipeline([FinalResponse("ok")]),
+            lambda: run_runtime([FinalResponse("ok")]),
             note="Fake model; includes context construction and model-external runtime.",
         ),
         measure(
@@ -358,7 +356,7 @@ def benchmarks(iterations: int) -> tuple[list[dict], dict]:
         measure(
             "chat_one_tool_runtime",
             iterations,
-            lambda: run_pipeline([
+            lambda: run_runtime([
                 ToolResponse("example_tool", {"value": 1}),
                 FinalResponse("done"),
             ]),
@@ -367,7 +365,7 @@ def benchmarks(iterations: int) -> tuple[list[dict], dict]:
         measure(
             "chat_three_tool_runtime",
             iterations,
-            lambda: run_pipeline([
+            lambda: run_runtime([
                 ToolResponse("example_tool", {"value": 1}, "one"),
                 ToolResponse("example_tool", {"value": 2}, "two"),
                 ToolResponse("example_tool", {"value": 3}, "three"),
@@ -426,25 +424,25 @@ def benchmarks(iterations: int) -> tuple[list[dict], dict]:
         measure(
             "chat_trace_enabled",
             iterations,
-            run_traced_pipeline,
+            run_traced_runtime,
             note="Null trace sink; measures event construction/callback overhead, not disk I/O.",
         ),
         measure(
             "chat_trace_disk_write",
             iterations,
-            run_disk_traced_pipeline,
+            run_disk_traced_runtime,
             note="Real TraceStore JSONL/report writes with index disabled; includes temporary directory lifecycle.",
         ),
         measure(
             "chat_streaming",
             iterations,
-            run_streaming_pipeline,
+            run_streaming_runtime,
             note="Two deterministic text chunks and no transport I/O.",
         ),
         measure(
             "cancellation_before_model",
             iterations,
-            run_cancelled_pipeline,
+            run_cancelled_runtime,
         ),
         measure(
             "coding_application_factory",

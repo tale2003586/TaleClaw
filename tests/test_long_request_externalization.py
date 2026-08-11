@@ -14,10 +14,13 @@ from applications.coding.session import TaskSessionFactory
 from applications.coding.task_state import TASK_STATE_METADATA_KEY
 from models.provider import LLMResponse
 from applications.turn_coordinator import TurnCoordinator as AgentLoop
-from runtime.context import ArtifactStore, LongContentDetector
+from runtime.context import ArtifactStore, ContextBuilder, LongContentDetector
 from runtime.context.events import ContextEventType
 from runtime.messaging.events import InboundMessage
+from runtime.runtime import Runtime
 from runtime.sessions.session import Session
+from tests.fakes import make_agent_spec
+from tools.executor import ToolExecutor
 
 
 class _InMemorySessions:
@@ -42,17 +45,13 @@ class _Bus:
 
 
 class _CodingRouter:
-    profile = SimpleNamespace(
-        name="coding",
-        tool_mode="coding",
-        system_prompt="coding",
-    )
+    agent_spec = make_agent_spec("coding", "coding", "coding")
 
     def route(self, session, content):
         return SimpleNamespace(
             execution="coding",
             intent="coding_task",
-            profile=self.profile,
+            agent_spec=self.agent_spec,
             confidence=1.0,
             reason="test",
             switched=False,
@@ -92,11 +91,12 @@ def _direct_coding_runner(tmp_path: Path) -> tuple[CodingApplication, _InMemoryS
     artifact_store = ArtifactStore(tmp_path / "artifacts")
     coding = CodingApplication(
         sessions=sessions,
-        base_pipeline=SimpleNamespace(
+        base_runtime=Runtime(
             tools=_Tools(),
             provider=_Provider(),
             model="test-model",
-            tool_executor=object(),
+            tool_executor=ToolExecutor([]),
+            context_builder=ContextBuilder(),
             max_tokens=1_024,
             max_reasoning_steps=2,
         ),
@@ -144,7 +144,7 @@ def test_direct_coding_call_records_current_request_in_an_empty_parent(tmp_path)
     coding.run_coding_task(
         parent_session=parent,
         user_text=current_request,
-        profile=_CodingRouter.profile,
+        agent_spec=_CodingRouter.agent_spec,
     )
 
     task = _task_session(sessions)
@@ -205,7 +205,7 @@ def test_direct_coding_call_does_not_reuse_prior_request_or_artifact_refs(tmp_pa
     coding.run_coding_task(
         parent_session=parent,
         user_text=current_request,
-        profile=_CodingRouter.profile,
+        agent_spec=_CodingRouter.agent_spec,
     )
 
     task = _task_session(sessions)
@@ -232,7 +232,7 @@ def test_direct_coding_call_supersedes_a_tracked_raw_long_request(tmp_path) -> N
     coding.run_coding_task(
         parent_session=parent,
         user_text=current_request,
-        profile=_CodingRouter.profile,
+        agent_spec=_CodingRouter.agent_spec,
     )
 
     task = _task_session(sessions)
@@ -270,11 +270,12 @@ def test_500k_inbound_request_is_stored_once_and_only_referenced_downstream(tmp_
     provider = _Provider()
     coding = CodingApplication(
         sessions=sessions,
-        base_pipeline=SimpleNamespace(
+        base_runtime=Runtime(
             tools=_Tools(),
             provider=provider,
             model="test-model",
-            tool_executor=object(),
+            tool_executor=ToolExecutor([]),
+            context_builder=ContextBuilder(),
             max_tokens=1_024,
             max_reasoning_steps=2,
         ),

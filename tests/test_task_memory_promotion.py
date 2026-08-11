@@ -16,6 +16,10 @@ from applications.coding.conclusions import (
 from applications.coding.promotion import PromotionResult, TaskMemoryPromoter
 from applications.coding.runner import CodingApplication
 from applications.coding.session import TaskSessionFactory, TaskSessionRecord
+from tests.fakes import make_agent_spec
+from runtime.context import ContextBuilder
+from runtime.runtime import Runtime
+from tools.executor import ToolExecutor
 
 
 class RecordingProvider:
@@ -65,23 +69,24 @@ class TaskMemoryPromotionTests(unittest.TestCase):
             root = Path(tmp)
             sessions = SessionManager(dsn)
             provider = RunnerProvider()
-            base_pipeline = SimpleNamespace(
+            base_runtime = Runtime(
                 tools=RunnerTools(),
                 provider=provider,
                 model="test-model",
-                tool_executor=object(),
+                tool_executor=ToolExecutor([]),
+                context_builder=ContextBuilder(),
                 max_tokens=8000,
             )
             runner = CodingApplication(
                 sessions=sessions,
-                base_pipeline=base_pipeline,
+                base_runtime=base_runtime,
             )
             runner.factory = TaskSessionFactory(sessions, root=root / ".coding_applications")
             try:
                 reply = runner.run_coding_task(
                     parent_session=Session(id="web:default"),
                     user_text="Add storage persistence",
-                    profile=SimpleNamespace(tool_mode="coding", system_prompt="coding"),
+                    agent_spec=make_agent_spec("coding", "coding", "coding"),
                 )
             finally:
                 sessions.close()

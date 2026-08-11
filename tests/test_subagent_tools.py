@@ -104,7 +104,7 @@ def _registry() -> ToolRegistry:
     return registry
 
 
-def _pipeline(registry: ToolRegistry) -> Runtime:
+def _runtime(registry: ToolRegistry) -> Runtime:
     return Runtime(
         tools=registry,
         provider=DummyProvider(),
@@ -119,7 +119,7 @@ class SubagentToolTests(unittest.TestCase):
         configure_subagent_runner(None)
 
     def test_subagent_tool_filter_excludes_team_tools(self) -> None:
-        runner = TaskSubagentRunner(base_pipeline=_pipeline(_registry()))
+        runner = TaskSubagentRunner(base_runtime=_runtime(_registry()))
 
         tools = runner._filtered_tools("code")
 

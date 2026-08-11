@@ -23,9 +23,9 @@ class RecordingSessions:
         self.saved.append(session)
 
 
-class RejectingPipeline:
+class RejectingRuntime:
     def run(self, session, profile):
-        raise AssertionError("mode switching must not run the pipeline")
+        raise AssertionError("mode switching must not run the runtime")
 
 
 class RecordingTaskRunner:
@@ -37,12 +37,11 @@ class RecordingTaskRunner:
         *,
         parent_session,
         user_text: str,
-        profile,
+        agent_spec,
         workspace_root=None,
         cancel_requested=None,
-        agent_spec=None,
     ) -> str:
-        self.calls.append((parent_session, user_text, profile, workspace_root))
+        self.calls.append((parent_session, user_text, agent_spec, workspace_root))
         return "coding task completed"
 
 
@@ -55,7 +54,7 @@ class ModeSwitchTests(unittest.TestCase):
         loop = AgentLoop(
             bus,
             sessions,
-            RejectingPipeline(),
+            RejectingRuntime(),
             AgentRouter(),
             coding_application=task_runner,
         )
@@ -89,7 +88,7 @@ class ModeSwitchTests(unittest.TestCase):
         loop = AgentLoop(
             bus,
             sessions,
-            RejectingPipeline(),
+            RejectingRuntime(),
             AgentRouter(),
             coding_application=task_runner,
         )
@@ -120,7 +119,7 @@ class ModeSwitchTests(unittest.TestCase):
         loop = AgentLoop(
             bus,
             sessions,
-            RejectingPipeline(),
+            RejectingRuntime(),
             AgentRouter(),
             coding_application=task_runner,
         )

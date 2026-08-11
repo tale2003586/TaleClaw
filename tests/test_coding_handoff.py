@@ -14,6 +14,10 @@ from applications.coding.handoff import (
     build_coding_session_handoff,
 )
 from runtime.sessions.session import Session
+from tests.fakes import make_agent_spec
+from runtime.context import ContextBuilder
+from runtime.runtime import Runtime
+from tools.executor import ToolExecutor
 
 
 class CodingSessionHandoffTests(unittest.TestCase):
@@ -120,11 +124,12 @@ class CodingSessionHandoffTests(unittest.TestCase):
             provider = RunnerProvider()
             runner = CodingApplication(
                 sessions=sessions,
-                base_pipeline=SimpleNamespace(
+                base_runtime=Runtime(
                     tools=RunnerTools(),
                     provider=provider,
                     model="test-model",
-                    tool_executor=object(),
+                    tool_executor=ToolExecutor([]),
+                    context_builder=ContextBuilder(),
                     max_tokens=8000,
                 ),
                 workspace_root=root,
@@ -139,7 +144,7 @@ class CodingSessionHandoffTests(unittest.TestCase):
             runner.run_coding_task(
                 parent_session=parent,
                 user_text="把它接入 coding 任务",
-                profile=SimpleNamespace(tool_mode="coding", system_prompt="coding"),
+                agent_spec=make_agent_spec("coding", "coding", "coding"),
             )
 
             first_prompt = "\n".join(
@@ -165,7 +170,7 @@ class CodingSessionHandoffTests(unittest.TestCase):
                 *,
                 parent_session,
                 user_text,
-                profile,
+                agent_spec,
                 cancel_requested=None,
             ) -> str:
                 parent_session.metadata[PENDING_CODING_TASK_SUMMARY_METADATA_KEY] = {
@@ -185,7 +190,9 @@ class CodingSessionHandoffTests(unittest.TestCase):
         )
         session = Session(id="web:default", active_agent="coding")
         inbound = SimpleNamespace(content="Change the files", metadata={})
-        route = SimpleNamespace(profile=SimpleNamespace(tool_mode="coding"))
+        route = SimpleNamespace(
+            agent_spec=make_agent_spec("coding", "coding", "coding")
+        )
         run_state = SimpleNamespace(run_id="run-1")
 
         reply = loop._execute(session, inbound, route, run_state, on_text=None)

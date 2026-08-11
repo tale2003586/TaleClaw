@@ -206,7 +206,7 @@ class CodingBenchmarkHarness:
         sessions = EvaluationSessionManager() if scripted else SessionManager()
         provider, model = self._provider_for_task(task)
         effective_step_budget = self._effective_step_budget(task)
-        pipeline = Runtime(
+        runtime = Runtime(
             tools=_tool_registry_for(task.allowed_tools),
             provider=provider,
             model=model,
@@ -227,7 +227,7 @@ class CodingBenchmarkHarness:
         )
         runner = CodingApplication(
             sessions=sessions,
-            base_pipeline=pipeline,
+            base_runtime=runtime,
             workspace_resolver=WorkspaceResolver(
                 allowed_roots=[workspaces_root],
                 default_workspace=workspace,
@@ -262,7 +262,7 @@ class CodingBenchmarkHarness:
             reply = runner.run_coding_task(
                 parent_session=parent,
                 user_text=task.prompt,
-                profile=CODING_AGENT_SPEC,
+                agent_spec=CODING_AGENT_SPEC,
                 workspace_root=str(workspace),
                 run_state=run_state,
                 trace_store=trace_store,

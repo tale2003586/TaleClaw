@@ -76,7 +76,6 @@ class WebSessionTitleService:
         self.max_chars = max(1, int(max_chars))
         self.spec = AgentSpec(
             name="web_session_title",
-            profile=None,
             model_purpose="summary",
             max_tokens=48,
         )

@@ -315,7 +315,7 @@ def build_runtime() -> AppRuntime:
             reflection_interval=_env_int("REFLECTION_INTERVAL", 5),
         )
 
-    pipeline = Runtime(
+    runtime = Runtime(
         tools=tools,
         provider=provider,
         model=model,
@@ -330,13 +330,13 @@ def build_runtime() -> AppRuntime:
         model_pool=model_pool,
         tool_executor=executor,
         reflection_agent=reflection_agent,
-        max_tokens=pipeline.max_tokens,
+        max_tokens=runtime.max_tokens,
         max_reasoning_steps=50,
     )
 
     coding_application = CodingApplication(
         sessions=sessions,
-        base_pipeline=pipeline,
+        base_runtime=runtime,
         semantic_memory_command_service=(
             semantic_memory_command_service
             if _env_bool("SEMANTIC_MEMORY_WRITE_ENABLED", False)
@@ -346,7 +346,7 @@ def build_runtime() -> AppRuntime:
         long_content_detector=long_content_detector,
     )
     subagent_runner = TaskSubagentRunner(
-        base_pipeline=pipeline,
+        base_runtime=runtime,
         max_reasoning_steps=_env_int(
             "SUBAGENT_MAX_REASONING_STEPS",
             SUBAGENT_MAX_REASONING_STEPS,
@@ -357,7 +357,7 @@ def build_runtime() -> AppRuntime:
     coordinator = TurnCoordinator(
         bus,
         sessions,
-        pipeline,
+        runtime,
         router,
         plugin_manager,
         coding_application=coding_application,

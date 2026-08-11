@@ -28,7 +28,7 @@ class AgentRouterHybridClassificationTests(unittest.TestCase):
             "我想写一篇关于测试焦虑的文章",
         )
 
-        self.assertIs(BOT_AGENT_SPEC, route.profile)
+        self.assertIs(BOT_AGENT_SPEC, route.agent_spec)
         self.assertEqual(["我想写一篇关于测试焦虑的文章"], classifier.calls)
 
     def test_classifier_can_accept_real_coding_request(self) -> None:
@@ -41,7 +41,7 @@ class AgentRouterHybridClassificationTests(unittest.TestCase):
             "请修改 Python 文件并运行测试",
         )
 
-        self.assertIs(CODING_AGENT_SPEC, route.profile)
+        self.assertIs(CODING_AGENT_SPEC, route.agent_spec)
         self.assertEqual("coding", route.intent)
         self.assertEqual("coding_application", route.execution)
         self.assertEqual("coding", session.metadata["last_route"]["intent"])
@@ -55,7 +55,7 @@ class AgentRouterHybridClassificationTests(unittest.TestCase):
             "帮我下载 storage 里的报告文件",
         )
 
-        self.assertIs(BOT_AGENT_SPEC, route.profile)
+        self.assertIs(BOT_AGENT_SPEC, route.agent_spec)
         self.assertEqual("storage_file", route.intent)
         self.assertEqual([], classifier.calls)
 
@@ -68,7 +68,7 @@ class AgentRouterHybridClassificationTests(unittest.TestCase):
 
         route = AgentRouter().route(session, "继续修改代码")
 
-        self.assertIs(BOT_AGENT_SPEC, route.profile)
+        self.assertIs(BOT_AGENT_SPEC, route.agent_spec)
         self.assertEqual("bot", session.active_agent)
         self.assertEqual("chat", route.intent)
 
@@ -80,7 +80,7 @@ class AgentRouterHybridClassificationTests(unittest.TestCase):
             "请修改 gateway/telegram/storage.py 并运行测试",
         )
 
-        self.assertIs(CODING_AGENT_SPEC, route.profile)
+        self.assertIs(CODING_AGENT_SPEC, route.agent_spec)
         self.assertEqual("coding", route.intent)
         self.assertEqual(["请修改 gateway/telegram/storage.py 并运行测试"], classifier.calls)
 
@@ -90,7 +90,7 @@ class AgentRouterHybridClassificationTests(unittest.TestCase):
 
         route = router.route(Session(id="web:default"), "帮我润色这段文字")
 
-        self.assertIs(BOT_AGENT_SPEC, route.profile)
+        self.assertIs(BOT_AGENT_SPEC, route.agent_spec)
         self.assertEqual([], classifier.calls)
 
     def test_missing_classifier_falls_back_to_bot(self) -> None:
@@ -99,7 +99,7 @@ class AgentRouterHybridClassificationTests(unittest.TestCase):
             "请修改 Python 文件并运行测试",
         )
 
-        self.assertIs(BOT_AGENT_SPEC, route.profile)
+        self.assertIs(BOT_AGENT_SPEC, route.agent_spec)
 
     def test_explicit_coding_switch_skips_classifier(self) -> None:
         classifier = RecordingClassifier(False)

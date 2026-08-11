@@ -26,7 +26,7 @@ class Sessions:
 class Router:
     def route(self, session, text):
         return SimpleNamespace(
-            profile=make_agent_spec("chat", "chat prompt", "bot"),
+            agent_spec=make_agent_spec("chat", "chat prompt", "bot"),
             switched=False,
             switch_message=None,
             intent="chat",
@@ -54,8 +54,8 @@ def test_default_single_agent_run_once_consumes_and_publishes_user_bus():
     async def scenario():
         bus = MessageBus()
         sessions = Sessions()
-        pipeline = Runtime()
-        loop = AgentLoop(bus, sessions, pipeline, Router())
+        runtime = Runtime()
+        loop = AgentLoop(bus, sessions, runtime, Router())
         await bus.publish_inbound(InboundMessage(
             channel="web",
             chat_id="phase0",
@@ -65,11 +65,11 @@ def test_default_single_agent_run_once_consumes_and_publishes_user_bus():
         ))
         await loop.run_once()
         outbound = await asyncio.wait_for(bus._outbound.get(), timeout=0.1)
-        return sessions, pipeline, outbound
+        return sessions, runtime, outbound
 
-    sessions, pipeline, outbound = asyncio.run(scenario())
+    sessions, runtime, outbound = asyncio.run(scenario())
 
-    assert pipeline.calls == [("web:phase0", "chat")]
+    assert runtime.calls == [("web:phase0", "chat")]
     assert [item["role"] for item in sessions.session.messages] == ["user", "assistant"]
     assert outbound.content == "reply"
     # The real AgentRouter writes last_route; this intentionally minimal fake router does not.
@@ -82,8 +82,8 @@ def test_default_single_agent_run_once_consumes_and_publishes_user_bus():
 def test_run_inbound_bypasses_inbound_queue_but_still_publishes_outbound():
     async def scenario():
         bus = MessageBus()
-        pipeline = Runtime()
-        loop = AgentLoop(bus, Sessions(), pipeline, Router())
+        runtime = Runtime()
+        loop = AgentLoop(bus, Sessions(), runtime, Router())
         await loop.run_inbound(InboundMessage(
             channel="cli",
             chat_id="local",
