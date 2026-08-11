@@ -42,7 +42,6 @@ from config import (
     LONG_CONTENT_MAX_TOKENS,
     WORKDIR,
 )
-from memory.commands import MemoryContext
 from runtime.sessions import SessionManager
 from .artifacts import TaskArtifactPaths, TaskArtifactWriter
 from .conclusions import TaskConclusionExtractor
@@ -243,11 +242,7 @@ class CodingApplication:
         ).promote(
             task_id=record.task_id,
             extracted_conclusions=extraction.candidates,
-            memory_context=(
-                MemoryContext.from_session(record.session)
-                if self.semantic_memory_command_service is not None
-                else None
-            ),
+            memory_context=self._memory_context(record.session),
             repository_revision=repository_revision,
         )
         artifacts = None
@@ -329,6 +324,14 @@ class CodingApplication:
                 trace_store.append_event(run_state, "coding_application_completed", task_report)
                 trace_store.write_run_state(run_state)
         return self._format_parent_reply(record, reply, promotion, artifacts)
+
+    def _memory_context(self, session):
+        if self.semantic_memory_command_service is None:
+            return None
+        from memory.commands import MemoryContext
+
+        return MemoryContext.from_session(session)
+
     def _build_task_runtime(
         self,
         *,

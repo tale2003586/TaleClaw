@@ -1,5 +1,9 @@
 import ast
 from pathlib import Path
+import json
+import os
+import subprocess
+import sys
 from types import SimpleNamespace
 
 from runtime.execution.loop_policies import (
@@ -11,6 +15,32 @@ from runtime.execution.policy_set import ExecutionPolicies
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_bootstrap_does_not_import_memory_implementations_when_disabled() -> None:
+    env = {
+        **os.environ,
+        "SEMANTIC_MEMORY_ENABLED": "0",
+        "SEMANTIC_MEMORY_WRITE_ENABLED": "0",
+        "EPISODIC_MEMORY_ENABLED": "0",
+    }
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json,sys; import applications.bootstrap; "
+                "print(json.dumps(sorted(n for n in sys.modules if n.startswith('memory.'))))"
+            ),
+        ],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(completed.stdout) == []
 
 
 def _imports(path: Path) -> set[str]:

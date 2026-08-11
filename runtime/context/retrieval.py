@@ -4,12 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from memory.episodic_retrieval import (
-    EpisodicBoundary,
-    EpisodicHistoryRetrievalService,
-)
-
-
 class ContextRetrievalService:
     def __init__(
         self,
@@ -34,14 +28,7 @@ class ContextRetrievalService:
         self.security_route_classifier = security_route_classifier
         self.security_knowledge_index = security_knowledge_index
         self.security_auto_context_enabled = bool(security_auto_context_enabled)
-        self.episodic_retrieval_service = (
-            episodic_retrieval_service
-            or EpisodicHistoryRetrievalService(
-                history_vector_index,
-                top_k=self.retrieval_top_k,
-                min_score=self.retrieval_min_score,
-            )
-        )
+        self.episodic_retrieval_service = episodic_retrieval_service
 
     def retrieve_history(
         self,
@@ -55,16 +42,31 @@ class ContextRetrievalService:
         query = self._retrieval_query(current_request, active_turn_messages)
         if not query.strip():
             return "", []
-        result = self.episodic_retrieval_service.retrieve(
+        service, boundary_type = self._episodic_retrieval()
+        result = service.retrieve(
             query,
-            EpisodicBoundary.from_session(session),
+            boundary_type.from_session(session),
         )
-        if hasattr(self.episodic_retrieval_service, "drain_trace_events"):
-            events = self.episodic_retrieval_service.drain_trace_events()
+        if hasattr(service, "drain_trace_events"):
+            events = service.drain_trace_events()
             metadata = getattr(session, "metadata", None)
             if events and isinstance(metadata, dict):
                 metadata.setdefault("memory_trace_events", []).extend(events)
-        return self.episodic_retrieval_service.render(result), list(result.hits)
+        return service.render(result), list(result.hits)
+
+    def _episodic_retrieval(self):
+        from memory.episodic_retrieval import (
+            EpisodicBoundary,
+            EpisodicHistoryRetrievalService,
+        )
+
+        if self.episodic_retrieval_service is None:
+            self.episodic_retrieval_service = EpisodicHistoryRetrievalService(
+                self.history_vector_index,
+                top_k=self.retrieval_top_k,
+                min_score=self.retrieval_min_score,
+            )
+        return self.episodic_retrieval_service, EpisodicBoundary
 
     def _retrieval_query(self, current_request: str, active_turn_messages: list[dict]) -> str:
         if current_request.strip():

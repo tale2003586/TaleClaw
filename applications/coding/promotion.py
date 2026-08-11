@@ -2,14 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from memory.dedup import normalize_memory_text
-from memory.commands import MemoryContext, MemoryWriteProposal
-from memory.domain import (
-    MemoryEvidence,
-    MemoryKind,
-    MemoryOwnerScope,
-    MemorySourceType,
-)
 from .conclusions import ConclusionCandidate
 
 
@@ -59,12 +51,20 @@ class TaskMemoryPromoter:
         *,
         task_id: str,
         extracted_conclusions: list[ConclusionCandidate] | None = None,
-        memory_context: MemoryContext | None = None,
+        memory_context=None,
         repository_revision: str = "",
     ) -> PromotionResult:
         result = PromotionResult()
         if self.command_service is None:
             return result
+        from memory.commands import MemoryWriteProposal
+        from memory.domain import (
+            MemoryEvidence,
+            MemoryKind,
+            MemoryOwnerScope,
+            MemorySourceType,
+        )
+
         candidates = _dedupe(extracted_conclusions or [])
         for candidate in candidates:
             reason = _rejection_reason(candidate)
@@ -77,7 +77,7 @@ class TaskMemoryPromoter:
                     reason="trusted memory context is required",
                 ))
                 continue
-            owner_scope, owner_id = _coding_owner(memory_context)
+            owner_scope, owner_id = _coding_owner(memory_context, MemoryOwnerScope)
             evidence_file = candidate.evidence_file or candidate.evidence
             evidence_location = candidate.evidence_location
             verified = bool(candidate.verified)
@@ -111,7 +111,7 @@ class TaskMemoryPromoter:
                 continue
             self.command_service.record_verified_conclusion(MemoryWriteProposal(
                 content=candidate.content,
-                kind=_kind_for_category(candidate.category),
+                kind=_kind_for_category(candidate.category, MemoryKind),
                 owner_scope=owner_scope,
                 owner_id=owner_id,
                 source_type=MemorySourceType.CODING_CONCLUSION,
@@ -129,6 +129,8 @@ class TaskMemoryPromoter:
 
 
 def _dedupe(items: list[ConclusionCandidate]) -> list[ConclusionCandidate]:
+    from memory.dedup import normalize_memory_text
+
     seen = set()
     out = []
     for item in items:
@@ -141,6 +143,8 @@ def _dedupe(items: list[ConclusionCandidate]) -> list[ConclusionCandidate]:
 
 
 def _rejection_reason(candidate: ConclusionCandidate) -> str:
+    from memory.dedup import normalize_memory_text
+
     content = candidate.content.strip()
     lowered = content.lower()
     category = candidate.category.strip().lower()
@@ -161,24 +165,24 @@ def _rejection_reason(candidate: ConclusionCandidate) -> str:
     return ""
 
 
-def _coding_owner(context: MemoryContext) -> tuple[MemoryOwnerScope, str]:
+def _coding_owner(context, owner_scope_type) -> tuple[object, str]:
     if context.project_id:
-        return MemoryOwnerScope.PROJECT, context.project_id
+        return owner_scope_type.PROJECT, context.project_id
     if context.workspace_id:
-        return MemoryOwnerScope.WORKSPACE, context.workspace_id
+        return owner_scope_type.WORKSPACE, context.workspace_id
     if context.task_id:
-        return MemoryOwnerScope.TASK, context.task_id
+        return owner_scope_type.TASK, context.task_id
     raise ValueError("Coding conclusion requires project, workspace, or task scope.")
 
 
-def _kind_for_category(category: str) -> MemoryKind:
+def _kind_for_category(category: str, memory_kind):
     return {
-        "decision": MemoryKind.DECISION,
-        "preference": MemoryKind.PREFERENCE,
-        "project": MemoryKind.FACT,
-        "fact": MemoryKind.FACT,
-        "task": MemoryKind.FACT,
-    }.get(str(category or "").lower(), MemoryKind.FACT)
+        "decision": memory_kind.DECISION,
+        "preference": memory_kind.PREFERENCE,
+        "project": memory_kind.FACT,
+        "fact": memory_kind.FACT,
+        "task": memory_kind.FACT,
+    }.get(str(category or "").lower(), memory_kind.FACT)
 
 
 def _evidence_id(task_id: str, candidate: ConclusionCandidate) -> str:
