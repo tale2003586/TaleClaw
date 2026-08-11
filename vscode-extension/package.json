@@ -141,11 +141,6 @@
           "default": true,
           "description": "Enable context section budgeting."
         },
-        "taleclaw.workingMemoryEnabled": {
-          "type": "boolean",
-          "default": true,
-          "description": "Enable coding working memory checkpoints."
-        },
         "taleclaw.toolLoopGuardEnabled": {
           "type": "boolean",
           "default": true,

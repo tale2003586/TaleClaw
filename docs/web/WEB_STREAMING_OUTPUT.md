@@ -75,14 +75,14 @@ X-Accel-Buffering: no
 
 工具调用仍在服务端内部执行。最终回答生成时，浏览器会逐段看到回复。
 
-### `core/pipeline.py`
+### `runtime/runtime.py`
 
-`Pipeline.run()` 新增可选 `on_text` 回调。传入回调时优先使用 provider 的
+`Runtime.run()` 通过 `RunContext.on_text` 接收可选回调。传入回调时优先使用 provider 的
 `stream_chat()`；不支持流式方法的 provider 会回退到普通 `chat()`，并一次性触发回调。
 
 ### `core/runtime.py` 与 `core/agent_loop.py`
 
-将可选回调从 Web 服务传到 Pipeline。模式切换、插件直接回复和 Coding TaskSession
+将可选回调从 Web 服务传到 Runtime。路由、插件直接回复和 Coding TaskSession
 最终回复也会通过相同事件接口返回。
 
 ### `web/server.py`
@@ -118,7 +118,7 @@ X-Accel-Buffering: no 响应头
 python3 -B -m unittest discover -s tests -v
 python3 -B -m py_compile \
   core/provider.py \
-  core/pipeline.py \
+  runtime/runtime.py \
   core/runtime.py \
   core/agent_loop.py \
   web/server.py

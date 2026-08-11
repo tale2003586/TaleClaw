@@ -44,7 +44,7 @@ export interface SessionDto {
   chat_id?: string;
   channel?: string;
   title?: string;
-  current_mode?: string;
+  active_agent?: string;
   updated_at?: string;
   messages?: MessageDto[];
   message_page?: {

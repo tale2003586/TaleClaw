@@ -37,7 +37,7 @@
 - `models/model_task_runner.py`：一次性无工具模型任务，例如总结、RAG rewrite、RAG classifier。
 - `runtime/bootstrap.py`：启动时构建 `ModelPool`，注入主 `Pipeline`、Hybrid classifier、RAG、Memory、Reflection。
 - `runtime/agent_runner.py`：主 reasoning loop 根据 `AgentSpec.model_purpose` 取 provider/model。
-- `runtime/pipeline.py`：普通对话和 coding 的 purpose 映射。
+- `runtime/runtime.py` / `AgentSpec.model_policy`：普通对话和 coding 的 purpose 映射。
 - `runtime/reasoning_loop.py`：实际调用模型，并把 route attempts 写入 trace。
 
 ## ModelProfile
@@ -309,9 +309,9 @@ class LLMResponse:
 
 主循环只关心统一后的 `content/tool_calls/usage/provider_metadata`。
 
-## 主 Pipeline 如何选 purpose
+## Runtime 如何选 purpose
 
-`runtime/pipeline.py` 的规则很简单：
+`AgentRunner` 的规则很简单：
 
 ```python
 def _model_purpose(self, session, profile) -> str:
@@ -336,7 +336,7 @@ Hybrid 模式有两层：
   -> ModeRouter / IntentClassifier
   -> 必要时 HybridModeClassifier 调用模型判断是否进入 coding
   -> 进入 bot 或 coding profile
-  -> Pipeline 再按 profile 选择 chat/coding purpose
+  -> AgentRunner 按 AgentSpec model policy 选择 purpose
 ```
 
 `HybridModeClassifier` 自己使用：

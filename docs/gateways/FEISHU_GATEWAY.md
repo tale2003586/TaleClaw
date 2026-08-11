@@ -5,7 +5,7 @@
 当前能力：
 
 - 飞书自建应用机器人接收文字消息。
-- 复用 `AgentLoop`、`Pipeline`、工具系统和多用户记忆隔离。
+- 复用 `TurnCoordinator`、`Runtime`、工具系统和多用户记忆隔离。
 - 支持 `/new`、`/status`、`/files`、`/cat`、`/download`。
 - 支持 scheduler 任务完成后推送文字摘要和报告文件。
 - 使用 HTTP 事件回调，不依赖飞书 Python SDK。
@@ -200,7 +200,7 @@ gateway/feishu/
 Feishu callback
   -> FeishuGateway.handle_callback()
   -> runtime.submit_user_message(channel="feishu")
-  -> AgentLoop / Pipeline / Tools / Memory
+  -> TurnCoordinator / Runtime / Tools / Memory
   -> MessageBus outbound
   -> FeishuGateway.send()
   -> Feishu send message API

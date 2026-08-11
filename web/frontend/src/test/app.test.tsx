@@ -13,7 +13,7 @@ describe("App", () => {
       if (path === "/api/health") return json({ ok: true, workspace: "/app", coding_workspace: "/work", runtime: "ready", user: { id: "admin", role: "admin" }, default_model_profile: "plain", thinking_supported: true, models: [{ profile: "plain", provider: "relay", model: "plain-model", supports_thinking: false }, { profile: "reasoning", provider: "relay", model: "reasoning-model", supports_thinking: true }] });
       if (path.startsWith("/api/sessions")) return json({ sessions: [], has_more: false });
       if (path.includes("before=10")) return json({ session: { chat_id: "default", channel: "web", messages: [{ seq: 1, role: "assistant", content: "更早的历史消息" }], message_page: { has_more: false, next_before: null } } });
-      if (path.startsWith("/api/session")) return json({ session: { chat_id: "default", channel: "web", title: "默认会话", current_mode: "hybrid", messages: [{ seq: 10, role: "user", content: longQuestion }, { seq: 11, role: "assistant", content: "处理完成" }, { seq: 12, role: "tool", name: "security_search", content: "{\n  \"score\": 0.67,\n  \"source\": \"advisory.json\"\n}" }], message_page: { has_more: true, next_before: 10 } } });
+      if (path.startsWith("/api/session")) return json({ session: { chat_id: "default", channel: "web", title: "默认会话", active_agent: "hybrid", messages: [{ seq: 10, role: "user", content: longQuestion }, { seq: 11, role: "assistant", content: "处理完成" }, { seq: 12, role: "tool", name: "security_search", content: "{\n  \"score\": 0.67,\n  \"source\": \"advisory.json\"\n}" }], message_page: { has_more: true, next_before: 10 } } });
       return json({});
     }));
   });

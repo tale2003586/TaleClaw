@@ -1,8 +1,9 @@
-# System Design Notes
+# System Design Notes (Historical Snapshot)
 
-这组文档用 Pico 文档的专题组织方式，重新整理当前项目的真实实现。
-
-它不包含架构图，也不描述当前代码里不存在的能力。每篇文档都尽量回答一个具体问题：这层解决什么、代码入口在哪里、一次请求怎么经过它、当前边界是什么。
+这组文档记录 2026 年 7 月重构前后的阶段性实现，包含已经删除的 Pipeline、
+ModeProfile、WorkingMemory、CodingContextState 和 Memory lifecycle。当前架构以
+[`../architecture/SYSTEM_ARCHITECTURE.md`](../architecture/SYSTEM_ARCHITECTURE.md)
+为准；本目录仅用于历史追溯。
 
 ## 文档列表
 

@@ -25,7 +25,7 @@ export function useSessions() {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const sessions = resource.data?.sessions || EMPTY_SESSIONS;
   const visible = useMemo(() => sessions.filter((session) => {
-    const text = `${session.title || ""} ${sessionKey(session)} ${session.current_mode || ""}`.toLowerCase();
+    const text = `${session.title || ""} ${sessionKey(session)} ${session.active_agent || ""}`.toLowerCase();
     return !filter.trim() || text.includes(filter.trim().toLowerCase());
   }), [sessions, filter]);
   const loadSession = useCallback(async (id: string, raw = false) => {
@@ -78,7 +78,7 @@ export function useSessions() {
   }, [active?.message_page, activeId, loadingHistory]);
   const newSession = useCallback(() => {
     const id = `web-${Date.now().toString(36)}`;
-    setActiveId(id); setActive({ chat_id: id, channel: "web", current_mode: "hybrid", messages: [] });
+    setActiveId(id); setActive({ chat_id: id, channel: "web", active_agent: "hybrid", messages: [] });
   }, []);
   const removeSession = useCallback(async (id: string) => {
     const data = await deleteJson<SessionsResponse>("/api/session", { session_id: id });

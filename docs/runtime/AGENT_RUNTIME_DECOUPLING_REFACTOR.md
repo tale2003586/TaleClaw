@@ -1,5 +1,8 @@
 # Agent Runtime 解耦改造记录
 
+> Historical refactor record. Pipeline and ModeProfile described below were
+> removed; see `../architecture/SYSTEM_ARCHITECTURE.md` for the current design.
+
 本文记录本轮围绕 `Pipeline`、`ReasoningLoop` 和 persistent teammate 的后续改造。
 
 ## 背景问题

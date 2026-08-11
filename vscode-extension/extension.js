@@ -136,7 +136,6 @@ async function runTask(payload) {
     "--subagent-max-reasoning-steps", String(toPositiveInt(config.subagentMaxReasoningSteps, 16)),
     "--rag-enabled", boolArg(config.ragEnabled),
     "--context-budget-enabled", boolArg(config.contextBudgetEnabled),
-    "--working-memory-enabled", boolArg(config.workingMemoryEnabled),
     "--tool-loop-guard-enabled", boolArg(config.toolLoopGuardEnabled)
   ];
 
@@ -233,7 +232,6 @@ function getUiConfig() {
     subagentMaxReasoningSteps: config.get("subagentMaxReasoningSteps", 16),
     ragEnabled: config.get("ragEnabled", false),
     contextBudgetEnabled: config.get("contextBudgetEnabled", true),
-    workingMemoryEnabled: config.get("workingMemoryEnabled", true),
     toolLoopGuardEnabled: config.get("toolLoopGuardEnabled", true)
   };
 }
@@ -339,7 +337,6 @@ function renderHtml(webview, extensionUri) {
       </label>
       <label class="check"><input id="ragEnabled" type="checkbox"> RAG</label>
       <label class="check"><input id="contextBudgetEnabled" type="checkbox"> Context Budget</label>
-      <label class="check"><input id="workingMemoryEnabled" type="checkbox"> Working Memory</label>
       <label class="check"><input id="toolLoopGuardEnabled" type="checkbox"> Loop Guard</label>
     </section>
 

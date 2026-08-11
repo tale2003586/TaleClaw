@@ -1,4 +1,6 @@
-# Agent Loop 不可见工具循环保护修复记录
+# Agent Loop 不可见工具循环保护修复记录（历史）
+
+> 本文中的 Pipeline 名称属于旧实现；当前停止契约由 Runtime/ReasoningLoop 执行。
 
 ## 一、问题
 

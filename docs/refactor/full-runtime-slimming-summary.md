@@ -1,5 +1,9 @@
 # Full Runtime Slimming Summary
 
+> Historical Phase 1 report. Compatibility and P2 items described below were
+> resolved by the later aggressive pruning work; see
+> `aggressive-runtime-pruning-summary.md` for the current result.
+
 ## 1. Baseline
 
 - Start HEAD: `03a15802c4655df78d214ef70d5c80faade12b6c`

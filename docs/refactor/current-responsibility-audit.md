@@ -1,5 +1,8 @@
 # Current Responsibility Audit
 
+> Historical pre-pruning inventory. Current ownership is documented in
+> `../architecture/SYSTEM_ARCHITECTURE.md` and `product-capability-matrix.md`.
+
 Audit of HEAD `03a1580` before slimming changes.
 
 ## Runtime Inventory
@@ -51,7 +54,7 @@ No `WorkingMemory` runtime class or writer remains. Only migration readers exist
 | archived_findings | old observations | migration evidence | can be retained in checkpoint | no active subsystem |
 | observed_calls | runtime observations | transcript/trace | rebuildable | no active subsystem |
 
-`WORKING_MEMORY_*` entries in `.env.example` are stale configuration pollution; no production reader exists.
+The stale `WORKING_MEMORY_*` entries were removed from `.env.example`; no production reader exists.
 
 ## Session Metadata Classification
 
