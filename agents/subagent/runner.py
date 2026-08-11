@@ -237,17 +237,10 @@ class TaskSubagentRunner:
             return result
 
     def _sub_pipeline(self, agent_type: str) -> Runtime:
-        base_runner = self.base_pipeline.agent_runner
-        return Runtime(
+        return self.base_pipeline.fork(
             tools=self._filtered_tools(agent_type),
-            provider=base_runner.provider,
-            model=base_runner.model,
-            tool_executor=base_runner.tool_executor,
             context_builder=self._sub_context_builder(),
             memory_lifecycle=None,
-            model_pool=base_runner.model_pool,
-            reflection_agent=base_runner.reflection_agent,
-            max_tokens=base_runner.max_tokens,
             max_reasoning_steps=self.max_reasoning_steps,
         )
 

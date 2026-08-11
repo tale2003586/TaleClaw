@@ -65,12 +65,13 @@ class Runtime:
         self,
         *,
         context_builder,
+        tools=None,
         memory_lifecycle=None,
         max_reasoning_steps: int | None = None,
         execution_policy_factory=None,
     ) -> "Runtime":
         return Runtime(
-            tools=self.agent_runner.tools,
+            tools=tools or self.agent_runner.tools,
             provider=self.agent_runner.provider,
             model=self.agent_runner.model,
             tool_executor=self.agent_runner.tool_executor,
