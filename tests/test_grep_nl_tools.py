@@ -85,7 +85,7 @@ class GrepNlToolTests(unittest.TestCase):
             for name in ("grep", "nl"):
                 registry.execute(
                     "tool_search",
-                    {"query": f"select:{name}"},
+                    {"query": f"use {name} for exact text inspection"},
                     session=session,
                     mode="coding",
                 )

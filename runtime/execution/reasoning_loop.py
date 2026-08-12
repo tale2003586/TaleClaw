@@ -120,6 +120,7 @@ class ReasoningLoop:
         reasoning_steps = 0
         unavailable_attempts: dict[str, int] = {}
         empty_model_responses = 0
+        tool_calls_used = 0
 
         while True:
             if self._cancel_requested(cancel_requested):
@@ -216,7 +217,11 @@ class ReasoningLoop:
                 parent_span_id=step_span_id,
             )
             resolved_provider = resolve_provider(session, agent_spec)
-            tools_for_turn = self.tools.schemas_for_turn(session, agent_spec.tool_mode)
+            tools_for_turn = self._schemas_for_turn(
+                session,
+                agent_spec,
+                run_context=run_context,
+            )
             turn_context = _call_build_context(
                 build_context,
                 session,
@@ -276,6 +281,20 @@ class ReasoningLoop:
             )
 
             if _is_empty_response(response):
+                if bool(getattr(agent_spec.termination_policy, "allow_empty_final", False)):
+                    self._stop_turn(
+                        session,
+                        "",
+                        reason=StopReason.COMPLETED,
+                        agent_spec=agent_spec,
+                        after_turn=after_turn,
+                        on_text=on_text,
+                        run_state=run_state,
+                        trace_store=trace_store,
+                        reasoning_step=reasoning_steps,
+                        checkpoint_callback=checkpoint_callback,
+                    )
+                    return
                 empty_model_responses += 1
                 self._checkpoint_reasoning_step(
                     session,
@@ -373,6 +392,34 @@ class ReasoningLoop:
                 after_turn(session)
                 return
 
+            max_tool_calls = getattr(agent_spec.limits, "max_tool_calls", None)
+            requested_tool_calls = len(response.tool_calls)
+            if (
+                max_tool_calls is not None
+                and tool_calls_used + requested_tool_calls > int(max_tool_calls)
+            ):
+                self._trace(trace_store, run_state, "tool_call_limit_exceeded", {
+                    "used": tool_calls_used,
+                    "requested": requested_tool_calls,
+                    "max_tool_calls": int(max_tool_calls),
+                })
+                self._stop_turn(
+                    session,
+                    (
+                        "本轮已停止：工具调用次数超过上限 "
+                        f"({int(max_tool_calls)})。"
+                    ),
+                    reason=StopReason.TOOL_CALL_LIMIT_EXCEEDED,
+                    agent_spec=agent_spec,
+                    after_turn=after_turn,
+                    on_text=on_text,
+                    run_state=run_state,
+                    trace_store=trace_store,
+                    reasoning_step=reasoning_steps,
+                    checkpoint_callback=checkpoint_callback,
+                )
+                return
+
             execution = self._execute_tool_calls(
                 session,
                 response,
@@ -380,7 +427,9 @@ class ReasoningLoop:
                 run_state=run_state,
                 trace_store=trace_store,
                 reasoning_step=reasoning_steps,
+                run_context=run_context,
             )
+            tool_calls_used += requested_tool_calls
             self._checkpoint_reasoning_step(
                 session,
                 agent_spec,
@@ -528,7 +577,11 @@ class ReasoningLoop:
         tools = (
             list(tools_for_turn)
             if tools_for_turn is not None
-            else self.tools.schemas_for_turn(session, agent_spec.tool_mode)
+            else self._schemas_for_turn(
+                session,
+                agent_spec,
+                run_context=getattr(self, "run_context", None),
+            )
         )
         context_messages, dropped_messages = sanitize_context_messages(context.messages)
         context_summary = _context_summary(context_messages, provider=provider)
@@ -841,6 +894,7 @@ class ReasoningLoop:
         run_state=None,
         trace_store=None,
         reasoning_step: int = 0,
+        run_context=None,
     ) -> ToolExecutionSummary:
         tool_calls = list(response.tool_calls or [])
         summary = ToolExecutionSummary()
@@ -916,8 +970,11 @@ class ReasoningLoop:
             else:
                 execution_error = self._tool_execution_error(
                     call.name,
+                    args=call.arguments,
                     session=session,
                     mode=agent_spec.tool_mode,
+                    agent_spec=agent_spec,
+                    run_context=run_context,
                 )
                 tool_call_denial = self._tool_call_denial(
                     session,
@@ -950,6 +1007,8 @@ class ReasoningLoop:
                             trace_store=trace_store,
                             run_state=run_state,
                             parent_span_id=span_id,
+                            agent_spec=agent_spec,
+                            run_context=run_context,
                         ),
                     )
                 output = self._with_tool_call_notice(
@@ -1035,11 +1094,40 @@ class ReasoningLoop:
                 })
         return summary
 
-    def _tool_execution_error(self, name: str, *, session, mode: str) -> str | None:
+    def _tool_execution_error(
+        self,
+        name: str,
+        *,
+        args: dict | None = None,
+        session,
+        mode: str,
+        agent_spec=None,
+        run_context=None,
+    ) -> str | None:
         checker = getattr(self.tools, "execution_error_for_turn", None)
         if checker is None:
             return None
-        return checker(name, session=session, mode=mode)
+        return checker(
+            name,
+            args=args,
+            session=session,
+            mode=mode,
+            agent_spec=agent_spec,
+            run_context=run_context,
+        )
+
+    def _schemas_for_turn(self, session, agent_spec, *, run_context=None) -> list[dict]:
+        try:
+            return self.tools.schemas_for_turn(
+                session,
+                agent_spec.tool_mode,
+                agent_spec=agent_spec,
+                run_context=run_context,
+            )
+        except TypeError:
+            # Narrow test doubles and legacy ToolPort implementations may only
+            # implement the original two-argument protocol.
+            return self.tools.schemas_for_turn(session, agent_spec.tool_mode)
 
     def _reasoning_budget_exceeded(self, session, reasoning_steps: int) -> bool:
         return reasoning_steps > self.max_reasoning_steps

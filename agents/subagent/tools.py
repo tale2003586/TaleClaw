@@ -1,11 +1,11 @@
 SUBTASK_TOOL_WHITELIST = {
     "explore": {
-        "update_task_state",
         "bash",
         "list_files",
         "rg",
         "grep",
         "nl",
+        "repo_map",
         "code_outline",
         "read_file",
         "read_files",
@@ -46,12 +46,12 @@ SUBTASK_TOOL_WHITELIST = {
         "recall_memory",
     },
     "plan": {
-        "update_task_state",
         "bash",
         "list_files",
         "rg",
         "grep",
         "nl",
+        "repo_map",
         "code_outline",
         "read_file",
         "read_files",

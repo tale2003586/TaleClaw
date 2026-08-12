@@ -6,7 +6,7 @@ from pathlib import Path
 from plugins.base import Plugin, ToolRegistration
 from plugins.markdown_pdf.renderer import render_markdown_pdf
 from tools.schema import function_tool
-from tools.spec import ToolInjection, ToolRisk, ToolStateEffect
+from tools.spec import ToolExposure, ToolRisk, ToolStateEffect
 from user_scope import explicit_user_id_for_session, storage_root_for_session
 
 
@@ -61,7 +61,11 @@ class MarkdownPdfPlugin(Plugin):
                 handler=self.markdown_to_pdf,
                 risk=ToolRisk.NORMAL,
                 allowed_modes=frozenset({"bot", "coding"}),
-                injection=ToolInjection.ALWAYS,
+                exposure=ToolExposure.DEFERRED,
+                discovery_summary="Render a workspace Markdown document as a PDF artifact.",
+                capabilities=("markdown to pdf", "document rendering", "pdf export"),
+                aliases=("convert markdown", "导出 PDF", "Markdown 转 PDF"),
+                keywords=("pdf", "markdown", "render", "文档"),
                 idempotent=False,
                 side_effect=True,
                 state_effect=ToolStateEffect.EXTERNAL,

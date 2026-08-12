@@ -1,6 +1,6 @@
 from plugins.base import Plugin, ToolRegistration, TurnResult
 from tools.schema import function_tool
-from tools.spec import ToolInjection, ToolRisk
+from tools.spec import ToolExposure, ToolRisk
 
 
 class StatusCommandsPlugin(Plugin):
@@ -17,7 +17,11 @@ class StatusCommandsPlugin(Plugin):
                 handler=self.runtime_status,
                 risk=ToolRisk.LOW,
                 allowed_modes=frozenset({"bot", "coding"}),
-                injection=ToolInjection.ALWAYS,
+                exposure=ToolExposure.DEFERRED,
+                discovery_summary="Inspect runtime, plugin, tool, and session status.",
+                capabilities=("runtime status", "plugin status", "diagnostics"),
+                aliases=("show status", "运行状态", "插件状态"),
+                keywords=("runtime", "status", "diagnostics", "状态"),
                 idempotent=True,
                 side_effect=False,
                 session_scoped=True,

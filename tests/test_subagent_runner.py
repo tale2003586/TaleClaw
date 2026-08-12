@@ -298,7 +298,7 @@ def _runtime(provider=None, registry=None) -> Runtime:
 
 
 class SubagentRunnerTests(unittest.TestCase):
-    def test_subagent_uses_coding_task_state_context(self) -> None:
+    def test_explore_subagent_does_not_implicitly_create_task_state(self) -> None:
         runner = TaskSubagentRunner(base_runtime=_runtime())
         session = runner._new_session(
             prompt="inspect runtime",
@@ -314,12 +314,8 @@ class SubagentRunnerTests(unittest.TestCase):
         )
 
         report = context.report.to_dict()
-        self.assertTrue(report["metadata"]["coding_context_enabled"])
-        self.assertEqual(
-            "task_state_token_window",
-            report["sections"]["active_turn"]["metadata"]["strategy"],
-        )
-        self.assertIn("task_state", session.metadata)
+        self.assertFalse(report["metadata"].get("coding_context_enabled", False))
+        self.assertNotIn("task_state", session.metadata)
 
     def test_unknown_agent_type_returns_structured_error(self) -> None:
         runner = TaskSubagentRunner(base_runtime=_runtime())

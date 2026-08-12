@@ -254,8 +254,8 @@ class TeammateManager:
                 f"You are '{name}', role: {role}, team: {team_name}, at {WORKDIR}. "
                 "Use idle when you have no more work in the current cycle. "
                 "You will auto-claim new task-board items while idle. "
-                "Some high-risk tools are deferred; use tool_search with "
-                "query='select:<tool_name>' before calling a hidden tool."
+                "Some specialized tools are deferred; describe the needed capability "
+                "to tool_search and matching tools will unlock for this turn."
             ),
             model_policy=ModelPolicy(purpose="teammate"),
             tool_set=ToolSet(mode="teammate"),

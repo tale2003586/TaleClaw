@@ -32,7 +32,7 @@ class BotStorageToolTests(unittest.TestCase):
             with patch.object(handlers, "WORKDIR", workspace):
                 registry.execute(
                     "tool_search",
-                    {"query": "select:storage_write_file"},
+                    {"query": "write a file to persistent storage"},
                     session=session,
                     mode="bot",
                 )

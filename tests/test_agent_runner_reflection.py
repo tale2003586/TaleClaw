@@ -11,7 +11,7 @@ from tools.executor import ToolExecutor
 from tools.hooks import ToolLoopGuardHook
 from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry
-from tools.spec import ToolInjection, ToolSpec
+from tools.spec import ToolExposure, ToolSpec
 
 
 class ContextBuilder:
@@ -83,7 +83,7 @@ def _registry():
         schema=function_tool("echo", "Echo test tool", {"text": {"type": "string"}}, ["text"]),
         handler=lambda **kwargs: f"echo: {kwargs['text']}",
         allowed_modes=frozenset({"bot", "coding", "teammate"}),
-        injection=ToolInjection.ALWAYS,
+        exposure=ToolExposure.PRELOADED,
     ))
     return registry
 

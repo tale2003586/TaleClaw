@@ -122,12 +122,72 @@ class SkillLoader:
             for name, skill in sorted(self.skills.items())
         ]
 
-    def get_content(self, name: str) -> str:
+    def search(
+        self,
+        query: str,
+        *,
+        mode: str = "",
+        allowed_names: tuple[str, ...] | None = None,
+        limit: int = 3,
+    ) -> list[dict[str, Any]]:
+        self._maybe_refresh()
+        normalized = _normalize_search_text(query)
+        query_tokens = set(_search_tokens(normalized))
+        allowed = set(allowed_names or ())
+        matches = []
+        for name, skill in self.skills.items():
+            meta = skill["meta"]
+            if allowed and name not in allowed:
+                continue
+            applies_to = set(meta.get("applies_to") or ())
+            if applies_to and mode and mode not in applies_to:
+                continue
+            fields = (
+                (100, name),
+                (80, " ".join(meta.get("triggers") or ())),
+                (60, " ".join(meta.get("tags") or ())),
+                (40, str(meta.get("description") or "")),
+            )
+            score = 0
+            for weight, value in fields:
+                candidate = _normalize_search_text(value)
+                if not candidate:
+                    continue
+                if normalized == candidate:
+                    score = max(score, weight + 20)
+                elif candidate in normalized or normalized in candidate:
+                    score = max(score, weight)
+                else:
+                    overlap = query_tokens & set(_search_tokens(candidate))
+                    if overlap:
+                        score = max(score, min(weight, len(overlap) * max(8, weight // 3)))
+            if score:
+                matches.append({
+                    "name": name,
+                    "description": meta.get("description", "No description"),
+                    "score": score + int(meta.get("priority") or 0),
+                    "requires_tools": list(meta.get("requires_tools") or ()),
+                })
+        return sorted(matches, key=lambda item: (-item["score"], item["name"]))[:limit]
+
+    def get_content(
+        self,
+        name: str,
+        *,
+        mode: str = "",
+        allowed_names: tuple[str, ...] | None = None,
+    ) -> str:
         """Layer 2: full skill body returned in tool_result."""
         self._maybe_refresh()
         skill = self.skills.get(name)
         if not skill:
             return f"Error: Unknown skill '{name}'. Available: {', '.join(self.skills.keys())}"
+        allowed = set(allowed_names or ())
+        if allowed and name not in allowed:
+            return f"Error: Skill '{name}' is outside this AgentSpec skill scope."
+        applies_to = set(skill["meta"].get("applies_to") or ())
+        if applies_to and mode and mode not in applies_to:
+            return f"Error: Skill '{name}' does not apply to {mode} mode."
         return f"<skill name=\"{name}\">\n{skill['body']}\n</skill>"
 
 
@@ -167,6 +227,19 @@ def _format_safety(value: Any) -> str:
 
 def _single_line(value: str) -> str:
     return " ".join(str(value or "").split())
+
+
+def _normalize_search_text(value: str) -> str:
+    return " ".join(str(value or "").lower().replace("_", " ").split())
+
+
+def _search_tokens(value: str) -> list[str]:
+    latin = re.findall(r"[a-z0-9]+", value)
+    latin += [word[:-1] for word in latin if len(word) > 3 and word.endswith("s")]
+    latin += [word[:-3] + "y" for word in latin if len(word) > 4 and word.endswith("ies")]
+    cjk = re.findall(r"[\u4e00-\u9fff]{2,}", value)
+    cjk_parts = [part for text in cjk for part in (text, *[text[i:i + 2] for i in range(len(text) - 1)])]
+    return latin + cjk_parts
 
 
 SKILLS_DIR = Path.cwd() / "skills"

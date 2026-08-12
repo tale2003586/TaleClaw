@@ -18,7 +18,7 @@ from runtime.trace.rag import (
     security_rag_span_id,
 )
 from tools.schema import function_tool
-from tools.spec import ToolInjection, ToolRisk
+from tools.spec import ToolExposure, ToolRisk
 
 
 class SecurityRagPlugin(Plugin):
@@ -49,7 +49,11 @@ class SecurityRagPlugin(Plugin):
                 handler=self.search,
                 risk=ToolRisk.LOW,
                 allowed_modes=frozenset({"bot", "coding"}),
-                injection=ToolInjection.ALWAYS,
+                exposure=ToolExposure.DEFERRED,
+                discovery_summary="Search the local secure-coding and vulnerability knowledge base.",
+                capabilities=("security research", "vulnerability guidance", "secure coding"),
+                aliases=("security search", "安全知识库", "漏洞检索", "安全编码"),
+                keywords=("CWE", "CVE", "GHSA", "security", "安全", "漏洞"),
                 idempotent=True,
                 side_effect=False,
                 runtime_parameters=frozenset({

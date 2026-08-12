@@ -16,7 +16,7 @@ Lead with the outcome, stay concrete, and never invent project state or capabili
 """,
     model_policy=ModelPolicy(purpose="chat"),
     tool_set=ToolSet(mode="bot"),
-    context_policy=ContextPolicy(name="chat"),
+    context_policy=ContextPolicy(),
 )
 
 
@@ -28,7 +28,7 @@ Work only inside that workspace. Inspect relevant code, callers, tests, configur
 """,
     model_policy=ModelPolicy(purpose="coding"),
     tool_set=ToolSet(mode="coding"),
-    context_policy=ContextPolicy(name="coding"),
+    context_policy=ContextPolicy(),
     spawn_policy=SpawnPolicy(
         enabled=True,
         allowed_agent_types=("explore", "plan", "code"),

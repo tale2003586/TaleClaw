@@ -84,7 +84,7 @@ def test_read_artifact_is_deferred_and_can_be_unlocked_for_all_agent_modes(tmp_p
         assert "read_artifact" not in registry.visible_names_for_turn(session, mode)
         registry.execute(
             "tool_search",
-            {"query": "select:read_artifact"},
+            {"query": "read an externalized artifact"},
             session=session,
             mode=mode,
         )
@@ -94,7 +94,7 @@ def test_read_artifact_is_deferred_and_can_be_unlocked_for_all_agent_modes(tmp_p
     session = Session(id="test:call", active_agent="coding")
     lead.execute(
         "tool_search",
-        {"query": "select:read_artifact"},
+        {"query": "read an externalized artifact"},
         session=session,
         mode="coding",
     )

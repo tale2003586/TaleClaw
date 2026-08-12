@@ -12,7 +12,7 @@ from tests.postgres_utils import temporary_postgres_schema
 from tools import handlers
 from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry, build_lead_tool_registry
-from tools.spec import ToolInjection, ToolSpec
+from tools.spec import ToolExposure, ToolSpec
 from web import server
 
 
@@ -94,13 +94,13 @@ class MultiUserIsolationTests(unittest.TestCase):
             with patch.object(handlers, "WORKDIR", workspace):
                 registry.execute(
                     "tool_search",
-                    {"query": "select:memorize"},
+                    {"query": "save a long-term preference"},
                     session=alice,
                     mode="bot",
                 )
                 registry.execute(
                     "tool_search",
-                    {"query": "select:storage_write_file"},
+                    {"query": "write a file to persistent storage"},
                     session=alice,
                     mode="bot",
                 )
@@ -134,7 +134,7 @@ class MultiUserIsolationTests(unittest.TestCase):
             schema=function_tool("server_admin", "admin operation", {}),
             handler=lambda **kwargs: "ok",
             allowed_modes=frozenset({"bot"}),
-            injection=ToolInjection.ALWAYS,
+            exposure=ToolExposure.PRELOADED,
             admin_only=True,
         ))
 

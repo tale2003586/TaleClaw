@@ -1,7 +1,7 @@
 {
   "authorization": {
     "chat_cannot_write": "Tool 'coding_write' is not allowed in bot mode.",
-    "deferred_requires_unlock": "Tool 'deferred_coding' is not visible in this turn. Call tool_search with query='select:deferred_coding' first.",
+    "deferred_requires_unlock": "Tool 'deferred_coding' is not visible in this turn. Discover it with tool_search first.",
     "user_cannot_admin_write": "Tool 'coding_write' is not allowed in coding mode."
   },
   "catalog": [

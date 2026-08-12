@@ -64,7 +64,6 @@ def test_context_policy_can_exclude_history_and_memory_without_prompt_change():
         session=session,
         agent_spec=BOT_AGENT_SPEC,
         context_policy=ContextPolicy(
-            name="restricted",
             include_history=False,
             include_memory=False,
         ),

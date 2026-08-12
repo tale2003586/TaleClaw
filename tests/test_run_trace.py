@@ -31,7 +31,7 @@ from tools.executor import ToolExecutor
 from tools.handlers import run_read, run_write
 from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry
-from tools.spec import ToolInjection, ToolRisk, ToolSpec, ToolStateEffect
+from tools.spec import ToolExposure, ToolRisk, ToolSpec, ToolStateEffect
 
 
 class ContextBuilder:
@@ -124,7 +124,7 @@ def _registry() -> ToolRegistry:
         schema=schema,
         handler=lambda **kwargs: f"echo: {kwargs['text']}",
         allowed_modes=frozenset({"bot", "coding"}),
-        injection=ToolInjection.ALWAYS,
+        exposure=ToolExposure.PRELOADED,
         risk=ToolRisk.LOW,
     ))
     return registry
@@ -169,7 +169,7 @@ def _workspace_runtime(provider) -> Runtime:
             _session=kwargs.get("_session"),
         ),
         allowed_modes=frozenset({"coding"}),
-        injection=ToolInjection.ALWAYS,
+        exposure=ToolExposure.PRELOADED,
         risk=ToolRisk.HIGH,
         idempotent=False,
         side_effect=True,
