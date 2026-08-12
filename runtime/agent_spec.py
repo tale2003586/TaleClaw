@@ -25,7 +25,6 @@ class ToolSet:
 class ContextPolicy:
     """Named context construction policy without carrying mutable context state."""
 
-    name: str = "default"
     include_memory: bool = True
     include_history: bool = True
     include_skills: bool = True
@@ -35,7 +34,6 @@ class ContextPolicy:
 class TerminationPolicy:
     """Declarative stopping behavior interpreted by the current runner."""
 
-    name: str = "default"
     allow_empty_final: bool = False
 
 
@@ -75,9 +73,7 @@ class AgentSpec:
     context_policy: ContextPolicy = field(default_factory=ContextPolicy)
     termination_policy: TerminationPolicy = field(default_factory=TerminationPolicy)
     limits: RunLimits | None = None
-    output_schema: Any = None
     skills: tuple[str, ...] = ()
-    hooks: tuple[Any, ...] = ()
     spawn_policy: SpawnPolicy = field(default_factory=SpawnPolicy)
 
     def __post_init__(self) -> None:
@@ -104,7 +100,6 @@ class AgentSpec:
         )
         object.__setattr__(self, "metadata", dict(self.metadata or {}))
         object.__setattr__(self, "skills", tuple(self.skills or ()))
-        object.__setattr__(self, "hooks", tuple(self.hooks or ()))
 
     def with_limits(
         self,

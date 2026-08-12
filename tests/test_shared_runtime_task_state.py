@@ -44,17 +44,13 @@ def test_chat_context_does_not_create_task_state_core() -> None:
     assert all("<task-state " not in item["content"] for item in second.messages)
 
 
-def test_hybrid_uses_core_schema_without_coding_phase() -> None:
+def test_hybrid_task_state_tool_is_hidden_until_state_is_active() -> None:
     registry = build_lead_tool_registry()
     session = Session("hybrid:core", active_agent="hybrid")
     session.add_message("user", "回答问题")
     ContextBuilder().build(session=session, agent_spec=_profile("hybrid"))
-    registry.execute(
-        "tool_search",
-        {"query": "select:update_task_state"},
-        session=session,
-        mode="hybrid",
-    )
+    assert "update_task_state" not in registry.visible_names_for_turn(session, "hybrid")
+    ensure_task_state_core(session, objective="回答问题")
 
     schema = next(
         item for item in registry.schemas_for_turn(session, "hybrid")
@@ -64,7 +60,7 @@ def test_hybrid_uses_core_schema_without_coding_phase() -> None:
     assert "current_focus" in properties
     assert "phase" not in properties
 
-    assert load_task_state_core(session) is None
+    assert load_task_state_core(session) is not None
 
 
 def test_coding_task_state_is_shared_core_with_coding_extension_and_old_payload() -> None:

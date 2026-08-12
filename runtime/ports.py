@@ -53,7 +53,14 @@ class ModelPort(Protocol):
 class ToolPort(Protocol):
     def spec_for(self, name: str) -> Any: ...
 
-    def schemas_for_turn(self, session: Any, mode: str) -> list[dict]: ...
+    def schemas_for_turn(
+        self,
+        session: Any,
+        mode: str,
+        *,
+        agent_spec: Any | None = None,
+        run_context: Any | None = None,
+    ) -> list[dict]: ...
 
     def execute(
         self,

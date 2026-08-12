@@ -47,23 +47,11 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "src/math_tools.py",
             "old_text": "return high\n    if value > high:\n        return low",
             "new_text": "return low\n    if value > high:\n        return high"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:bash"
           }
         },
         {
@@ -117,23 +105,11 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "src/parser.py",
             "old_text": "if value == \"\":\n        return 0",
             "new_text": "if value == \"\":\n        return 8000"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:bash"
           }
         },
         {
@@ -188,12 +164,6 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "src/string_tools.py",
@@ -202,22 +172,10 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:write_file"
-          }
-        },
-        {
           "tool": "write_file",
           "args": {
             "path": "tests/test_normalize_whitespace.py",
             "content": "from src.string_tools import normalize_whitespace\n\n\ndef test_normalize_whitespace():\n    assert normalize_whitespace('  hello\\n  world\\t ') == 'hello world'\n"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:bash"
           }
         },
         {
@@ -273,23 +231,11 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "app/config.py",
             "old_text": "DEFAULT_TIMEOUT = 30\nRETRY_COUNT = 3\n\n\ndef build_config():\n    return {\n        \"timeout\": DEFAULT_TIMEOUT,\n        \"retries\": RETRY_COUNT,\n    }\n",
             "new_text": "SETTINGS = {\n    \"timeout\": 30,\n    \"retries\": 3,\n}\n\n\ndef build_config():\n    return dict(SETTINGS)\n"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:bash"
           }
         },
         {
@@ -349,12 +295,6 @@
           "tool": "read_file",
           "args": {
             "path": "README.md"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
           }
         },
         {
@@ -419,12 +359,6 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "sample.txt",
@@ -482,23 +416,11 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "src/calculator.py",
             "old_text": "return a - b",
             "new_text": "return a + b"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:bash"
           }
         },
         {
@@ -558,12 +480,6 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "src/version.py",
@@ -618,12 +534,6 @@
           "tool": "read_file",
           "args": {
             "path": "notes.txt"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
           }
         },
         {
@@ -737,12 +647,6 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "src/module.py",
@@ -848,23 +752,11 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "src/settings.py",
             "old_text": "return int(os.environ[\"APP_PORT\"])",
             "new_text": "return int(os.getenv(\"APP_PORT\", \"8080\"))"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:bash"
           }
         },
         {
@@ -924,23 +816,11 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "src/report.py",
             "old_text": "        totals[row[\"region\"]] = int(row[\"amount\"])",
             "new_text": "        region = row[\"region\"]\n        totals[region] = totals.get(region, 0) + int(row[\"amount\"])"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:bash"
           }
         },
         {
@@ -995,12 +875,6 @@
           "tool": "read_file",
           "args": {
             "path": "README.md"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
           }
         },
         {
@@ -1062,23 +936,11 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "app/cli.py",
             "old_text": "return \"hello world\"",
             "new_text": "return f\"hello {args.name}\""
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:bash"
           }
         },
         {
@@ -1133,12 +995,6 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "src/factory.py",
@@ -1147,22 +1003,10 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:write_file"
-          }
-        },
-        {
           "tool": "write_file",
           "args": {
             "path": "tests/test_make_admin.py",
             "content": "from src.factory import make_admin\n\n\ndef test_make_admin():\n    assert make_admin('Ada') == {'name': 'Ada', 'role': 'admin'}\n"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:bash"
           }
         },
         {
@@ -1222,23 +1066,11 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "src/loader.py",
             "old_text": "def load_lines(path):\n    return Path(path).read_text().splitlines()\n",
             "new_text": "def load_lines(path):\n    try:\n        return Path(path).read_text().splitlines()\n    except FileNotFoundError:\n        return []\n"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:bash"
           }
         },
         {
@@ -1298,23 +1130,11 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "schemas/user.schema.json",
             "old_text": "  \"required\": [\"name\"],\n  \"properties\": {\n    \"name\": {\"type\": \"string\"}\n  }",
             "new_text": "  \"required\": [\"name\", \"email\"],\n  \"properties\": {\n    \"name\": {\"type\": \"string\"},\n    \"email\": {\"type\": \"string\", \"format\": \"email\"}\n  }"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:bash"
           }
         },
         {
@@ -1374,23 +1194,11 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "src/exporter.py",
             "old_text": "def to_lines(records):\n    return [f\"{item['id']}|{item['name']}\" for item in records]\n",
             "new_text": "def to_lines(records):\n    lines = [\"id,name\"]\n    lines.extend(f\"{item['id']},{item['name']}\" for item in records)\n    return lines\n"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:bash"
           }
         },
         {
@@ -1450,23 +1258,11 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "src/users.py",
             "old_text": "def unique_names(names):\n    return list(set(names))\n",
             "new_text": "def unique_names(names):\n    seen = set()\n    result = []\n    for name in names:\n        if name in seen:\n            continue\n        seen.add(name)\n        result.append(name)\n    return result\n"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:bash"
           }
         },
         {
@@ -1526,23 +1322,11 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "src/coerce.py",
             "old_text": "def parse_bool(value):\n    return bool(value)\n",
             "new_text": "def parse_bool(value):\n    if isinstance(value, bool):\n        return value\n    return str(value).strip().lower() in {\"1\", \"true\", \"yes\", \"on\"}\n"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:bash"
           }
         },
         {
@@ -1605,12 +1389,6 @@
           }
         },
         {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
-          }
-        },
-        {
           "tool": "edit_file",
           "args": {
             "path": "README.md",
@@ -1661,12 +1439,6 @@
           "tool": "read_file",
           "args": {
             "path": "src/message.py"
-          }
-        },
-        {
-          "tool": "tool_search",
-          "args": {
-            "query": "select:edit_file"
           }
         },
         {

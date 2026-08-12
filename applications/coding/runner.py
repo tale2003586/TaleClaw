@@ -114,12 +114,14 @@ class CodingApplication:
         run_state=None,
         trace_store=None,
     ) -> str:
+        task_state_required = _requires_task_state(user_text)
         externalized = self._externalize_current_request(
             parent_session,
             user_text,
         )
         user_text = externalized["content"]
         request_artifact_refs = externalized["artifact_refs"]
+        task_state_required = task_state_required or bool(request_artifact_refs)
         original_request_ref = externalized["event_ref"]
         workspace = self.workspace_resolver.resolve(
             workspace_root,
@@ -149,15 +151,16 @@ class CodingApplication:
         if repository_revision:
             record.session.metadata["code_revision"] = repository_revision
         record.session.metadata[CODING_HANDOFF_METADATA_KEY] = session_handoff.to_dict()
-        ensure_task_state(
-            record.session,
-            objective_summary=_request_summary(user_text),
-            original_request_ref=original_request_ref,
-            artifact_refs=[
-                str(ref.get("storage_uri") or ref.get("artifact_id") or "")
-                for ref in request_artifact_refs
-            ],
-        )
+        if task_state_required:
+            ensure_task_state(
+                record.session,
+                objective_summary=_request_summary(user_text),
+                original_request_ref=original_request_ref,
+                artifact_refs=[
+                    str(ref.get("storage_uri") or ref.get("artifact_id") or "")
+                    for ref in request_artifact_refs
+                ],
+            )
         if run_state is not None:
             record.session.metadata["parent_run_id"] = run_state.run_id
             self.workspace_resolver.bind_session(record.session, workspace)
@@ -622,6 +625,21 @@ def _task_reasoning_budget(user_text: str, *, default_steps: int) -> int:
     if numbered_lines >= 3 or any(marker in text for marker in independent_markers):
         return max(int(default_steps or 24), 36)
     return int(default_steps or 24)
+
+
+def _requires_task_state(user_text: str) -> bool:
+    text = str(user_text or "")
+    if len(text) >= 1200:
+        return True
+    markers = (
+        "分阶段", "长期任务", "持续执行", "不要停", "完整实现", "系统级",
+        "multi-step", "multi-file", "repository-wide", "end to end",
+    )
+    numbered_lines = sum(
+        1 for line in text.splitlines()
+        if line.strip().startswith(tuple("123456789"))
+    )
+    return numbered_lines >= 3 or any(marker in text for marker in markers)
 
 
 def _portable_path(path) -> str:

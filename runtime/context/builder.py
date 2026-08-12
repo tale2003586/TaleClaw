@@ -32,7 +32,7 @@ from config import (
 from runtime.context.dynamic_budget import calculate_dynamic_prompt_budget
 from runtime.context.artifact_access import artifact_access_summary_message
 from runtime.context.attachments import latest_user_attachments, render_user_attachments_message
-from runtime.task_state import ensure_task_state_core, render_task_state_core_message
+from runtime.task_state import render_task_state_core_message
 from runtime.extensions import ContextContribution
 from runtime.token_estimator import estimate_tokens
 
@@ -761,19 +761,11 @@ class ContextBuilder:
             include_task_state
             and str(getattr(agent_spec, "tool_mode", "") or "") in {"coding", "teammate"}
         ):
-            refs = []
-            for item in latest_user_attachments(session):
-                ref = item.get("artifact_ref")
-                if isinstance(ref, dict):
-                    ref = ref.get("storage_uri") or ref.get("artifact_id")
-                if ref:
-                    refs.append(str(ref))
-            state = ensure_task_state_core(
-                session,
-                objective=current_request or "Answer the user's current request",
-                artifact_refs=refs,
-            )
-            messages.append(render_task_state_core_message(state))
+            from runtime.task_state import load_task_state_core
+
+            state = load_task_state_core(session)
+            if state is not None:
+                messages.append(render_task_state_core_message(state))
         attachment_message = render_user_attachments_message(session)
         if attachment_message is not None:
             messages.append(attachment_message)
@@ -1248,12 +1240,16 @@ class ContextBuilder:
         )
 
     def _coding_context_enabled(self, agent_spec, *, session=None) -> bool:
+        from runtime.task_state import load_task_state_core
+
         return (
             bool(
                 str(getattr(agent_spec, "tool_mode", "") or "")
                 in {"coding", "teammate"}
             )
             and callable(self.coding_context_view_builder)
+            and session is not None
+            and load_task_state_core(session) is not None
             and self._coding_uses_active_turn_only_history(
                 agent_spec,
                 session=session,

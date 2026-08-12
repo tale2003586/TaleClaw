@@ -5,7 +5,7 @@ from typing import Any
 
 from tools.schema import function_tool
 from tools.tool_registry import ToolRegistry
-from tools.spec import ToolInjection, ToolSpec
+from tools.spec import ToolExposure, ToolSpec
 
 
 @dataclass
@@ -40,6 +40,6 @@ def registry_with_tool(
         handler=handler,
         allowed_modes=frozenset(modes or {"bot", "coding", "teammate"}),
         admin_only=admin_only,
-        injection=ToolInjection.ALWAYS if always_on else ToolInjection.DEFERRED,
+        exposure=ToolExposure.PRELOADED if always_on else ToolExposure.DEFERRED,
     ))
     return registry

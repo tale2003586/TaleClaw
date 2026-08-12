@@ -329,11 +329,12 @@ class TaskSubagentRunner:
         return registry
 
     def _agent_spec(self, agent_type: str) -> AgentSpec:
+        tool_allow = tuple(sorted(SUBTASK_TOOL_WHITELIST.get(agent_type, ())))
         return AgentSpec(
             name=f"subagent:{agent_type}",
             role="subagent",
             instructions=SUBTASK_SYSTEM_PROMPTS[agent_type],
-            tool_set=ToolSet(mode="coding"),
+            tool_set=ToolSet(mode="coding", allow=tool_allow),
             spawn_policy=SpawnPolicy(enabled=False),
             metadata={"agent_type": agent_type},
         )

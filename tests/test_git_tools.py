@@ -73,7 +73,8 @@ class GitToolTests(unittest.TestCase):
         self.assertIn("edit_file", visible)
         self.assertIn("write_file", visible)
         self.assertIn("list_files", visible)
-        self.assertNotIn("read_files", visible)
+        self.assertIn("read_files", visible)
+        self.assertIn("code_outline", visible)
         self.assertNotIn("git_status", visible)
         self.assertNotIn("git_diff", visible)
         self.assertNotIn("git_log", visible)
@@ -83,11 +84,11 @@ class GitToolTests(unittest.TestCase):
 
         unlocked = registry.execute(
             "tool_search",
-            {"query": "select:git_add"},
+            {"query": "stage these changes for a git commit"},
             session=session,
             mode="coding",
         )
-        self.assertIn("Unlocked tool", unlocked)
+        self.assertIn("unlocked for this turn", unlocked)
         self.assertIn("git_add", registry.visible_names_for_turn(session, "coding"))
 
     def test_list_files_uses_workspace_and_rejects_escape(self) -> None:

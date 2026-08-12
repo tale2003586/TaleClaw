@@ -479,9 +479,9 @@ def _tool_registry_for(allowed_tools: list[str]):
     for name in allowed_tools:
         tool = registry._tools.get(name)
         if tool is not None:
-            from tools.spec import ToolInjection
+            from tools.spec import ToolExposure
 
-            tool.injection = ToolInjection.ALWAYS
+            tool.exposure = ToolExposure.PRELOADED
     return registry
 
 

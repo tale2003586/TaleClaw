@@ -134,7 +134,7 @@ class SubagentToolTests(unittest.TestCase):
         self.assertNotIn("task", tools._tools)
         self.assertNotIn("spawn_teammate", tools._tools)
 
-    def test_parallel_tasks_and_convenience_readers_are_deferred(self) -> None:
+    def test_parallel_tasks_are_deferred_and_high_value_readers_are_preloaded(self) -> None:
         registry = build_lead_tool_registry(FakeTeam())
         session = Session(
             id="task:parent",
@@ -148,8 +148,8 @@ class SubagentToolTests(unittest.TestCase):
         self.assertIn("rg", visible)
         self.assertNotIn("grep", visible)
         self.assertNotIn("nl", visible)
-        self.assertNotIn("code_outline", visible)
-        self.assertNotIn("read_files", visible)
+        self.assertIn("code_outline", visible)
+        self.assertIn("read_files", visible)
         self.assertNotIn("parallel_tasks", visible)
         self.assertNotIn("task", visible)
         self.assertIn(

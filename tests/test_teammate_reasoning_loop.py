@@ -51,19 +51,12 @@ class TeammateToolRegistryTests(unittest.TestCase):
 
         output = registry.execute(
             "read_files",
-            {"paths": ["README.md"]},
+            {"files": [{"path": "README.md"}]},
             session=session,
             mode="teammate",
         )
-        self.assertIn("not visible", output)
+        self.assertNotIn("not visible", output)
 
-        unlock = registry.execute(
-            "tool_search",
-            {"query": "select:read_files"},
-            session=session,
-            mode="teammate",
-        )
-        self.assertIn("Unlocked tool", unlock)
         self.assertIn("read_files", registry.visible_names_for_turn(session, "teammate"))
 
 

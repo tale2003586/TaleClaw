@@ -11,6 +11,7 @@ class StopReason(StrEnum):
     USER_CANCELLED = "user_cancelled"
     WAITING_USER = "waiting_user"
     HARD_BUDGET_EXCEEDED = "hard_budget_exceeded"
+    TOOL_CALL_LIMIT_EXCEEDED = "tool_call_limit_exceeded"
     SECURITY_BLOCKED = "security_blocked"
     TOOL_UNAVAILABLE = "tool_unavailable"
     NON_RETRYABLE_FAILURE = "non_retryable_failure"

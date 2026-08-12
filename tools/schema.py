@@ -1348,15 +1348,15 @@ SEARCH_TOOLS = [
     function_tool(
         "tool_search",
         (
-            "Search available deferred tools or unlock one for this turn. "
-            "Use query='select:<tool_name>' to unlock a specific tool, such as select:bash."
+            "Discover deferred tools by capability or user intent. Matching tools are "
+            "automatically unlocked for the current turn; use 'catalog' for recovery."
         ),
         {
             "query": {
                 "type": "string",
                 "description": (
-                    "Search text, or select:<tool_name> to unlock a deferred tool "
-                    "that is allowed in the current mode."
+                    "Natural-language capability or user intent to search. Use catalog "
+                    "to list the small set of capability groups."
                 ),
             },
         },

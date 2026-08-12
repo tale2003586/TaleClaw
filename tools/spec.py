@@ -16,10 +16,11 @@ class ToolRisk(_StringEnum):
     HIGH = "high"
 
 
-class ToolInjection(_StringEnum):
-    ALWAYS = "always"
+class ToolExposure(_StringEnum):
     PRELOADED = "preloaded"
     DEFERRED = "deferred"
+    CONDITIONAL = "conditional"
+    INTERNAL = "internal"
 
 
 class ToolStateEffect(_StringEnum):
@@ -47,7 +48,13 @@ class ToolSpec:
     idempotent: bool = True
     side_effect: bool = False
     state_effect: ToolStateEffect = ToolStateEffect.NONE
-    injection: ToolInjection = ToolInjection.PRELOADED
+    exposure: ToolExposure = ToolExposure.PRELOADED
+    discovery_summary: str = ""
+    capabilities: tuple[str, ...] = ()
+    aliases: tuple[str, ...] = ()
+    keywords: tuple[str, ...] = ()
+    allowed_agent_types: frozenset[str] = field(default_factory=frozenset)
+    condition: str = ""
     source: str = "local"
     session_scoped: bool = False
     admin_only: bool = False
@@ -60,7 +67,17 @@ class ToolSpec:
         self.allowed_modes = frozenset(self.allowed_modes)
         self.risk = ToolRisk(self.risk)
         self.state_effect = ToolStateEffect(self.state_effect)
-        self.injection = ToolInjection(self.injection)
+        self.exposure = ToolExposure(self.exposure)
+        self.discovery_summary = str(self.discovery_summary or self.description).strip()
+        self.capabilities = _normalized_terms(self.capabilities)
+        self.aliases = _normalized_terms(self.aliases)
+        self.keywords = _normalized_terms(self.keywords)
+        self.allowed_agent_types = frozenset(
+            str(value).strip() for value in self.allowed_agent_types if str(value).strip()
+        )
+        self.condition = str(self.condition or "").strip()
+        if self.exposure is ToolExposure.CONDITIONAL and not self.condition:
+            raise ValueError("Conditional tools require a runtime condition.")
         self.runtime_parameters = frozenset(self.runtime_parameters)
         self.schemas_by_mode = {
             str(mode): schema
@@ -86,8 +103,10 @@ class ToolSpec:
     def schema_for(self, mode: str) -> dict[str, Any]:
         return self.schemas_by_mode.get(mode, self.schema)
 
-    def enabled_for(self, mode: str, session=None) -> bool:
+    def enabled_for(self, mode: str, session=None, *, agent_type: str = "") -> bool:
         if mode not in self.allowed_modes:
+            return False
+        if self.allowed_agent_types and agent_type not in self.allowed_agent_types:
             return False
         if self.admin_only and session is not None:
             metadata = getattr(session, "metadata", {}) or {}
@@ -102,10 +121,22 @@ class ToolSpec:
             "state_effect": self.state_effect.value,
             "requires_audit": self.requires_audit,
             "allowed_modes": sorted(self.allowed_modes),
-            "injection": self.injection.value,
+            "exposure": self.exposure.value,
+            "discovery_summary": self.discovery_summary,
+            "capabilities": list(self.capabilities),
+            "aliases": list(self.aliases),
+            "keywords": list(self.keywords),
+            "allowed_agent_types": sorted(self.allowed_agent_types),
+            "condition": self.condition,
             "policy_tag": self.policy_tag,
             "session_scoped": self.session_scoped,
             "admin_only": self.admin_only,
             "runtime_parameters": sorted(self.runtime_parameters),
             "schema_modes": sorted(self.schemas_by_mode),
         }
+
+
+def _normalized_terms(values: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(
+        str(value).strip() for value in values if str(value).strip()
+    ))

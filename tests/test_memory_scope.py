@@ -53,7 +53,7 @@ def _unlock_memory(registry: ToolRegistry, session: Session) -> None:
     for name in ("memorize", "recall_memory"):
         registry.execute(
             "tool_search",
-            {"query": f"select:{name}"},
+            {"query": "save a long-term preference" if name == "memorize" else "recall a previous preference"},
             session=session,
             mode=mode,
         )

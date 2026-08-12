@@ -29,7 +29,7 @@ class MarkdownPdfPluginTests(unittest.TestCase):
 
         self.assertEqual("markdown_to_pdf", registration.schema["function"]["name"])
         self.assertEqual({"bot", "coding"}, set(registration.allowed_modes))
-        self.assertEqual("always", registration.injection.value)
+        self.assertEqual("deferred", registration.exposure.value)
         self.assertEqual("normal", registration.risk)
 
     def test_rejects_path_outside_workspace(self) -> None:

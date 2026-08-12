@@ -3,7 +3,7 @@ import json
 from plugins.base import Plugin, ToolRegistration
 from plugins.web_search.client import TavilySearchClient
 from tools.schema import function_tool
-from tools.spec import ToolInjection, ToolRisk
+from tools.spec import ToolExposure, ToolRisk
 
 
 class WebSearchPlugin(Plugin):
@@ -45,7 +45,11 @@ class WebSearchPlugin(Plugin):
                 handler=self.search,
                 risk=ToolRisk.LOW,
                 allowed_modes=frozenset({"bot", "coding"}),
-                injection=ToolInjection.ALWAYS,
+                exposure=ToolExposure.DEFERRED,
+                discovery_summary="Search the public web for current information and official sources.",
+                capabilities=("web search", "internet research", "current information"),
+                aliases=("search online", "联网搜索", "网络搜索", "网上查"),
+                keywords=("web", "internet", "latest", "查最新资料", "查官网"),
                 idempotent=True,
                 side_effect=False,
                 source="plugin:web_search",

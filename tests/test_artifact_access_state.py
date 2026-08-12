@@ -15,7 +15,7 @@ from tools.tool_registry import build_lead_tool_registry
 def _call(executor, registry, session, arguments, call_id="call"):
     registry.execute(
         "tool_search",
-        {"query": "select:read_artifact"},
+        {"query": "read an externalized artifact"},
         session=session,
         mode="bot",
     )
