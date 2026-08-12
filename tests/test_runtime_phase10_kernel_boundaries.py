@@ -4,7 +4,6 @@ from pathlib import Path
 from runtime.context import ContextBuilder
 from runtime.ports import (
     ContextPort,
-    LifecyclePort,
     ModelPort,
     ObservabilityPort,
     ToolExecutorPort,
@@ -26,11 +25,6 @@ FORBIDDEN_EXECUTION_IMPORTS = (
     "retrieval",
     "web",
 )
-
-
-class LifecycleFixture:
-    def after_turn(self, session):
-        return None
 
 
 class ObservabilityFixture:
@@ -80,5 +74,4 @@ def test_current_components_satisfy_kernel_ports():
     assert isinstance(provider, ModelPort)
     assert isinstance(registry, ToolPort)
     assert isinstance(ToolExecutor([]), ToolExecutorPort)
-    assert isinstance(LifecycleFixture(), LifecyclePort)
     assert isinstance(ObservabilityFixture(), ObservabilityPort)

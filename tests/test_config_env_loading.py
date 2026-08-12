@@ -37,7 +37,6 @@ def test_env_example_uses_task_state_dynamic_budget_configuration() -> None:
         "LONG_CONTENT_MAX_BYTES": "64000",
         "CONTEXT_ARTIFACT_ROOT": ".coding_applications/artifacts",
         "SUBAGENT_MAX_REASONING_STEPS": "16",
-        "WORKING_MEMORY_CONTEXT_FLOOR": "1000",
         "WORKSPACE_ROOTS": ".",
         "DEFAULT_CODING_WORKSPACE": ".",
     }.items() <= values.items()

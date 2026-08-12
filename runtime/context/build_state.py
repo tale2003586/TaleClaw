@@ -13,9 +13,8 @@ from runtime.context.sections import ContextSection
 @dataclass
 class BuildState:
     messages: list[dict]
-    profile_prompt: str
+    agent_instructions: str
     instruction_sections: list[ContextSection]
-    skill_catalog: BudgetedText
     runtime_guidance: str
     system_prompt: str
     session_messages: list[dict]

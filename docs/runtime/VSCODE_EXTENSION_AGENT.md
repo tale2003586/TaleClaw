@@ -6,7 +6,7 @@
 
 - 在 VS Code 里直接输入 coding task，不需要打开 Web UI。
 - 复用现有 TaleClaw runtime、tool hooks、trace、workspace diff 和 metrics。
-- 支持按任务切换关键功能：RAG、context budget、working memory、tool loop guard、reasoning step。
+- 支持按任务切换关键功能：RAG、context budget、tool loop guard、reasoning step。
 - 任务完成后在 VS Code 中查看最终回复、token、耗时、tool count、trace summary 和 run 目录。
 
 ## 当前实现
@@ -164,7 +164,6 @@ TaleClaw: Run Coding Agent Task
 | `taleclaw.subagentMaxReasoningSteps` | `16` | subagent reasoning step 上限 |
 | `taleclaw.ragEnabled` | `false` | 是否启用 RAG / security RAG / vector memory |
 | `taleclaw.contextBudgetEnabled` | `true` | 是否启用 context section budget |
-| `taleclaw.workingMemoryEnabled` | `true` | 是否启用 coding working memory checkpoint |
 | `taleclaw.toolLoopGuardEnabled` | `true` | 是否启用重复工具调用保护 |
 
 ## Bridge 协议
@@ -182,7 +181,6 @@ python scripts/run_vscode_agent_task.py \
   --subagent-max-reasoning-steps 16 \
   --rag-enabled 0 \
   --context-budget-enabled 1 \
-  --working-memory-enabled 1 \
   --tool-loop-guard-enabled 1
 ```
 
@@ -231,7 +229,6 @@ python scripts/run_vscode_agent_task.py \
   - `DEFAULT_CODING_WORKSPACE`
   - `RAG_ENABLED`
   - `CONTEXT_ENABLE_SECTION_BUDGET`
-  - `WORKING_MEMORY_CHECKPOINT_ENABLED`
   - `TOOL_LOOP_GUARD_ENABLED`
 - 通过 `runtime.run_message("/coding")` pin 模式。
 - 再运行真实任务，并从 `.runs/<run_id>/metrics.json`、`report.json`、`run_state.json` 汇总结果。

@@ -26,7 +26,7 @@ def subagent_trace_run_state(
         mode="coding",
         execution_path="subagent",
         intent="subagent",
-        profile=f"subagent:{agent_type}",
+        agent=f"subagent:{agent_type}",
         run_id=getattr(parent_run_state, "run_id", None),
         metadata={
             "kind": "subagent",

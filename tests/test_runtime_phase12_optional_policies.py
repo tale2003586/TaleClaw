@@ -1,9 +1,12 @@
 import ast
 from pathlib import Path
+import json
+import os
+import subprocess
+import sys
 from types import SimpleNamespace
 
 from runtime.execution.loop_policies import (
-    ToolBatchPolicy,
     WebSearchBudgetPolicy,
     standard_execution_policies,
 )
@@ -11,6 +14,32 @@ from runtime.execution.policy_set import ExecutionPolicies
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_bootstrap_does_not_import_memory_implementations_when_disabled() -> None:
+    env = {
+        **os.environ,
+        "SEMANTIC_MEMORY_ENABLED": "0",
+        "SEMANTIC_MEMORY_WRITE_ENABLED": "0",
+        "EPISODIC_MEMORY_ENABLED": "0",
+    }
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json,sys; import applications.bootstrap; "
+                "print(json.dumps(sorted(n for n in sys.modules if n.startswith('memory.'))))"
+            ),
+        ],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(completed.stdout) == []
 
 
 def _imports(path: Path) -> set[str]:
@@ -34,19 +63,16 @@ def test_kernel_construction_modules_do_not_import_concrete_optional_policies():
         assert "runtime.working_memory" not in imports
 
 
-def test_minimal_policies_have_no_metadata_or_batch_side_effects():
+def test_minimal_policies_have_no_metadata_side_effects():
     session = SimpleNamespace(metadata={})
     policies = ExecutionPolicies.minimal(24)
 
-    assert policies.web_search.denial(session, "web_search") == ""
-    assert policies.web_search.add_notice(session, "web_search", "result") == "result"
-    assert policies.tool_batch.should_parallelize_tasks([], available=True) is False
-    assert policies.tool_batch.should_batch_reads([], available=True) is False
+    assert policies.tool_calls.denial(session, "web_search") == ""
+    assert policies.tool_calls.add_notice(session, "web_search", "result") == "result"
     assert session.metadata == {}
 
 
 def test_standard_policy_factory_explicitly_enables_product_policies():
     policies = standard_execution_policies(24)
 
-    assert isinstance(policies.web_search, WebSearchBudgetPolicy)
-    assert isinstance(policies.tool_batch, ToolBatchPolicy)
+    assert isinstance(policies.tool_calls, WebSearchBudgetPolicy)

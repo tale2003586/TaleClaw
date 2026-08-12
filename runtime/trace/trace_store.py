@@ -9,7 +9,6 @@ from datetime import datetime
 
 from runtime.trace.events import RUN_STARTED, TraceEvent
 from config import WORKDIR
-from runtime.execution.failure_reasons import INCOMPLETE_STEP_LIMIT_PREFIX
 from runtime.trace.context_metrics import (
     aggregate_context_metrics,
     context_metric_record_from_event,
@@ -196,7 +195,6 @@ class TraceStore:
             "duplicate_tool_call_ratio": 0.0,
             "duplicate_tool_call_count": 0,
             "truncated_tool_output_count": 0,
-            "subagent_incomplete_count": 0,
             "subagent_fanout_count": 0,
             "run_duration_ms": _duration_ms(run_state.started_at, run_state.finished_at),
             "models": [],
@@ -258,10 +256,6 @@ class TraceStore:
                         metrics["truncated_tool_output_count"] += 1
                     if tool_name == "parallel_tasks":
                         metrics["subagent_fanout_count"] += 1
-                        metrics["subagent_incomplete_count"] += (
-                            _int(payload.get("subagent_incomplete_count"))
-                            or _subagent_incomplete_count(payload.get("output_preview"))
-                        )
                     fingerprint = _tool_call_fingerprint(payload)
                     if fingerprint:
                         if fingerprint in seen_tool_calls:
@@ -337,8 +331,8 @@ class TraceStore:
         metrics["context_token_compression_savings_ratio"] = _float(
             context_aggregate.get("token_compression_savings_ratio")
         )
-        metrics["coding_context_state_builds"] = _int(
-            context_aggregate.get("coding_context_state_build_count")
+        metrics["coding_context_builds"] = _int(
+            context_aggregate.get("coding_context_build_count")
         )
         metrics["coding_context_compacted_count"] = _int(
             context_aggregate.get("coding_context_compacted_count")
@@ -406,16 +400,6 @@ def _tool_call_fingerprint(payload: dict[str, Any]) -> str:
         sort_keys=True,
         ensure_ascii=False,
     )
-
-
-def _subagent_incomplete_count(output_preview: Any) -> int:
-    text = str(output_preview or "")
-    if not text:
-        return 0
-    count = text.count('"truncated": true')
-    count += text.count('"incomplete": true')
-    count += text.count(INCOMPLETE_STEP_LIMIT_PREFIX)
-    return count
 
 
 def _request_id_for(run_state: RunState) -> str:

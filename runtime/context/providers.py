@@ -1,7 +1,7 @@
 """Composable context providers used by ContextBuilder.
 
 Providers own data selection and budgeting. ContextBuilder remains the ordered
-composer during the compatibility phase so prompt and token behavior stay stable.
+composer so prompt and token behavior stay stable.
 """
 
 from __future__ import annotations
@@ -17,13 +17,13 @@ class PromptContextProvider:
         self,
         builder,
         *,
-        profile,
+        agent_spec,
         session,
         active_turn_start_index: int | None,
         prefix=None,
     ):
         return prefix or builder.build_prefix(
-            profile,
+            agent_spec,
             session=session,
             active_turn_start_index=active_turn_start_index,
         )
@@ -46,7 +46,7 @@ class HistoryContextProvider:
         builder,
         *,
         session,
-        profile,
+        agent_spec,
         prefix,
         active_turn_start_index: int | None,
         include_history: bool = True,
@@ -58,23 +58,23 @@ class HistoryContextProvider:
         )
         if not include_history:
             history = []
-            budgeted = builder._budget_conversation_history_for_profile(
+            budgeted = builder._budget_conversation_history(
                 [],
-                profile=profile,
+                agent_spec=agent_spec,
                 session=session,
             )
         elif builder._can_reuse_prefix_history(
             prefix,
-            profile=profile,
+            agent_spec=agent_spec,
             session=session,
             active_turn_start_index=active_turn_start_index,
         ):
             history = list(prefix.history_messages)
             budgeted = prefix.budgeted_history
         else:
-            budgeted = builder._budget_conversation_history_for_profile(
+            budgeted = builder._budget_conversation_history(
                 history,
-                profile=profile,
+                agent_spec=agent_spec,
                 session=session,
             )
         return HistoryContext(
@@ -100,7 +100,7 @@ class MemoryContextProvider:
         builder,
         *,
         session,
-        profile,
+        agent_spec,
         current_request: str,
         include_memory: bool = True,
     ):
@@ -189,8 +189,8 @@ class RetrievalContextProvider:
 class CodingContextProvider:
     name = "coding"
 
-    def enabled(self, builder, *, session, profile) -> bool:
-        return builder._coding_context_state_enabled(profile, session=session)
+    def enabled(self, builder, *, session, agent_spec) -> bool:
+        return builder._coding_context_enabled(agent_spec, session=session)
 
 
 class EmptyMemoryContextProvider:

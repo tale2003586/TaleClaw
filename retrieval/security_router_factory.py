@@ -86,7 +86,6 @@ def build_security_query_rewrite_provider_from_env(
     runner = ModelTaskRunner(model_pool=model_pool, default_max_tokens=max_tokens)
     spec = AgentSpec(
         name="security_rag_query_rewriter",
-        profile=None,
         model_purpose=purpose,
         max_tokens=max_tokens,
     )
@@ -154,7 +153,6 @@ def build_security_route_classifier_from_env(
     runner = ModelTaskRunner(model_pool=model_pool, default_max_tokens=max_tokens)
     spec = AgentSpec(
         name="security_rag_route_classifier",
-        profile=None,
         model_purpose=purpose,
         max_tokens=max_tokens,
     )

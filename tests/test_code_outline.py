@@ -76,13 +76,13 @@ class CodeOutlineToolTests(unittest.TestCase):
             self.assertIn("To continue: code_outline(", output)
             self.assertIn("offset=", output)
 
-    def test_code_outline_is_visible_for_coding_lead(self) -> None:
+    def test_code_outline_is_deferred_for_coding_lead(self) -> None:
         registry = build_lead_tool_registry()
         session = Session(id="task:outline-visible", active_agent="coding")
 
         visible = registry.visible_names_for_turn(session, "coding")
 
-        self.assertIn("code_outline", visible)
+        self.assertNotIn("code_outline", visible)
 
 
 if __name__ == "__main__":

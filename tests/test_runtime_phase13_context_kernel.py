@@ -77,7 +77,7 @@ def test_minimal_context_is_the_zero_capability_default():
 
     context = builder.build(
         session=session,
-        profile=SimpleNamespace(system_prompt="system", tool_mode="bot"),
+        agent_spec=SimpleNamespace(instructions="system", tool_mode="bot"),
     )
 
     assert tuple(builder.context_providers) == (

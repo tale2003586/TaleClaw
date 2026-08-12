@@ -28,7 +28,7 @@ class TaskArtifactWriter:
         extraction: ConclusionExtraction,
         promotion: PromotionResult,
     ) -> TaskArtifactPaths:
-        task_root = record.memory_root.parent
+        task_root = record.task_root
         task_root.mkdir(parents=True, exist_ok=True)
         conclusions_path = task_root / "CONCLUSIONS.json"
         task_log_path = task_root / "TASK_LOG.md"

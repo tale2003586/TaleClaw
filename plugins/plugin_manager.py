@@ -13,12 +13,10 @@ class PluginManager:
         workspace: Path,
         tool_registry,
         sessions=None,
-        memory_store=None,
     ) -> None:
         self.workspace = workspace
         self.tool_registry = tool_registry
         self.sessions = sessions
-        self.memory_store = memory_store
         self.plugins: list[Plugin] = []
         self.loaded_names: list[str] = []
         self._tool_names: list[str] = []
@@ -37,7 +35,6 @@ class PluginManager:
             workspace=self.workspace,
             tool_registry=self.tool_registry,
             sessions=self.sessions,
-            memory_store=self.memory_store,
             plugin_manager=self,
         )
         plugin.setup(context)

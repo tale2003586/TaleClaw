@@ -8,7 +8,6 @@ from typing import Any
 
 
 DEFAULT_CONTEXT_WINDOW_TOKENS = 128000
-DEFAULT_CONTEXT_LIMIT_TOKENS = DEFAULT_CONTEXT_WINDOW_TOKENS
 DEFAULT_SAFE_CONTEXT_RATIO = 0.85
 DEFAULT_OUTPUT_RESERVE_TOKENS = 4096
 DEFAULT_OUTPUT_RESERVE_CONTEXT_RATIO = 0.20
@@ -53,11 +52,6 @@ def context_window_tokens(
     if parsed is not None:
         return parsed
     return int(default)
-
-
-def context_limit(provider: Any | None = None, *, default: int = DEFAULT_CONTEXT_LIMIT_TOKENS) -> int:
-    """Backward-compatible alias for the total context window."""
-    return context_window_tokens(provider, default=default)
 
 
 def output_reserve_tokens(

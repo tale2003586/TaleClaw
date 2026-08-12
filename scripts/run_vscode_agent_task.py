@@ -88,7 +88,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--rag-enabled", choices=["0", "1"], default="0")
     parser.add_argument("--context-budget-enabled", choices=["0", "1"], default="1")
-    parser.add_argument("--working-memory-enabled", choices=["0", "1"], default="1")
     parser.add_argument("--tool-loop-guard-enabled", choices=["0", "1"], default="1")
     parser.add_argument("--user-id", default="vscode")
     parser.add_argument("--user-role", default="admin")
@@ -180,13 +179,13 @@ def configure_env(args: argparse.Namespace, workspace: Path) -> None:
 
 def apply_runtime_overrides(runtime: Any, args: argparse.Namespace) -> None:
     max_steps = max(1, int(args.max_reasoning_steps))
-    pipeline = getattr(runtime.coordinator, "runtime", None)
-    agent_runner = getattr(pipeline, "agent_runner", None)
+    runtime_instance = getattr(runtime.coordinator, "runtime", None)
+    agent_runner = getattr(runtime_instance, "agent_runner", None)
     if agent_runner is not None:
         agent_runner.max_reasoning_steps = max_steps
     task_runner = getattr(runtime.coordinator, "coding_application", None)
-    base_pipeline = getattr(task_runner, "base_pipeline", None)
-    base_agent_runner = getattr(base_pipeline, "agent_runner", None)
+    base_runtime = getattr(task_runner, "base_runtime", None)
+    base_agent_runner = getattr(base_runtime, "agent_runner", None)
     if base_agent_runner is not None:
         base_agent_runner.max_reasoning_steps = max_steps
     subagent_runner = getattr(runtime.coordinator, "subagent_runner", None)

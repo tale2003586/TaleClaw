@@ -19,10 +19,10 @@ from applications.coding.task_state import (
     PlanItem,
     TaskPhase,
     TaskState,
+    ensure_task_state,
     load_task_state,
-    migrate_coding_context_state_payload,
-    migrate_working_memory_payload,
 )
+from runtime.task_state.legacy import parse_legacy_task_state
 from runtime.sessions.session import Session
 from tools.handlers import TASK_HANDLERS
 
@@ -65,13 +65,21 @@ class TaskStateCoreTests(unittest.TestCase):
             "pending_units": [{"unit_id": "next", "description": "continue", "state": "todo"}],
             "archived_findings": {"unverified": "legacy observation"},
         }
-        first = migrate_working_memory_payload(working, original_request_ref="evt:req")
-        second = migrate_working_memory_payload(working, original_request_ref="evt:req")
-        self.assertEqual(first.to_dict(), second.to_dict())
-        self.assertLessEqual(len(first.objective.summary), 480)
-        self.assertEqual("evt:req", first.objective.original_request_ref)
-        self.assertEqual(ItemStatus.PENDING, first.pending_actions[0].status)
-        self.assertEqual(1, len(first.hypotheses))
+        first = parse_legacy_task_state(
+            working,
+            source="working_memory",
+            original_request_ref="evt:req",
+        )
+        second = parse_legacy_task_state(
+            working,
+            source="working_memory",
+            original_request_ref="evt:req",
+        )
+        self.assertEqual(first, second)
+        self.assertLessEqual(len(first.objective), 480)
+        self.assertEqual("evt:req", first.original_request_ref)
+        self.assertEqual("pending", first.pending_actions[0]["status"])
+        self.assertEqual(1, len(first.archived_findings))
 
         legacy_context = {
             "objective": "inspect context",
@@ -82,7 +90,11 @@ class TaskStateCoreTests(unittest.TestCase):
             ],
             "do_not_repeat": [{"tool": "read_file"}],
         }
-        migrated = migrate_coding_context_state_payload(legacy_context)
+        session = Session(
+            id="task:legacy-context",
+            metadata={"coding_context_state": legacy_context},
+        )
+        migrated = ensure_task_state(session, objective_summary="fallback")
         self.assertEqual(["verified"], [item.id for item in migrated.findings])
         self.assertEqual(["unsupported"], [item.id for item in migrated.hypotheses])
         self.assertFalse(hasattr(migrated, "execution_memory"))
@@ -132,7 +144,7 @@ class TaskStateCoreTests(unittest.TestCase):
             ]
         )
 
-        updated = reduce_task_state(state, patch, max_tokens=1)
+        updated = reduce_task_state(state, patch)
 
         self.assertEqual("hypothesis:large", updated.hypotheses[0].id)
 

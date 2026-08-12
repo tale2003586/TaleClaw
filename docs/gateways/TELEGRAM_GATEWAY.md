@@ -5,7 +5,7 @@
 ## 目标
 
 taleclaw 现在可以通过 Telegram Bot 接收私聊文字消息，并把消息交给现有 AgentLoop。
-Telegram 只是一个渠道适配器，不会侵入 Pipeline、工具插件或记忆系统。
+Telegram 只是一个渠道适配器，不会侵入 Runtime、工具插件或记忆系统。
 
 ```text
 Telegram Bot API

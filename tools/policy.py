@@ -3,9 +3,34 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from tools.spec import ToolInjection
-
 UNLOCKED_TOOLS_KEY = "unlocked_tools"
+
+DEFAULT_VISIBLE_TOOLS = {
+    "bot": frozenset({"tool_search"}),
+    "hybrid": frozenset({"tool_search"}),
+    "coding": frozenset({
+        "bash",
+        "list_files",
+        "rg",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "update_task_state",
+        "tool_search",
+    }),
+    "teammate": frozenset({
+        "bash",
+        "idle",
+        "list_files",
+        "rg",
+        "read_file",
+        "send_message",
+        "write_file",
+        "edit_file",
+        "update_task_state",
+        "tool_search",
+    }),
+}
 
 
 @dataclass(frozen=True)
@@ -30,11 +55,7 @@ class ToolPolicy:
         allowed = self._allowed_names(session=session, mode=mode)
         metadata = getattr(session, "metadata", {}) or {}
         unlocked = set(metadata.get(UNLOCKED_TOOLS_KEY, []))
-        visible = {
-            name
-            for name, tool in self.registry._tools.items()
-            if tool.injection in {ToolInjection.ALWAYS, ToolInjection.PRELOADED}
-        } | unlocked
+        visible = set(DEFAULT_VISIBLE_TOOLS.get(mode, ())) | unlocked
         return visible & allowed
 
     def can_execute(

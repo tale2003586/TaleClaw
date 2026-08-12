@@ -17,10 +17,6 @@ class RouteResult:
     confidence: float = 1.0
     reason: str = ""
 
-    @property
-    def profile(self) -> AgentSpec:
-        return self.agent_spec
-
 
 class AgentRouter:
     def __init__(
@@ -87,9 +83,8 @@ class AgentRouter:
             metadata["last_route"] = {
                 "intent": result.intent,
                 "execution": result.execution,
-                "profile": result.profile.name,
-                "tool_mode": result.profile.tool_mode,
-                "agent": result.agent_spec.name if result.agent_spec else "",
+                "agent": result.agent_spec.name,
+                "tool_mode": result.agent_spec.tool_mode,
                 "confidence": result.confidence,
                 "reason": result.reason,
                 "switched": result.switched,

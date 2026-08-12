@@ -8,13 +8,17 @@ from applications.coding.task_state import Objective, TaskPhase, TaskState, load
 from applications.coding.task_state import ensure_task_state
 from runtime.context.builder import ContextBuilder
 from runtime.context import ArtifactStore, LongContentDetector
+from runtime.execution.failure_reasons import StopDecision, StopReason
+from runtime.execution.state import RunExecutionState
 from applications.turn_coordinator import TurnCoordinator as AgentLoop
 from runtime.messaging.events import InboundMessage
 from runtime.sessions import Session
 from runtime.task_state import (
+    TaskStateRunObserver,
     TaskStateCorePatch,
     TaskStateValidationError,
     apply_task_state_core_patch,
+    ensure_task_state_core,
     load_task_state_core,
 )
 from runtime.task_state.models import TaskStatus
@@ -22,7 +26,7 @@ from tools.tool_registry import build_lead_tool_registry
 
 
 def _profile(mode: str):
-    return SimpleNamespace(system_prompt="base", tool_mode=mode)
+    return SimpleNamespace(instructions="base", tool_mode=mode)
 
 
 def test_chat_context_does_not_create_task_state_core() -> None:
@@ -30,9 +34,9 @@ def test_chat_context_does_not_create_task_state_core() -> None:
     session.add_message("user", "回答 123")
     builder = ContextBuilder()
 
-    first = builder.build(session=session, profile=_profile("bot"))
+    first = builder.build(session=session, agent_spec=_profile("bot"))
     state = load_task_state_core(session)
-    second = builder.build(session=session, profile=_profile("bot"))
+    second = builder.build(session=session, agent_spec=_profile("bot"))
 
     assert state is None
     assert "task_state" not in session.metadata
@@ -44,7 +48,13 @@ def test_hybrid_uses_core_schema_without_coding_phase() -> None:
     registry = build_lead_tool_registry()
     session = Session("hybrid:core", active_agent="hybrid")
     session.add_message("user", "回答问题")
-    ContextBuilder().build(session=session, profile=_profile("hybrid"))
+    ContextBuilder().build(session=session, agent_spec=_profile("hybrid"))
+    registry.execute(
+        "tool_search",
+        {"query": "select:update_task_state"},
+        session=session,
+        mode="hybrid",
+    )
 
     schema = next(
         item for item in registry.schemas_for_turn(session, "hybrid")
@@ -122,6 +132,30 @@ def test_core_lifecycle_has_no_task_phase_and_rejects_conflicts_or_terminal_revi
         ))
 
 
+@pytest.mark.parametrize(
+    ("reason", "expected"),
+    [
+        (StopReason.COMPLETED, TaskStatus.COMPLETED),
+        (StopReason.USER_CANCELLED, TaskStatus.CANCELLED),
+        (StopReason.HARD_BUDGET_EXCEEDED, TaskStatus.FAILED),
+        (StopReason.TOOL_UNAVAILABLE, TaskStatus.BLOCKED),
+    ],
+)
+def test_task_state_observer_owns_run_status_projection(reason, expected) -> None:
+    session = Session(f"task-observer:{reason}")
+    ensure_task_state_core(session, objective="finish the task")
+    execution = RunExecutionState(
+        stop_decision=StopDecision(reason=reason, message="finished or stopped"),
+    )
+
+    TaskStateRunObserver().after_run(session=session, execution=execution)
+
+    state = load_task_state_core(session)
+    assert state is not None
+    assert state.status is expected
+    assert execution.stop_decision.task_state_version == state.version
+
+
 def test_coding_context_snapshot_does_not_replace_task_state_authority() -> None:
     session = Session(
         "coding:snapshot",
@@ -180,7 +214,7 @@ def test_attachment_metadata_is_separate_and_instruction_free(tmp_path) -> None:
 
     session = Session("chat:attachment")
     session.add_message("user", inbound.content, metadata=inbound.metadata)
-    context = ContextBuilder().build(session=session, profile=_profile("bot"))
+    context = ContextBuilder().build(session=session, agent_spec=_profile("bot"))
     rendered = "\n".join(str(item.get("content") or "") for item in context.messages)
     attachment_block = next(
         item["content"] for item in context.messages

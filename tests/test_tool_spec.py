@@ -9,7 +9,8 @@ from runtime.execution.state import RunExecutionState
 from models.provider import ToolCall
 from tools.schema import function_tool
 from tools.spec import ToolInjection, ToolRisk, ToolSpec, ToolStateEffect
-from tools.tool_registry import ToolRegistry
+from tools.tool_registry import ToolRegistry, build_lead_tool_registry
+from runtime.sessions import Session
 
 
 class SpecPlugin(Plugin):
@@ -104,6 +105,50 @@ class ToolSpecTests(unittest.TestCase):
         self.assertIs(bot, tool_spec.schema_for("bot"))
         self.assertIs(base, tool_spec.schema_for("coding"))
         self.assertEqual(bot, registry._schema_for_mode(tool_spec, "bot"))
+
+    def test_default_chat_surface_only_exposes_capability_search(self):
+        registry = build_lead_tool_registry()
+        session = Session(id="chat")
+
+        visible = registry.visible_names_for_turn(session, "bot")
+        self.assertEqual({"tool_search"}, visible)
+        search = registry.execute(
+            "tool_search",
+            {"query": "long-term semantic memory"},
+            session=session,
+            mode="bot",
+        )
+        self.assertIn("recall_memory", search)
+        self.assertNotIn("memorize", search)
+
+    def test_default_coding_surface_is_limited_to_primitives(self):
+        registry = build_lead_tool_registry()
+        session = Session(id="coding")
+
+        self.assertEqual(
+            {
+                "bash", "list_files", "rg", "read_file", "write_file",
+                "edit_file", "update_task_state", "tool_search",
+            },
+            registry.visible_names_for_turn(session, "coding"),
+        )
+
+    def test_specialized_tool_can_be_unlocked_for_one_turn(self):
+        registry = build_lead_tool_registry()
+        session = Session(id="chat")
+
+        result = registry.execute(
+            "tool_search",
+            {"query": "select:recall_memory"},
+            session=session,
+            mode="bot",
+        )
+
+        self.assertIn("Unlocked", result)
+        visible = registry.visible_names_for_turn(session, "bot")
+        self.assertIn("tool_search", visible)
+        self.assertIn("recall_memory", visible)
+        self.assertNotIn("memorize", visible)
 
 
 if __name__ == "__main__":

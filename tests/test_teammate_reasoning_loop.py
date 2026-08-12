@@ -39,7 +39,7 @@ class TeammateToolRegistryTests(unittest.TestCase):
         self.assertIn("read_file", visible)
         self.assertIn("send_message", visible)
         self.assertIn("tool_search", visible)
-        self.assertNotIn("bash", visible)
+        self.assertIn("bash", visible)
         self.assertEqual(
             registry.execution_error_for_turn(
                 "spawn_teammate",
@@ -50,8 +50,8 @@ class TeammateToolRegistryTests(unittest.TestCase):
         )
 
         output = registry.execute(
-            "bash",
-            {"command": "pwd"},
+            "read_files",
+            {"paths": ["README.md"]},
             session=session,
             mode="teammate",
         )
@@ -59,12 +59,12 @@ class TeammateToolRegistryTests(unittest.TestCase):
 
         unlock = registry.execute(
             "tool_search",
-            {"query": "select:bash"},
+            {"query": "select:read_files"},
             session=session,
             mode="teammate",
         )
         self.assertIn("Unlocked tool", unlock)
-        self.assertIn("bash", registry.visible_names_for_turn(session, "teammate"))
+        self.assertIn("read_files", registry.visible_names_for_turn(session, "teammate"))
 
 
 class TeammateReasoningLoopTests(unittest.TestCase):
@@ -96,8 +96,7 @@ class TeammateReasoningLoopTests(unittest.TestCase):
                 max_reasoning_steps=5,
             )
             session = manager._new_session("alice", "tester", "Finish and idle.")
-            profile = manager._profile_for("alice", "tester", "default")
-            spec = manager._agent_spec(name="alice", role="tester", profile=profile)
+            spec = manager._agent_spec_for("alice", "tester", "default")
             registry = build_teammate_tool_registry("alice")
             with contextlib.redirect_stdout(io.StringIO()):
                 state = manager._run_reasoning_cycle(

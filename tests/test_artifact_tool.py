@@ -70,7 +70,7 @@ def test_read_artifact_reports_unknown_reference(tmp_path) -> None:
         run_read_artifact("artifact://art_missing", artifact_store=store)
 
 
-def test_read_artifact_is_visible_to_all_agent_modes(tmp_path) -> None:
+def test_read_artifact_is_deferred_and_can_be_unlocked_for_all_agent_modes(tmp_path) -> None:
     store = ArtifactStore(tmp_path / "artifacts")
     lead = build_lead_tool_registry(artifact_store=store)
     teammate = build_teammate_tool_registry("reader", artifact_store=store)
@@ -81,13 +81,27 @@ def test_read_artifact_is_visible_to_all_agent_modes(tmp_path) -> None:
         ("teammate", teammate),
     ):
         session = Session(id=f"test:{mode}", active_agent=mode)
+        assert "read_artifact" not in registry.visible_names_for_turn(session, mode)
+        registry.execute(
+            "tool_search",
+            {"query": "select:read_artifact"},
+            session=session,
+            mode=mode,
+        )
         assert "read_artifact" in registry.visible_names_for_turn(session, mode)
 
     ref = store.put_artifact("full request", artifact_type="user_input")
+    session = Session(id="test:call", active_agent="coding")
+    lead.execute(
+        "tool_search",
+        {"query": "select:read_artifact"},
+        session=session,
+        mode="coding",
+    )
     output = lead.execute(
         "read_artifact",
         {"artifact_ref": ref.storage_uri},
-        session=Session(id="test:call", active_agent="coding"),
+        session=session,
         mode="coding",
     )
     assert "full request" in output

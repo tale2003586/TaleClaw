@@ -161,8 +161,7 @@ python scripts/run_swebench_verified_matrix.py \
   "name": "context-budget-off",
   "enabled": true,
   "env": {
-    "CONTEXT_ENABLE_SECTION_BUDGET": "0",
-    "WORKING_MEMORY_RESUME_ENABLED": "1"
+    "CONTEXT_ENABLE_SECTION_BUDGET": "0"
   },
   "harness": {
     "max_reasoning_steps": 80
@@ -170,14 +169,7 @@ python scripts/run_swebench_verified_matrix.py \
 }
 ```
 
-临时关闭某个组合：
-
-```json
-{
-  "name": "working-memory-resume-off",
-  "enabled": false
-}
-```
+临时关闭某个组合时，将该 feature set 的 `enabled` 设为 `false`。
 
 控制台会输出每个 cell 和每个 instance 的结果：
 

@@ -121,13 +121,9 @@ WORKSPACE_ROOTS=/app
 DEFAULT_CODING_WORKSPACE=/app
 
 # ---------------------------------------------------------------------------
-# TaskState 与动态上下文：建议保持
+# 动态上下文：建议保持
 # ---------------------------------------------------------------------------
 
-# CODING_CONTEXT_STATE_ENABLED 是迁移期兼容开关；当前仍需与 TaskState 一起开启。
-CODING_CONTEXT_STATE_ENABLED=1
-TASK_STATE_CONTEXT_ENABLED=1
-SEMANTIC_COMPACTION_ENABLED=1
 ARTIFACT_OFFLOADING_ENABLED=1
 DYNAMIC_PROMPT_BUDGET_ENABLED=1
 
@@ -144,10 +140,6 @@ LONG_CONTENT_MAX_BYTES=64000
 
 # 使用已经挂载到宿主机的 storage，避免重建容器后 Artifact 丢失。
 CONTEXT_ARTIFACT_ROOT=/app/storage/context-artifacts
-
-WORKING_MEMORY_CHECKPOINT_ENABLED=1
-WORKING_MEMORY_RESUME_ENABLED=1
-WORKING_MEMORY_CONTEXT_BUDGET=4000
 
 # ---------------------------------------------------------------------------
 # 默认关闭的可选功能
@@ -252,8 +244,6 @@ WEB_ALLOW_ANONYMOUS=0
 
 当前 Coding 主路径使用 TaskState 和动态 Prompt 预算：
 
-- `TASK_STATE_CONTEXT_ENABLED=1`：启用 TaskState 权威上下文。
-- `SEMANTIC_COMPACTION_ENABLED=1`：允许压缩历史事件并更新结构化状态。
 - `ARTIFACT_OFFLOADING_ENABLED=1`：大型正文写入 Artifact，只在 Prompt 中保留引用。
 - `DYNAMIC_PROMPT_BUDGET_ENABLED=1`：按实际模型窗口、系统提示、工具定义和输出预留动态计算预算。
 - `PROMPT_*_RATIO`：默认在可用输入的 70% 触发压缩，压到 45%，92% 为硬输入边界。
@@ -392,8 +382,6 @@ for name in names:
 sudo docker compose exec agent-console python -c '
 import os
 names = [
-    "TASK_STATE_CONTEXT_ENABLED",
-    "SEMANTIC_COMPACTION_ENABLED",
     "ARTIFACT_OFFLOADING_ENABLED",
     "DYNAMIC_PROMPT_BUDGET_ENABLED",
     "CONTEXT_ARTIFACT_ROOT",

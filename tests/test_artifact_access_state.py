@@ -13,6 +13,12 @@ from tools.tool_registry import build_lead_tool_registry
 
 
 def _call(executor, registry, session, arguments, call_id="call"):
+    registry.execute(
+        "tool_search",
+        {"query": "select:read_artifact"},
+        session=session,
+        mode="bot",
+    )
     return executor.execute(
         ToolExecutionRequest(
             call_id,
@@ -126,7 +132,7 @@ def test_context_reconstructs_artifact_access_summary_after_history_compaction(t
 
     context = ContextBuilder().build(
         session=session,
-        profile=SimpleNamespace(system_prompt="base", tool_mode="bot"),
+        agent_spec=SimpleNamespace(instructions="base", tool_mode="bot"),
     )
 
     rendered = "\n".join(str(item.get("content") or "") for item in context.messages)

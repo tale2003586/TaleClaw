@@ -70,9 +70,9 @@ class ReasoningLoopTokenGateTests(unittest.TestCase):
 
         loop.run(
             session=session,
-            profile=SimpleNamespace(tool_mode="bot"),
-            build_context=lambda session, profile, **kwargs: SimpleNamespace(messages=list(session.messages), report=None),
-            resolve_provider=lambda session, profile: (provider, "tiny-model"),
+            agent_spec=SimpleNamespace(tool_mode="bot"),
+            build_context=lambda session, agent_spec, **kwargs: SimpleNamespace(messages=list(session.messages), report=None),
+            resolve_provider=lambda session, agent_spec: (provider, "tiny-model"),
             after_turn=lambda session: None,
             run_state=RunState(),
             trace_store=trace,
@@ -98,12 +98,12 @@ class ReasoningLoopTokenGateTests(unittest.TestCase):
         with self.assertRaises(PromptBudgetExceeded):
             loop.run(
                 session=session,
-                profile=SimpleNamespace(tool_mode="bot"),
-                build_context=lambda session, profile, **kwargs: SimpleNamespace(
+                agent_spec=SimpleNamespace(tool_mode="bot"),
+                build_context=lambda session, agent_spec, **kwargs: SimpleNamespace(
                     messages=list(session.messages),
                     report=None,
                 ),
-                resolve_provider=lambda session, profile: (provider, "tiny-model"),
+                resolve_provider=lambda session, agent_spec: (provider, "tiny-model"),
                 after_turn=lambda session: None,
                 run_state=RunState(),
                 trace_store=trace,
@@ -133,12 +133,12 @@ class ReasoningLoopTokenGateTests(unittest.TestCase):
         ), self.assertRaises(PromptBudgetExceeded):
             loop.run(
                 session=session,
-                profile=SimpleNamespace(tool_mode="bot"),
-                build_context=lambda session, profile, **kwargs: SimpleNamespace(
+                agent_spec=SimpleNamespace(tool_mode="bot"),
+                build_context=lambda session, agent_spec, **kwargs: SimpleNamespace(
                     messages=list(session.messages),
                     report=None,
                 ),
-                resolve_provider=lambda session, profile: (provider, "tiny-model"),
+                resolve_provider=lambda session, agent_spec: (provider, "tiny-model"),
                 after_turn=lambda session: None,
                 run_state=RunState(),
                 trace_store=TraceStore(),

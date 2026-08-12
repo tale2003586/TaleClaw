@@ -50,10 +50,6 @@ def history_vector_scope_for_session(session) -> str:
     return f"session:{getattr(session, 'id', 'unknown')}"
 
 
-def build_memory_vector_index_from_env() -> MemoryVectorIndex:
-    return build_history_vector_index_from_env()
-
-
 def memory_vector_scope_for_session(session) -> str:
     return history_vector_scope_for_session(session)
 

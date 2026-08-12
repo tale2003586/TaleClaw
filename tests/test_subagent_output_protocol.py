@@ -24,9 +24,9 @@ class SubagentOutputProtocolTests(unittest.TestCase):
 
     def test_extract_structured_result_preserves_legacy_explore_findings(self) -> None:
         payload = {
-            "findings": [{"path": "runtime/pipeline.py", "lines": "1-20"}],
-            "evidence": [{"path": "runtime/pipeline.py", "lines": "1-20"}],
-            "covered_scope": ["runtime/pipeline.py"],
+            "findings": [{"path": "runtime/runtime.py", "lines": "1-20"}],
+            "evidence": [{"path": "runtime/runtime.py", "lines": "1-20"}],
+            "covered_scope": ["runtime/runtime.py"],
             "incomplete": False,
         }
 

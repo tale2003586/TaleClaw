@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-class NoWebSearchPolicy:
+class NoToolCallPolicy:
     def denial(self, session, tool_name: str, *, state=None) -> str:
         return ""
 
@@ -21,26 +21,16 @@ class NoFinishingPolicy:
         return 2**31 - 1
 
 
-class SequentialToolBatchPolicy:
-    def should_parallelize_tasks(self, tool_calls: list, *, available: bool) -> bool:
-        return False
-
-    def should_batch_reads(self, tool_calls: list, *, available: bool) -> bool:
-        return False
-
-
 @dataclass(frozen=True)
 class ExecutionPolicies:
-    web_search: object
+    tool_calls: object
     finishing: object
-    tool_batch: object
 
     @classmethod
     def minimal(cls, max_reasoning_steps: int = 1) -> "ExecutionPolicies":
         return cls(
-            web_search=NoWebSearchPolicy(),
+            tool_calls=NoToolCallPolicy(),
             finishing=NoFinishingPolicy(),
-            tool_batch=SequentialToolBatchPolicy(),
         )
 
 

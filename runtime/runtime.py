@@ -4,9 +4,8 @@ from typing import Any
 from runtime.execution.agent_runner import AgentRunner
 from runtime.execution.state import RunExecutionState
 from runtime.agent_spec import AgentSpec
-from runtime.context import ContextBundle
 from runtime.extensions import ContextContribution, RuntimeExtensions
-from runtime.ports import ContextPort, LifecyclePort, ModelPort, ToolExecutorPort, ToolPort
+from runtime.ports import ContextPort, ModelPort, ToolExecutorPort, ToolPort
 from runtime.execution.failure_reasons import (
     StopReason,
 )
@@ -27,7 +26,6 @@ class Runtime:
         model: str,
         tool_executor: ToolExecutorPort | None = None,
         context_builder: ContextPort | None = None,
-        memory_lifecycle: LifecyclePort | None = None,
         model_pool=None,
         reflection_agent=None,
         execution_policy_factory=None,
@@ -38,7 +36,6 @@ class Runtime:
             raise ValueError("Runtime requires a tool_executor.")
         if context_builder is None:
             raise ValueError("Runtime requires a context_builder.")
-        self.memory_lifecycle = memory_lifecycle
         self.execution_policy_factory = execution_policy_factory
         self.agent_runner = AgentRunner(
             tools=tools,
@@ -65,17 +62,16 @@ class Runtime:
         self,
         *,
         context_builder,
-        memory_lifecycle=None,
+        tools=None,
         max_reasoning_steps: int | None = None,
         execution_policy_factory=None,
     ) -> "Runtime":
         return Runtime(
-            tools=self.agent_runner.tools,
+            tools=tools or self.agent_runner.tools,
             provider=self.agent_runner.provider,
             model=self.agent_runner.model,
             tool_executor=self.agent_runner.tool_executor,
             context_builder=context_builder,
-            memory_lifecycle=memory_lifecycle,
             model_pool=self.agent_runner.model_pool,
             reflection_agent=self.agent_runner.reflection_agent,
             execution_policy_factory=(
@@ -96,8 +92,7 @@ class Runtime:
             raise TypeError("Runtime.run context must be a RunContext.")
         context.state.input_text = user_input
         context.state.messages = context.session.messages
-        profile = context.profile or agent.profile or agent
-        self._execute(agent=agent, profile=profile, context=context)
+        self._execute(agent=agent, context=context)
         output = get_last_assistant_text(context.session.messages)
         return RunResult(
             output=str(output or ""),
@@ -107,21 +102,21 @@ class Runtime:
             run_state=context.run_state,
         )
 
-    def _execute(self, *, agent: AgentSpec, profile: Any, context: "RunContext") -> None:
+    def _execute(self, *, agent: AgentSpec, context: "RunContext") -> None:
         session = context.session
         active_turn_start_index = _last_user_message_index(session.messages)
         self._before_turn(session, run_context=context)
         context_prefix = self._build_context_prefix(
             session,
-            profile,
+            agent,
             active_turn_start_index=active_turn_start_index,
         )
         self.agent_runner.run(
             session=session,
             spec=agent,
-            build_context=lambda session, profile, **trace_kwargs: self._before_reasoning(
+            build_context=lambda session, agent_spec, **trace_kwargs: self._before_reasoning(
                 session,
-                profile,
+                agent_spec,
                 active_turn_start_index=active_turn_start_index,
                 context_prefix=context_prefix,
                 context_policy=agent.context_policy,
@@ -151,13 +146,13 @@ class Runtime:
     def _build_context_prefix(
         self,
         session,
-        profile,
+        agent_spec,
         *,
         active_turn_start_index=None,
     ):
         context_builder = self.agent_runner.context_builder
         return context_builder.build_prefix(
-            profile,
+            agent_spec,
             session=session,
             active_turn_start_index=active_turn_start_index,
         )
@@ -165,7 +160,7 @@ class Runtime:
     def _before_reasoning(
         self,
         session,
-        profile,
+        agent_spec,
         *,
         active_turn_start_index=None,
         context_prefix=None,
@@ -184,10 +179,10 @@ class Runtime:
         include_security_knowledge = not already_used
         contributions: list[ContextContribution] = []
         for contributor in run_context.extensions.context_contributors:
-            contributions.extend(contributor.contribute(session=session, profile=profile))
+            contributions.extend(contributor.contribute(session=session, agent_spec=agent_spec))
         build_kwargs = {
             "session": session,
-            "profile": profile,
+            "agent_spec": agent_spec,
             "active_turn_start_index": active_turn_start_index,
             "include_security_knowledge": include_security_knowledge,
             "contributions": contributions,
@@ -206,31 +201,7 @@ class Runtime:
         if _section_rendered(context, "security_knowledge"):
             if state is not None:
                 state.security_knowledge_used = True
-        return self._with_tool_catalog(context, session, profile)
-
-    def _with_tool_catalog(self, context, session, profile):
-        catalog = self._tool_catalog(session, profile)
-        if not catalog:
-            return context
-        messages = list(getattr(context, "messages", []) or [])
-        messages.insert(_active_turn_insert_index(context, messages), {
-            "role": "user",
-            "content": catalog,
-        })
-        return ContextBundle(
-            messages=messages,
-            report=getattr(context, "report", None),
-        )
-
-    def _tool_catalog(self, session, profile) -> str:
-        tools = self.agent_runner.tools
-        render = getattr(tools, "tool_catalog_text", None)
-        if render is None:
-            return ""
-        return render(
-            session,
-            str(getattr(profile, "tool_mode", "bot") or "bot"),
-        )
+        return context
 
     def _after_turn(self, session, *, run_state=None, trace_store=None) -> None:
         queued_memory_events = []
@@ -243,25 +214,6 @@ class Runtime:
                 payload = item.get("payload") if isinstance(item, dict) else {}
                 if event_name:
                     trace_store.append_event(run_state, event_name, payload or {})
-        if self.memory_lifecycle is not None:
-            enqueue = getattr(self.memory_lifecycle, "enqueue_after_turn", None)
-            if enqueue is not None:
-                enqueue(session, run_state=run_state, trace_store=trace_store)
-            else:
-                result = self.memory_lifecycle.after_turn(session)
-                if trace_store is not None and run_state is not None and result is not None:
-                    for item in getattr(result, "trace_events", []) or []:
-                        event_name = item.get("event")
-                        payload = item.get("payload") or {}
-                        if event_name:
-                            trace_store.append_event(run_state, event_name, payload)
-                    trace_store.append_event(
-                        run_state,
-                        "memory.lifecycle.completed",
-                        result.to_trace_payload()
-                        if hasattr(result, "to_trace_payload")
-                        else {},
-                    )
         session.touch()
 
 def get_last_assistant_text(messages: list) -> str:
@@ -295,29 +247,6 @@ def _last_user_message_index(messages: list) -> int | None:
     return None
 
 
-def _active_turn_insert_index(context, messages: list) -> int:
-    report = getattr(context, "report", None)
-    if report is None:
-        return len(messages)
-    try:
-        sections = report.to_dict().get("sections", {})
-    except AttributeError:
-        return len(messages)
-    active = sections.get("active_turn") or {}
-    metadata = active.get("metadata") or {}
-    try:
-        active_count = int(metadata.get("message_count") or 0)
-    except (TypeError, ValueError):
-        active_count = 0
-    try:
-        active_count = int(metadata.get("rendered_message_count") or active_count)
-    except (TypeError, ValueError):
-        pass
-    if active_count <= 0:
-        return len(messages)
-    return max(1, len(messages) - active_count)
-
-
 def _section_rendered(context, name: str) -> bool:
     report = getattr(context, "report", None)
     if report is None:
@@ -336,7 +265,6 @@ def _section_rendered(context, name: str) -> bool:
 @dataclass(frozen=True)
 class RunContext:
     session: Any
-    profile: Any = None
     on_text: Callable[[str], None] | None = None
     cancel_requested: Callable[[], bool] | None = None
     checkpoint_callback: Callable | None = None

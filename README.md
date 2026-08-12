@@ -5,11 +5,11 @@ taleclaw 是一个用 Python 实现的 **Agent 运行时平台**。它不是单�
 ## 核心能力
 
 - **四类入口**：CLI、本地 Web 控制台、Telegram、飞书（Feishu）。
-- **三种模式**：普通聊天、混合（Hybrid）模式、Coding 任务模式。
+- **Agent 路由**：普通聊天、Hybrid 路由与隔离 Coding 任务应用。
 - **模型路由**：OpenAI 兼容调用，按用途（`chat` / `coding` / `summary` / `hybrid` / `scheduled_agent`）路由到不同 provider，支持 provider 健康检查与自动切换。
-- **工具调用**：文件读写、bash、memory、storage、sandbox、artifact、scheduler、Markdown 转 PDF、web search 等。
+- **工具调用**：默认只暴露少量基础能力，其他 storage、artifact、memory、subagent、web search 等能力通过确定性策略按需解锁。
 - **多用户隔离**：每个用户拥有独立的 session、memory、storage。
-- **长期记忆**：长期记忆、近期上下文、历史摘要、任务会话记忆提升与生命周期管理。
+- **可选长期记忆**：PostgreSQL 是权威存储，向量索引仅用于可重建检索；关闭后 Chat/Coding 仍可独立运行。
 - **代码安全 RAG**：基于 Qdrant + bge-m3 的代码安全知识库与检索路由。
 - **可扩展插件**：插件 MVP、工具搜索与延迟加载工具。
 
@@ -21,7 +21,7 @@ applications/ # 产品应用；Coding 生命周期与编排集中在 application
 models/       # 模型 provider 与模型路由（provider、model_pool、model_task_runner）
 agents/       # AgentSpec 定义与 Subagent 实现
 tools/        # 工具 schema、注册表、策略、执行器与处理器
-memory/       # 长期记忆、scoped store、生命周期、归档与历史摘要
+memory/       # 可选长期记忆 repository、命令、检索、派生索引与迁移
 gateway/      # Telegram / 飞书网关
 web/          # 本地 Web 控制台（标准库 HTTP server + 前端静态资源）
 plugins/      # 插件
@@ -88,7 +88,7 @@ docker compose --profile feishu up
 ## 测试
 
 ```bash
-pytest -q
+python -m pytest -q
 ```
 
 ## 文档

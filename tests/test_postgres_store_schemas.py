@@ -1,6 +1,5 @@
 import unittest
 
-from memory.archive_store import MemoryArchiveStore
 from memory.postgres_repository import PostgresMemoryRepository
 from tests.postgres_utils import temporary_postgres_schema
 from runtime.db import connect, resolve_database_config, table_columns
@@ -93,30 +92,6 @@ class PostgresStoreSchemaContractTests(unittest.TestCase):
             self.assertIn(
                 "idx_web_auth_sessions_expiry",
                 _indexes(dsn, "web_auth_sessions"),
-            )
-
-    def test_memory_archive_schema_is_complete_and_idempotent(self) -> None:
-        with temporary_postgres_schema("memory_archive_contract") as dsn:
-            MemoryArchiveStore(dsn)
-            MemoryArchiveStore(dsn)
-
-            self.assertEqual(
-                {
-                    "id",
-                    "session_id",
-                    "mode",
-                    "user_text",
-                    "assistant_summary",
-                    "source_ref",
-                    "created_at",
-                    "archived_at",
-                    "metadata",
-                },
-                _columns(dsn, "memory_archive"),
-            )
-            self.assertIn(
-                "idx_memory_archive_session_created",
-                _indexes(dsn, "memory_archive"),
             )
 
     def test_trace_schema_is_complete_and_idempotent(self) -> None:

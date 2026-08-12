@@ -8,6 +8,7 @@ from runtime.context.events import ContextEventType, thaw
 from runtime.execution.reasoning_loop import ReasoningLoop
 from runtime.sessions import Session
 from tools.executor import ToolExecutionResult
+from tools.hooks import record_tool_result_artifact
 
 
 ARTIFACT_REF = {
@@ -29,7 +30,7 @@ class ArtifactResultExecutor:
 
     def execute(self, request, invoker) -> ToolExecutionResult:
         self.requests.append(request)
-        return ToolExecutionResult(
+        result = ToolExecutionResult(
             status="success",
             output=self.output,
             final_arguments=dict(request.arguments),
@@ -40,6 +41,8 @@ class ArtifactResultExecutor:
                 "artifact_offloaded_tokens": 1024,
             },
         )
+        record_tool_result_artifact(request, result, replacement_output=self.output)
+        return result
 
 
 class UnusedTools:
@@ -139,59 +142,4 @@ def test_normal_tool_result_records_artifact_before_result_backfill() -> None:
         aggregate_call_id="call-normal",
         aggregate_tool_name="inspect",
         related_call_ids=["call-normal"],
-    )
-
-
-def test_parallel_task_result_records_one_artifact_before_split_results() -> None:
-    calls = [
-        ToolCall(id="call-a", name="task", arguments={"prompt": "alpha"}),
-        ToolCall(id="call-b", name="task", arguments={"prompt": "beta"}),
-    ]
-    response = _response(calls)
-    session = Session(id="artifact:parallel")
-    loop = _loop(json.dumps({"results": [{"summary": "a"}, {"summary": "b"}]}))
-    loop._after_reasoning_step(session, response)
-
-    loop._execute_auto_parallelized_task_calls(
-        session,
-        calls,
-        SimpleNamespace(tool_mode="coding"),
-    )
-
-    _assert_artifact_precedes_results(
-        session,
-        result_count=2,
-        aggregate_call_id="auto_parallel:call-a",
-        aggregate_tool_name="parallel_tasks",
-        related_call_ids=["call-a", "call-b"],
-    )
-
-
-def test_batched_read_result_records_one_artifact_before_split_results() -> None:
-    calls = [
-        ToolCall(id="call-a", name="read_file", arguments={"path": "a.py"}),
-        ToolCall(id="call-b", name="read_file", arguments={"path": "b.py"}),
-    ]
-    response = _response(calls)
-    session = Session(id="artifact:batch-read")
-    loop = _loop(json.dumps({
-        "results": [
-            {"path": "a.py", "output": "a"},
-            {"path": "b.py", "output": "b"},
-        ],
-    }))
-    loop._after_reasoning_step(session, response)
-
-    loop._execute_auto_batched_read_file_calls(
-        session,
-        calls,
-        SimpleNamespace(tool_mode="coding"),
-    )
-
-    _assert_artifact_precedes_results(
-        session,
-        result_count=2,
-        aggregate_call_id="auto_read_files:call-a",
-        aggregate_tool_name="read_files",
-        related_call_ids=["call-a", "call-b"],
     )

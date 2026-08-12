@@ -159,7 +159,7 @@ export default function ChatPage() {
     }
   };
   const setAllOutputs = (open: boolean) => messageList.current?.querySelectorAll<HTMLDetailsElement>("details[data-technical-output]").forEach((item) => { item.open = open; });
-  const mode = String(active?.current_mode || "hybrid");
+  const mode = String(active?.active_agent || "hybrid");
 
   return <div className="page chat-page">
     <header className="chat-header">

@@ -18,11 +18,6 @@ class ExecutionPlan:
     switched: bool = False
     switch_message: str | None = None
 
-    @property
-    def profile(self) -> AgentSpec:
-        return self.agent_spec
-
-
 class ExecutionPlanner:
     """Turn classified intent plus session state into an execution path."""
 

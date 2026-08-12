@@ -24,17 +24,14 @@ from runtime.context import (
 from runtime.context.budget import ContextBudgeter
 from runtime.context.providers import DEFAULT_CONTEXT_PROVIDERS
 from runtime.context.retrieval import ContextRetrievalService
-from skill_runtime import SKILL_LOADER
 from applications.coding.context_state import build_coding_context_view
 from runtime.context.snapshots import EventCompactor
-from runtime.agent_spec import AgentSpec
 from models.model_task_runner import ModelTaskRunner
 from runtime.runtime import Runtime
 from runtime.execution.reflection import ReflectionAgent
 from runtime.execution.loop_policies import standard_execution_policies
 from applications.app_runtime import AppRuntime
 from runtime.env_loader import load_dotenv_file
-from memory.background_lifecycle import BackgroundMemoryLifecycle
 from runtime.trace.trace_store import TraceStore
 from tools.hooks import (
     ArtifactAccessGuardHook,
@@ -56,24 +53,6 @@ from runtime.routing.hybrid_classifier import HybridModeClassifier
 from runtime.sessions import SessionManager
 from applications.coding.runner import CodingApplication
 from agents.subagent.runner import TaskSubagentRunner
-from memory.archive_store import MemoryArchiveStore
-from memory.history_summary import HistorySummarizer
-from memory.lifecycle import MemoryLifecycle
-from memory.processor import CandidateMemoryExtractor, MemoryProcessingDevice
-from memory.command_service import MemoryCommandService
-from memory.index_sync import MemoryIndexSynchronizer
-from memory.postgres_repository import PostgresMemoryRepository
-from memory.promotion_service import MemoryPromotionService
-from memory.semantic_retrieval import SemanticMemoryRetrievalService
-from memory.store import MemoryStore
-from memory.governance import MemoryGovernancePipeline
-from memory.enrichment import PendingMemoryEnricher
-from memory.scoped_store import ScopedMemoryStore
-from memory.vector_runtime import (
-    build_history_vector_index_from_env,
-    build_semantic_memory_index_from_env,
-    history_vector_scope_for_session,
-)
 from plugins import PluginManager
 from runtime.cancellation import CancellationRegistry
 from runtime.services import RuntimeServices
@@ -156,18 +135,20 @@ def build_runtime() -> AppRuntime:
         ),
     )
 
-    memory_store = ScopedMemoryStore(WORKDIR, legacy_store=MemoryStore())
-    memory_archive_store = MemoryArchiveStore()
-    history_vector_index = (
-        build_history_vector_index_from_env()
-        if _history_vector_enabled()
-        else None
-    )
+    history_vector_index = None
+    history_scope_resolver = None
+    if _history_vector_enabled():
+        from memory.vector_runtime import (
+            build_history_vector_index_from_env,
+            history_vector_scope_for_session,
+        )
+
+        history_vector_index = build_history_vector_index_from_env()
+        history_scope_resolver = history_vector_scope_for_session
     semantic_memory_repository = None
     semantic_memory_command_service = None
     semantic_memory_retrieval_service = None
     semantic_memory_index_synchronizer = None
-    semantic_memory_promotion_service = None
     semantic_flags_enabled = _env_bool("SEMANTIC_MEMORY_ENABLED", False) or any(
         _env_bool(name, False)
         for name in (
@@ -177,6 +158,12 @@ def build_runtime() -> AppRuntime:
         )
     )
     if semantic_flags_enabled:
+        from memory.command_service import MemoryCommandService
+        from memory.index_sync import MemoryIndexSynchronizer
+        from memory.postgres_repository import PostgresMemoryRepository
+        from memory.semantic_retrieval import SemanticMemoryRetrievalService
+        from memory.vector_runtime import build_semantic_memory_index_from_env
+
         semantic_memory_repository = PostgresMemoryRepository()
         semantic_memory_index = build_semantic_memory_index_from_env()
         semantic_memory_command_service = MemoryCommandService(
@@ -194,15 +181,6 @@ def build_runtime() -> AppRuntime:
         semantic_memory_index_synchronizer = MemoryIndexSynchronizer(
             semantic_memory_repository,
             semantic_memory_index,
-        )
-        semantic_memory_promotion_service = MemoryPromotionService(
-            semantic_memory_command_service,
-            semantic_memory_repository,
-            min_confidence=_env_float("MEMORY_CANDIDATE_PROMOTION_CONFIDENCE", 0.85),
-            min_independent_evidence=_env_int(
-                "MEMORY_CANDIDATE_PROMOTION_EVIDENCE_COUNT",
-                2,
-            ),
         )
     configure_semantic_memory_services(
         command_service=(
@@ -257,10 +235,8 @@ def build_runtime() -> AppRuntime:
         budgeter=context_budgeter,
         prompt_assets_service=PromptAssetsService(
             budgeter=context_budgeter,
-            skill_loader=SKILL_LOADER,
         ),
         memory_service=ContextMemoryService(
-            memory_store=memory_store,
             semantic_memory_retriever=(
                 semantic_memory_retrieval_service
                 if _env_bool("SEMANTIC_MEMORY_CONTEXT_ENABLED", False)
@@ -269,7 +245,7 @@ def build_runtime() -> AppRuntime:
         ),
         retrieval_service=ContextRetrievalService(
             history_vector_index=history_vector_index,
-            history_scope_resolver=history_vector_scope_for_session,
+            history_scope_resolver=history_scope_resolver,
             retrieval_top_k=_env_int("HISTORY_RETRIEVAL_TOP_K", 6),
             retrieval_min_score=_env_float("HISTORY_RETRIEVAL_MIN_SCORE", 0.35),
             security_retrieval_router=security_retrieval_router,
@@ -295,71 +271,6 @@ def build_runtime() -> AppRuntime:
         model_pool=model_pool,
         default_max_tokens=800,
     )
-    memory_processor = MemoryProcessingDevice(
-        history_vector_index=history_vector_index,
-        scope_resolver=history_vector_scope_for_session,
-        similar_top_k=_env_int("MEMORY_CANDIDATE_SIMILAR_TOP_K", 8),
-        similar_min_score=_env_float("MEMORY_CANDIDATE_SIMILAR_MIN_SCORE", 0.55),
-        similar_min_hits=_env_int("MEMORY_CANDIDATE_SIMILAR_MIN_HITS", 2),
-        extractor=CandidateMemoryExtractor(
-            runner=model_task_runner,
-            spec=AgentSpec(
-                name="candidate_memory_extractor",
-                profile=None,
-                model_purpose="summary",
-                max_tokens=_env_int("MEMORY_CANDIDATE_EXTRACT_MAX_TOKENS", 220),
-            ),
-            max_tokens=_env_int("MEMORY_CANDIDATE_EXTRACT_MAX_TOKENS", 220),
-        ),
-        governance=(
-            MemoryGovernancePipeline()
-            if _env_bool("MEMORY_GOVERNANCE_ENABLED", False)
-            else None
-        ),
-        enricher=(
-            PendingMemoryEnricher()
-            if _env_bool("MEMORY_PENDING_ENRICHMENT_ENABLED", False)
-            else None
-        ),
-    )
-    memory_lifecycle = MemoryLifecycle(
-        memory_store,
-        summarizer=HistorySummarizer(
-            runner=model_task_runner,
-            spec=AgentSpec(
-                name="history_summarizer",
-                profile=None,
-                model_purpose="summary",
-                max_tokens=220,
-            ),
-        ),
-        archive_store=memory_archive_store,
-        history_vector_index=history_vector_index,
-        memory_processor=memory_processor,
-        scope_resolver=history_vector_scope_for_session,
-        promotion_confidence=_env_float("MEMORY_CANDIDATE_PROMOTION_CONFIDENCE", 0.85),
-        promotion_evidence_count=_env_int("MEMORY_CANDIDATE_PROMOTION_EVIDENCE_COUNT", 3),
-        command_service=(
-            semantic_memory_command_service
-            if _env_bool("SEMANTIC_MEMORY_WRITE_ENABLED", False)
-            else None
-        ),
-        promotion_service=(
-            semantic_memory_promotion_service
-            if _env_bool("SEMANTIC_MEMORY_WRITE_ENABLED", False)
-            else None
-        ),
-        write_legacy_history_files=_env_bool(
-            "MEMORY_LEGACY_HISTORY_FILES_ENABLED",
-            False,
-        ),
-    )
-    if _env_bool("MEMORY_LIFECYCLE_BACKGROUND", True):
-        memory_lifecycle = BackgroundMemoryLifecycle(
-            memory_lifecycle,
-            max_workers=_env_int("MEMORY_LIFECYCLE_BACKGROUND_WORKERS", 1),
-        )
-
     plugins = [
         ShellSafetyPlugin(),
         StatusCommandsPlugin(),
@@ -377,7 +288,6 @@ def build_runtime() -> AppRuntime:
         workspace=WORKDIR,
         tool_registry=tools,
         sessions=sessions,
-        memory_store=memory_store,
     )
 
     executor_hooks = [
@@ -403,14 +313,13 @@ def build_runtime() -> AppRuntime:
             reflection_interval=_env_int("REFLECTION_INTERVAL", 5),
         )
 
-    pipeline = Runtime(
+    runtime = Runtime(
         tools=tools,
         provider=provider,
         model=model,
         model_pool=model_pool,
         max_tokens=130000,
         context_builder=context_builder,
-        memory_lifecycle=memory_lifecycle,
         tool_executor=executor,
         reflection_agent=reflection_agent,
         execution_policy_factory=standard_execution_policies,
@@ -419,14 +328,13 @@ def build_runtime() -> AppRuntime:
         model_pool=model_pool,
         tool_executor=executor,
         reflection_agent=reflection_agent,
-        max_tokens=pipeline.max_tokens,
+        max_tokens=runtime.max_tokens,
         max_reasoning_steps=50,
     )
 
     coding_application = CodingApplication(
         sessions=sessions,
-        base_pipeline=pipeline,
-        global_memory=memory_store,
+        base_runtime=runtime,
         semantic_memory_command_service=(
             semantic_memory_command_service
             if _env_bool("SEMANTIC_MEMORY_WRITE_ENABLED", False)
@@ -436,7 +344,7 @@ def build_runtime() -> AppRuntime:
         long_content_detector=long_content_detector,
     )
     subagent_runner = TaskSubagentRunner(
-        base_pipeline=pipeline,
+        base_runtime=runtime,
         max_reasoning_steps=_env_int(
             "SUBAGENT_MAX_REASONING_STEPS",
             SUBAGENT_MAX_REASONING_STEPS,
@@ -447,7 +355,7 @@ def build_runtime() -> AppRuntime:
     coordinator = TurnCoordinator(
         bus,
         sessions,
-        pipeline,
+        runtime,
         router,
         plugin_manager,
         coding_application=coding_application,
@@ -463,7 +371,6 @@ def build_runtime() -> AppRuntime:
         tool_registry=tools,
         tool_executor=executor,
         plugin_manager=plugin_manager,
-        memory_store=memory_store,
         context_builder=context_builder,
         session_manager=sessions,
         trace_store=trace_store,

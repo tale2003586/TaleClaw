@@ -73,12 +73,8 @@ class LoopGuardReflectionAgent:
         return self.decision
 
 
-def _profile(tool_mode="bot"):
-    return make_agent_spec(
-        name=tool_mode,
-        tool_mode=tool_mode,
-        system_prompt="test profile",
-    )
+def _agent_spec(tool_mode="bot"):
+    return make_agent_spec(tool_mode, "test agent", tool_mode)
 
 
 def _registry():
@@ -128,9 +124,11 @@ class AgentRunnerTests(unittest.TestCase):
         )
         session = Session(id="agent:test")
         session.add_message("user", "hello")
+        spec = make_agent_spec("worker", "test", "bot")
         spec = AgentSpec(
-            name="worker",
-            profile=_profile("bot"),
+            name=spec.name,
+            instructions=spec.instructions,
+            tool_set=spec.tool_set,
             model_purpose="teammate",
         )
 
@@ -159,7 +157,7 @@ class AgentRunnerTests(unittest.TestCase):
         )
         session = Session(id="agent:reflect")
         session.add_message("user", "do it")
-        spec = AgentSpec(name="main", profile=_profile("bot"), model_purpose="chat")
+        spec = make_agent_spec("main", "test", "bot")
 
         runner.run(session=session, spec=spec)
 
@@ -190,7 +188,7 @@ class AgentRunnerTests(unittest.TestCase):
         )
         session = Session(id="agent:stop")
         session.add_message("user", "do it")
-        spec = AgentSpec(name="main", profile=_profile("bot"), model_purpose="chat")
+        spec = make_agent_spec("main", "test", "bot")
 
         runner.run(session=session, spec=spec)
 
@@ -219,9 +217,12 @@ class AgentRunnerTests(unittest.TestCase):
             context_builder=ContextBuilder(),
             reflection_agent=reflection,
         )
-        session = Session(id="agent:loop-reflect")
+        session = Session(
+            id="agent:loop-reflect",
+            metadata={"unlocked_tools": ["echo"]},
+        )
         session.add_message("user", "do it")
-        spec = AgentSpec(name="main", profile=_profile("bot"), model_purpose="chat")
+        spec = make_agent_spec("main", "test", "bot")
 
         runner.run(session=session, spec=spec)
 
@@ -247,7 +248,7 @@ class ReflectionAgentTests(unittest.TestCase):
 
         decision = agent.reflect(
             session=Session(id="reflect:test"),
-            profile=_profile("bot"),
+            agent_spec=_agent_spec("bot"),
             response=_final_response(""),
             execution=execution,
             reasoning_steps=3,
@@ -273,7 +274,7 @@ class ReflectionAgentTests(unittest.TestCase):
 
         decision = agent.reflect(
             session=Session(id="reflect:repair"),
-            profile=_profile("bot"),
+            agent_spec=_agent_spec("bot"),
             response=_final_response(""),
             execution=execution,
             reasoning_steps=3,

@@ -53,7 +53,6 @@ SUM_METRIC_KEYS = [
     "sanitized_messages",
     "duplicate_tool_call_count",
     "truncated_tool_output_count",
-    "subagent_incomplete_count",
     "subagent_fanout_count",
     "context_builds",
     "context_build_compressed_count",

@@ -97,6 +97,50 @@ def test_propose_never_creates_active() -> None:
     assert events[0][0] == "memory.candidate.created"
 
 
+def test_only_verified_coding_conclusions_can_be_recorded_active() -> None:
+    commands, repository, _ = service()
+    evidence = MemoryEvidence(
+        id="ev-code",
+        memory_id="pending",
+        source_type=MemorySourceType.CODING_CONCLUSION,
+        source_ref="task:coding-a/tests/test_api.py",
+        task_id="coding-a",
+        workspace_id="workspace-a",
+        project_id="project-a",
+        metadata={"verified": True},
+        created_at=NOW,
+    )
+    coding = MemoryWriteProposal(
+        content="API tests use pytest fixtures.",
+        kind=MemoryKind.FACT,
+        owner_scope=MemoryOwnerScope.PROJECT,
+        owner_id="project-a",
+        source_type=MemorySourceType.CODING_CONCLUSION,
+        evidence=(evidence,),
+        confidence=0.95,
+    )
+
+    item = commands.record_verified_conclusion(coding, context())
+
+    assert item.status is MemoryStatus.ACTIVE
+    assert repository.get(item.id) == item
+    with pytest.raises(ValueError, match="verified evidence"):
+        commands.record_verified_conclusion(
+            MemoryWriteProposal(
+                **{
+                    **coding.__dict__,
+                    "content": "Unverified claim",
+                    "evidence": (
+                        MemoryEvidence(
+                            **{**evidence.__dict__, "id": "ev-unverified", "metadata": {}}
+                        ),
+                    ),
+                }
+            ),
+            context(),
+        )
+
+
 def test_exact_duplicate_merges_evidence_without_second_item() -> None:
     commands, repository, events = service()
     first = commands.remember(proposal(), context())

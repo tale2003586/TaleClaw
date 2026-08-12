@@ -55,14 +55,14 @@ class TaskSubagentRunner:
     def __init__(
         self,
         *,
-        base_pipeline: Runtime,
+        base_runtime: Runtime,
         max_reasoning_steps: int | None = None,
     ) -> None:
-        self.base_pipeline = base_pipeline
+        self.base_runtime = base_runtime
         self.max_reasoning_steps = (
             max_reasoning_steps
             if max_reasoning_steps is not None
-            else min(base_pipeline.max_reasoning_steps, SUBAGENT_MAX_REASONING_STEPS)
+            else min(base_runtime.max_reasoning_steps, SUBAGENT_MAX_REASONING_STEPS)
         )
 
     def run(
@@ -101,8 +101,8 @@ class TaskSubagentRunner:
             description=description,
             parent_session=parent_session,
         )
-        pipeline = self._sub_pipeline(agent_type)
-        profile = self._profile(agent_type)
+        runtime = self._sub_runtime(agent_type)
+        agent_spec = self._agent_spec(agent_type)
         span_id = trace_subagent_span_id(parent_span_id)
         trace_run_state = subagent_trace_run_state(
             parent_run_state=parent_run_state,
@@ -123,13 +123,11 @@ class TaskSubagentRunner:
                 agent_type=agent_type,
                 description=description,
             )
-            agent_spec = profile
-            run_result = pipeline.run(
+            run_result = runtime.run(
                 agent_spec,
                 prompt,
                 RunContext(
                     session=session,
-                    profile=profile,
                     run_state=trace_run_state,
                     trace_store=trace_store,
                     trace_parent_span_id=span_id,
@@ -142,9 +140,9 @@ class TaskSubagentRunner:
             summary_text = summary or get_last_assistant_text(session.messages)
             if truncated:
                 recovered_summary = self._summarize_after_step_limit(
-                    pipeline=pipeline,
+                    runtime=runtime,
                     session=session,
-                    profile=profile,
+                    agent_spec=agent_spec,
                 )
                 if recovered_summary:
                     summary_text = recovered_summary
@@ -236,24 +234,16 @@ class TaskSubagentRunner:
             )
             return result
 
-    def _sub_pipeline(self, agent_type: str) -> Runtime:
-        base_runner = self.base_pipeline.agent_runner
-        return Runtime(
+    def _sub_runtime(self, agent_type: str) -> Runtime:
+        return self.base_runtime.fork(
             tools=self._filtered_tools(agent_type),
-            provider=base_runner.provider,
-            model=base_runner.model,
-            tool_executor=base_runner.tool_executor,
             context_builder=self._sub_context_builder(),
-            memory_lifecycle=None,
-            model_pool=base_runner.model_pool,
-            reflection_agent=base_runner.reflection_agent,
-            max_tokens=base_runner.max_tokens,
             max_reasoning_steps=self.max_reasoning_steps,
         )
 
     def _sub_context_builder(self) -> ContextBuilder:
-        base_builder = self.base_pipeline.agent_runner.context_builder
-        compaction_provider, compaction_model = self.base_pipeline.provider_and_model_for(
+        base_builder = self.base_runtime.agent_runner.context_builder
+        compaction_provider, compaction_model = self.base_runtime.provider_and_model_for(
             "summary"
         )
         kwargs = {
@@ -270,8 +260,6 @@ class TaskSubagentRunner:
             kwargs.update({
                 "budgeter": base_builder.budgeter,
                 "prompt_assets_service": base_builder.prompt_assets_service,
-                "memory_service": base_builder.memory_service,
-                "retrieval_service": base_builder.retrieval_service,
                 "pressure_observation_enabled": base_builder.pressure_observation_enabled,
                 "injection_trace_enabled": base_builder.injection_trace_enabled,
             })
@@ -280,9 +268,9 @@ class TaskSubagentRunner:
     def _summarize_after_step_limit(
         self,
         *,
-        pipeline: Runtime,
+        runtime: Runtime,
         session: Session,
-        profile: AgentSpec,
+        agent_spec: AgentSpec,
     ) -> str:
         session.add_message(
             "user",
@@ -293,19 +281,19 @@ class TaskSubagentRunner:
             },
         )
         try:
-            context = pipeline.agent_runner.context_builder.build(
+            context = runtime.agent_runner.context_builder.build(
                 session=session,
-                profile=profile,
+                agent_spec=agent_spec,
                 include_security_knowledge=False,
             )
-            provider, model = pipeline.provider_and_model_for("summary")
+            provider, model = runtime.provider_and_model_for("summary")
             response = provider.chat(
                 model=model,
                 messages=getattr(context, "messages", []),
                 tools=[],
                 tool_choice="none",
                 max_tokens=min(
-                    max(1, int(pipeline.max_tokens)),
+                    max(1, int(runtime.max_tokens)),
                     STEP_LIMIT_SUMMARY_MAX_TOKENS,
                 ),
             )
@@ -334,13 +322,13 @@ class TaskSubagentRunner:
         from dataclasses import replace
 
         registry = ToolRegistry()
-        for name, tool in self.base_pipeline.agent_runner.tools._tools.items():
+        for name, tool in self.base_runtime.agent_runner.tools._tools.items():
             if name not in allowed:
                 continue
             registry.register(replace(tool, source=f"subagent:{agent_type}"))
         return registry
 
-    def _profile(self, agent_type: str) -> AgentSpec:
+    def _agent_spec(self, agent_type: str) -> AgentSpec:
         return AgentSpec(
             name=f"subagent:{agent_type}",
             role="subagent",

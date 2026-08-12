@@ -65,22 +65,10 @@ class ContextBudgeter:
             enabled=enabled,
             total_budget_chars=total_budget,
             rules={
-                "mode_instructions": SectionBudgetRule(
-                    name="mode_instructions",
-                    budget_chars=_env_int("CONTEXT_MODE_INSTRUCTIONS_BUDGET", 3000),
-                    floor_chars=_env_int("CONTEXT_MODE_INSTRUCTIONS_FLOOR", 1000),
-                    strategy="head",
-                ),
                 "project_instructions": SectionBudgetRule(
                     name="project_instructions",
                     budget_chars=_env_int("CONTEXT_PROJECT_INSTRUCTIONS_BUDGET", 3000),
                     floor_chars=_env_int("CONTEXT_PROJECT_INSTRUCTIONS_FLOOR", 1000),
-                    strategy="head",
-                ),
-                "skill_catalog": SectionBudgetRule(
-                    name="skill_catalog",
-                    budget_chars=_env_int("CONTEXT_SKILL_CATALOG_BUDGET", 3000),
-                    floor_chars=_env_int("CONTEXT_SKILL_CATALOG_FLOOR", 600),
                     strategy="head",
                 ),
                 "memory": SectionBudgetRule(

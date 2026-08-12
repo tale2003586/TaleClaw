@@ -58,22 +58,11 @@ def storage_root_for_user(workspace: str | Path, user_id: str) -> Path:
     return user_data_root(workspace, user_id) / "storage"
 
 
-def memory_root_for_user(workspace: str | Path, user_id: str) -> Path:
-    return user_data_root(workspace, user_id) / "memory"
-
-
 def storage_root_for_session(workspace: str | Path, session) -> Path:
     user_id = explicit_user_id_for_session(session)
     if user_id is None:
         return (Path(workspace).resolve() / "storage").resolve()
     return storage_root_for_user(workspace, user_id).resolve()
-
-
-def memory_root_for_session(workspace: str | Path, session) -> Path:
-    user_id = explicit_user_id_for_session(session)
-    if user_id is None:
-        return (Path(workspace).resolve() / "memory").resolve()
-    return memory_root_for_user(workspace, user_id).resolve()
 
 
 def normalize_chat_id(value: str | None) -> str:

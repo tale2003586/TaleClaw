@@ -62,7 +62,7 @@ class GrepNlToolTests(unittest.TestCase):
         self.assertIn("Path escapes workspace", grep_output)
         self.assertIn("Path escapes workspace", nl_output)
 
-    def test_grep_and_nl_are_visible_for_coding_and_teammate(self) -> None:
+    def test_grep_and_nl_are_deferred_for_coding_and_teammate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             coding = _session_for(workspace, mode="coding", kind="coding_application")
@@ -71,10 +71,10 @@ class GrepNlToolTests(unittest.TestCase):
             lead_registry = build_lead_tool_registry()
             teammate_registry = build_teammate_tool_registry("alice")
 
-            self.assertIn("grep", lead_registry.visible_names_for_turn(coding, "coding"))
-            self.assertIn("nl", lead_registry.visible_names_for_turn(coding, "coding"))
-            self.assertIn("grep", teammate_registry.visible_names_for_turn(teammate, "teammate"))
-            self.assertIn("nl", teammate_registry.visible_names_for_turn(teammate, "teammate"))
+            self.assertNotIn("grep", lead_registry.visible_names_for_turn(coding, "coding"))
+            self.assertNotIn("nl", lead_registry.visible_names_for_turn(coding, "coding"))
+            self.assertNotIn("grep", teammate_registry.visible_names_for_turn(teammate, "teammate"))
+            self.assertNotIn("nl", teammate_registry.visible_names_for_turn(teammate, "teammate"))
 
     def test_registry_execution_uses_session_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -82,6 +82,13 @@ class GrepNlToolTests(unittest.TestCase):
             (workspace / "target.txt").write_text("needle\nsecond\n", encoding="utf-8")
             session = _session_for(workspace)
             registry = build_lead_tool_registry()
+            for name in ("grep", "nl"):
+                registry.execute(
+                    "tool_search",
+                    {"query": f"select:{name}"},
+                    session=session,
+                    mode="coding",
+                )
 
             grep_output = registry.execute(
                 "grep",

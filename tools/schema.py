@@ -1329,14 +1329,6 @@ MEMORY_TOOLS = [
                 "type": "string",
                 "description": "The memory content to save.",
             },
-            "section": {
-                "type": "string",
-                "enum": ["memory", "self", "now", "pending"],
-                "description": (
-                    "Deprecated compatibility parameter. Normal sessions must use memory; "
-                    "Coding task-local pending remains temporarily supported."
-                ),
-            },
         },
         ["content"],
     ),
@@ -1393,8 +1385,3 @@ LEAD_TOOLS = (
     + SANDBOX_TOOLS
     + SEARCH_TOOLS
 )
-
-# Temporary compatibility aliases for older imports. Prefer TEAMMATE_TOOLS and
-# LEAD_TOOLS in new code.
-CHILD_TOOLS = TEAMMATE_TOOLS
-PARENT_TOOLS = LEAD_TOOLS

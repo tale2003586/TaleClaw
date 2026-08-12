@@ -98,34 +98,6 @@ class ToolRegistry:
     def visible_names_for_turn(self, session, mode: str = "coding") -> set[str]:
         return self.policy.visible_tools(session, mode)
 
-    def tool_catalog_text(self, session, mode: str = "coding") -> str:
-        allowed = self.policy._allowed_names(session=session, mode=mode)
-        visible = self.visible_names_for_turn(session, mode) if session is not None else set()
-        direct = sorted(name for name in visible if name in allowed)
-        deferred = sorted(name for name in allowed if name not in visible)
-
-        if not direct and not deferred:
-            return ""
-
-        lines = [
-            '<tool_catalog>',
-            "Tools are workspace-scoped when they operate on files. Use relative paths.",
-            "Call visible tools directly. Use tool_search with help:<tool_name> for parameters.",
-        ]
-        if direct:
-            lines.append("Visible now:")
-            for name in direct:
-                lines.append(f"- {name}: {self._tool_description(name, mode=mode)}")
-        if deferred:
-            lines.append("Available after unlock:")
-            for name in deferred:
-                lines.append(
-                    f"- {name}: {self._tool_description(name, mode=mode)} "
-                    f"(unlock with tool_search select:{name})"
-                )
-        lines.append("</tool_catalog>")
-        return "\n".join(lines)
-
     def reset_turn_unlocks(self, session) -> None:
         session.metadata[UNLOCKED_TOOLS_KEY] = []
 
@@ -203,7 +175,10 @@ class ToolRegistry:
         lowered_query = query.lower()
 
         if lowered_query in {"catalog", "tools", "list"}:
-            return self.tool_catalog_text(session, mode) or "No tools are available in this mode."
+            return (
+                "Search deferred tools by capability, then unlock one with "
+                "select:<tool_name>."
+            )
 
         if lowered_query.startswith(("help:", "schema:")):
             name = query.split(":", 1)[1].strip()
@@ -360,11 +335,12 @@ _NON_IDEMPOTENT_TOOLS = {
     "shutdown_response", "plan_approval", "plan_approval_request",
 }
 
-_ALWAYS_TOOLS = {"recall_memory", "memorize", "tool_search"}
+_ALWAYS_TOOLS = {"tool_search"}
 _DEFERRED_TOOLS = {
     "bash", "write_file", "edit_file", "background_run", "git_add",
     "git_commit", "spawn_teammate", "list_teammates", "broadcast",
     "shutdown_request", "shutdown_status", "plan_approval", "claim_task",
+    "load_skill", "memorize", "recall_memory", "retrieve_tool_result",
 }
 
 

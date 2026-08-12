@@ -62,7 +62,7 @@ class SkillRuntimeTests(unittest.TestCase):
             skill_file.unlink()
             self.assertEqual("(no skills available)", loader.get_descriptions())
 
-    def test_context_injects_skill_catalog_and_refreshes_cached_prefix(self) -> None:
+    def test_context_does_not_eagerly_inject_installed_skills(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             skills_dir = Path(tmp) / "skills"
             skill_dir = skills_dir / "pdf"
@@ -77,47 +77,24 @@ class SkillRuntimeTests(unittest.TestCase):
                 "# PDF\n",
                 encoding="utf-8",
             )
-            loader = SkillLoader(skills_dir)
             budgeter = ContextBudgeter.from_env()
             builder = ContextBuilder(
                 budgeter=budgeter,
                 prompt_assets_service=PromptAssetsService(
                     budgeter=budgeter,
-                    skill_loader=loader,
                 ),
             )
 
             context = builder.build(
                 session=Session(id="web:test"),
-                profile=SimpleNamespace(system_prompt="base", tool_mode="bot"),
+                agent_spec=SimpleNamespace(instructions="base", tool_mode="bot"),
             )
 
             system = context.messages[0]["content"]
+            self.assertNotIn("<skill-catalog>", system)
+            self.assertNotIn("pdf: Process PDFs.", system)
             report = context.report.to_dict()
-            self.assertIn("<skill-catalog>", system)
-            self.assertIn("pdf: Process PDFs.", system)
-            self.assertIn("skill_catalog", report["sections"])
-            self.assertEqual(
-                "system_prompt",
-                report["sections"]["skill_catalog"]["metadata"]["transport"],
-            )
-
-            skill_file.write_text(
-                "---\n"
-                "name: pdf\n"
-                "description: Updated PDF workflow.\n"
-                "triggers: [pdf]\n"
-                "---\n"
-                "# PDF updated\n",
-                encoding="utf-8",
-            )
-            refreshed = builder.build(
-                session=Session(id="web:test"),
-                profile=SimpleNamespace(system_prompt="base", tool_mode="bot"),
-            )
-
-            self.assertIn("pdf: Updated PDF workflow.", refreshed.messages[0]["content"])
-            self.assertNotIn("pdf: Process PDFs.", refreshed.messages[0]["content"])
+            self.assertNotIn("skill_catalog", report["sections"])
 
 
 if __name__ == "__main__":

@@ -206,13 +206,13 @@ class TurnCoordinator:
             mode=session.active_agent,
             execution_path=route.execution,
             intent=route.intent,
-            profile=route.profile.name,
+            agent=route.agent_spec.name,
         )
         self._trace(run_state, "route_selected", {
             "intent": route.intent,
             "execution": route.execution,
-            "profile": route.profile.name,
-            "tool_mode": route.profile.tool_mode,
+            "agent": route.agent_spec.name,
+            "tool_mode": route.agent_spec.tool_mode,
             "confidence": route.confidence,
             "reason": route.reason,
             "switched": route.switched,
@@ -262,15 +262,13 @@ class TurnCoordinator:
         if self.subagent_runner is not None:
             session.metadata["subagent_runner_available"] = True
         cancel_requested = lambda: self.cancel_requested(session.id)
-        if self.coding_application is not None and route.profile.tool_mode == "coding":
+        if self.coding_application is not None and route.agent_spec.tool_mode == "coding":
             task_kwargs = {
                 "parent_session": session,
                 "user_text": inbound.content,
-                "profile": route.profile,
+                "agent_spec": route.agent_spec,
                 "cancel_requested": cancel_requested,
             }
-            if getattr(route, "agent_spec", None) is not None:
-                task_kwargs["agent_spec"] = route.agent_spec
             workspace_root = (inbound.metadata or {}).get("workspace_root")
             if workspace_root:
                 task_kwargs["workspace_root"] = workspace_root
@@ -295,11 +293,7 @@ class TurnCoordinator:
             )
             self._emit_text(on_text, reply)
             return reply
-        agent_spec = getattr(route, "agent_spec", None)
-        if agent_spec is None:
-            from runtime.agent_spec import AgentSpec
-
-            agent_spec = AgentSpec.from_profile(route.profile)
+        agent_spec = route.agent_spec
         if self.runtime is None:
             raise RuntimeError("TurnCoordinator has no Runtime for execution.")
         return self.runtime.run(
@@ -307,7 +301,6 @@ class TurnCoordinator:
             inbound.content,
             RunContext(
                 session=session,
-                profile=route.profile,
                 on_text=on_text,
                 cancel_requested=cancel_requested,
                 run_state=run_state,

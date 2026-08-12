@@ -66,6 +66,5 @@ class DeploymentRagDisabledTests(unittest.TestCase):
             self.assertFalse(bootstrap._security_rag_auto_context_enabled())
             self.assertFalse(bootstrap._security_rag_plugin_enabled())
 
-
 if __name__ == "__main__":
     unittest.main()

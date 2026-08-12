@@ -118,8 +118,8 @@ def context_build_metrics_from_report(
         "final_total_chars": _int(payload.get("total_chars")),
         "budget_chars": payload.get("budget_chars"),
         "over_budget": bool(payload.get("over_budget")),
-        "coding_context_state": coding_context,
-        "coding_context_state_enabled": coding_context["enabled"],
+        "coding_context": coding_context,
+        "coding_context_enabled": coding_context["enabled"],
         "coding_context_compacted": coding_context["compacted"],
         "coding_context_generation": coding_context["generation"],
         "coding_context_prompt_tail_start_index": coding_context["prompt_tail_start_index"],
@@ -157,7 +157,7 @@ def aggregate_context_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
     before_tokens = sum(_int(item.get("compression_before_tokens")) for item in token_compressed)
     after_tokens = sum(_int(item.get("compression_after_tokens")) for item in token_compressed)
     saved_tokens = sum(_int(item.get("compression_saved_tokens")) for item in token_compressed)
-    coding_records = [item for item in records if item.get("coding_context_state_enabled")]
+    coding_records = [item for item in records if item.get("coding_context_enabled")]
     coding_compacted = [item for item in coding_records if item.get("coding_context_compacted")]
     return {
         "build_count": build_count,
@@ -188,7 +188,7 @@ def aggregate_context_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
         "compression_saved_tokens": saved_tokens,
         "token_compression_ratio": _ratio(after_tokens, before_tokens, default=1.0),
         "token_compression_savings_ratio": _ratio(saved_tokens, before_tokens, default=0.0),
-        "coding_context_state_build_count": len(coding_records),
+        "coding_context_build_count": len(coding_records),
         "coding_context_compacted_count": len(coding_compacted),
         "coding_context_compacted_steps": [
             item.get("step")
@@ -235,7 +235,7 @@ def _coding_context_metrics(
 ) -> dict[str, Any]:
     section_metadata: dict[str, Any] = {}
     for name, section in sections:
-        if name != "coding_context_state":
+        if name != "coding_context":
             continue
         raw_metadata = section.get("metadata")
         if isinstance(raw_metadata, dict):
@@ -243,7 +243,7 @@ def _coding_context_metrics(
         break
 
     enabled = bool(
-        report_metadata.get("coding_context_state_enabled")
+        report_metadata.get("coding_context_enabled")
         or section_metadata
     )
     before_tokens = _int(

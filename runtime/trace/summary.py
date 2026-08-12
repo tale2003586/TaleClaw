@@ -117,7 +117,6 @@ def build_trace_summary_payload(
             "truncated_tool_output_count": metrics.get("truncated_tool_output_count", 0),
             "post_completion_tool_calls": perfectionism["post_completion_tool_calls"],
             "evidence_gathering_steps": perfectionism["evidence_gathering_steps"],
-            "subagent_incomplete_count": metrics.get("subagent_incomplete_count", 0),
             "subagent_fanout_count": metrics.get("subagent_fanout_count", 0),
             "subagent_retry_count": subagents["retry_count"],
             "subagent_degrade_count": subagents["degrade_count"],
@@ -161,8 +160,8 @@ def build_trace_summary_payload(
                 "context_token_compression_savings_ratio",
                 0.0,
             ),
-            "coding_context_state_builds": metrics.get(
-                "coding_context_state_builds",
+            "coding_context_builds": metrics.get(
+                "coding_context_builds",
                 0,
             ),
             "coding_context_compacted_count": metrics.get(
@@ -236,7 +235,6 @@ def render_trace_summary_markdown(summary: dict[str, Any]) -> str:
         f"- Truncated Tool Outputs: {_value(metrics.get('truncated_tool_output_count'))}",
         f"- Post-completion Tool Calls: {_value(metrics.get('post_completion_tool_calls'))}",
         f"- Evidence Gathering Steps: {_value(metrics.get('evidence_gathering_steps'))}",
-        f"- Subagent Incomplete: {_value(metrics.get('subagent_incomplete_count'))}",
         f"- Subagent Fan-out: {_value(metrics.get('subagent_fanout_count'))}",
         f"- Subagent Retries: {_value(metrics.get('subagent_retry_count'))}",
         f"- Subagent Degrades: {_value(metrics.get('subagent_degrade_count'))}",
@@ -254,7 +252,7 @@ def render_trace_summary_markdown(summary: dict[str, Any]) -> str:
         f"- Context Compression Savings: {_value(metrics.get('context_compression_savings_ratio'))}",
         f"- Context Token Compression Saved: {_value(metrics.get('context_token_compression_saved_tokens'))}",
         f"- Context Token Compression Ratio: {_value(metrics.get('context_token_compression_ratio'))}",
-        f"- Coding Context State Builds: {_value(metrics.get('coding_context_state_builds'))}",
+        f"- Coding Context Builds: {_value(metrics.get('coding_context_builds'))}",
         f"- Coding Context Compactions: {_value(metrics.get('coding_context_compacted_count'))}",
         f"- Coding Context Generation: {_value(metrics.get('coding_context_latest_generation'))} / max {_value(metrics.get('coding_context_max_generation'))}",
         f"- Coding Context Tail: prompt_tail={_value(metrics.get('coding_context_latest_prompt_tail_start_index'))}, compacted_until={_value(metrics.get('coding_context_latest_compacted_until_index'))}",

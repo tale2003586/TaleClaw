@@ -10,15 +10,15 @@ from tools.tool_registry import build_lead_tool_registry
 
 
 class BotStorageToolTests(unittest.TestCase):
-    def test_bot_mode_sees_scoped_storage_tools_but_not_workspace_write_tools(self) -> None:
+    def test_bot_mode_defers_scoped_storage_tools(self) -> None:
         registry = build_lead_tool_registry()
         session = Session(id="web:default", active_agent="bot")
 
         visible = registry.visible_names_for_turn(session, "bot")
 
-        self.assertIn("storage_list_files", visible)
-        self.assertIn("storage_read_file", visible)
-        self.assertIn("storage_write_file", visible)
+        self.assertNotIn("storage_list_files", visible)
+        self.assertNotIn("storage_read_file", visible)
+        self.assertNotIn("storage_write_file", visible)
         self.assertNotIn("write_file", visible)
         self.assertNotIn("edit_file", visible)
         self.assertNotIn("bash", visible)
@@ -30,6 +30,12 @@ class BotStorageToolTests(unittest.TestCase):
             session = Session(id="web:report-chat", active_agent="bot")
 
             with patch.object(handlers, "WORKDIR", workspace):
+                registry.execute(
+                    "tool_search",
+                    {"query": "select:storage_write_file"},
+                    session=session,
+                    mode="bot",
+                )
                 result = registry.execute(
                     "storage_write_file",
                     {

@@ -123,27 +123,10 @@ class FinishingReminderPolicy:
         )
 
 
-class ToolBatchPolicy:
-    def should_parallelize_tasks(self, tool_calls: list, *, available: bool) -> bool:
-        return bool(
-            available
-            and 1 < len(tool_calls) <= 8
-            and all(getattr(call, "name", "") == "task" for call in tool_calls)
-        )
-
-    def should_batch_reads(self, tool_calls: list, *, available: bool) -> bool:
-        return bool(
-            available
-            and 1 < len(tool_calls) <= 8
-            and all(getattr(call, "name", "") == "read_file" for call in tool_calls)
-        )
-
-
 def standard_execution_policies(max_reasoning_steps: int) -> ExecutionPolicies:
     return ExecutionPolicies(
-        web_search=WebSearchBudgetPolicy(),
+        tool_calls=WebSearchBudgetPolicy(),
         finishing=FinishingReminderPolicy(max_reasoning_steps),
-        tool_batch=ToolBatchPolicy(),
     )
 
 def finishing_reminder_message(

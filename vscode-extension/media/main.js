@@ -24,7 +24,6 @@
     subagentMaxReasoningSteps: document.getElementById("subagentMaxReasoningSteps"),
     ragEnabled: document.getElementById("ragEnabled"),
     contextBudgetEnabled: document.getElementById("contextBudgetEnabled"),
-    workingMemoryEnabled: document.getElementById("workingMemoryEnabled"),
     toolLoopGuardEnabled: document.getElementById("toolLoopGuardEnabled"),
     settings: document.getElementById("settings"),
     settingsPanel: document.getElementById("settingsPanel"),
@@ -47,7 +46,7 @@
   els.newTask.addEventListener("click", composeTask);
   els.settings.addEventListener("click", toggleSettings);
   els.contextToggle.addEventListener("click", () => {
-    els.workingMemoryEnabled.checked = !els.workingMemoryEnabled.checked;
+    els.contextBudgetEnabled.checked = !els.contextBudgetEnabled.checked;
     syncPills();
   });
   els.workspaceMode.addEventListener("click", () => {
@@ -72,7 +71,6 @@
     els.subagentMaxReasoningSteps,
     els.ragEnabled,
     els.contextBudgetEnabled,
-    els.workingMemoryEnabled,
     els.toolLoopGuardEnabled
   ]) {
     input.addEventListener("change", syncPills);
@@ -142,7 +140,6 @@
       subagentMaxReasoningSteps: numberValue(els.subagentMaxReasoningSteps, 16),
       ragEnabled: els.ragEnabled.checked,
       contextBudgetEnabled: els.contextBudgetEnabled.checked,
-      workingMemoryEnabled: els.workingMemoryEnabled.checked,
       toolLoopGuardEnabled: els.toolLoopGuardEnabled.checked
     };
   }
@@ -153,7 +150,6 @@
     els.subagentMaxReasoningSteps.value = config.subagentMaxReasoningSteps || 16;
     els.ragEnabled.checked = Boolean(config.ragEnabled);
     els.contextBudgetEnabled.checked = config.contextBudgetEnabled !== false;
-    els.workingMemoryEnabled.checked = config.workingMemoryEnabled !== false;
     els.toolLoopGuardEnabled.checked = config.toolLoopGuardEnabled !== false;
     syncPills();
   }
@@ -293,9 +289,9 @@
   }
 
   function syncPills() {
-    const fullAccess = els.contextBudgetEnabled.checked && els.workingMemoryEnabled.checked && els.toolLoopGuardEnabled.checked;
+    const fullAccess = els.contextBudgetEnabled.checked && els.toolLoopGuardEnabled.checked;
     els.accessLabel.textContent = fullAccess ? "Full access" : "Limited";
-    els.contextToggle.className = els.workingMemoryEnabled.checked ? "context-button active" : "context-button";
+    els.contextToggle.className = els.contextBudgetEnabled.checked ? "context-button active" : "context-button";
   }
 
   function setStatus(text, tone) {

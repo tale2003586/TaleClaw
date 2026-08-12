@@ -8,6 +8,7 @@ from runtime.ports import ContextPort, ModelPort, ToolExecutorPort, ToolPort
 from runtime.execution.reasoning_loop import DEFAULT_MAX_REASONING_STEPS, ReasoningLoop
 from runtime.execution.policy_set import ExecutionPolicies
 from runtime.execution.state import RunExecutionState
+from runtime.extensions import RuntimeExtensions
 
 
 class AgentRunner:
@@ -64,7 +65,10 @@ class AgentRunner:
                 messages=getattr(session, "messages", []),
             )
             execution_state.reset(web_search_limit=0)
-            run_context = SimpleNamespace(state=execution_state)
+            run_context = SimpleNamespace(
+                state=execution_state,
+                extensions=RuntimeExtensions(),
+            )
         context_builder = build_context or self._build_context
         turn_finished = after_turn or self._touch_session
         effective_max_steps = spec.max_reasoning_steps or self.max_reasoning_steps
@@ -78,12 +82,11 @@ class AgentRunner:
         )
         loop.run(
             session=session,
-            profile=spec.profile or spec,
+            agent_spec=spec,
             build_context=context_builder,
-            resolve_provider=lambda session, profile: self._provider_and_model(
+            resolve_provider=lambda session, agent_spec: self._provider_and_model(
                 session,
-                profile,
-                spec,
+                agent_spec,
                 run_context=run_context,
             ),
             after_turn=turn_finished,
@@ -109,7 +112,6 @@ class AgentRunner:
     def _provider_and_model(
         self,
         session,
-        profile,
         spec: AgentSpec,
         *,
         run_context=None,
@@ -129,10 +131,10 @@ class AgentRunner:
     ):
         if self.model_pool is not None:
             if profile_name:
-                profile = self.model_pool.profile_named(profile_name)
+                model_profile = self.model_pool.profile_named(profile_name)
                 return (
-                    self.model_pool.provider_for_profile(profile.name),
-                    profile.model,
+                    self.model_pool.provider_for_profile(model_profile.name),
+                    model_profile.model,
                 )
             return (
                 self.model_pool.routed_provider(purpose),
@@ -142,10 +144,14 @@ class AgentRunner:
             raise RuntimeError("AgentRunner has no provider or model_pool.")
         return self.provider, self.model
 
-    def _build_context(self, session, profile, **kwargs):
+    def _build_context(self, session, agent_spec, **kwargs):
         if self.context_builder is None:
             raise RuntimeError("AgentRunner has no context_builder.")
-        return self.context_builder.build(session=session, profile=profile, **kwargs)
+        return self.context_builder.build(
+            session=session,
+            agent_spec=agent_spec,
+            **kwargs,
+        )
 
     def _touch_session(self, session) -> None:
         session.touch()

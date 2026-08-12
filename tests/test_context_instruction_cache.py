@@ -14,9 +14,8 @@ class ContextInstructionCacheTests(unittest.TestCase):
         ContextBuilder._instruction_cache.clear()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / ".agent").mkdir()
-            instruction = root / ".agent" / "assistant.md"
-            instruction.write_text("cached assistant rules", encoding="utf-8")
+            instruction = root / "AGENTS.md"
+            instruction.write_text("cached project rules", encoding="utf-8")
             budgeter = ContextBudgeter.from_env()
             builder = ContextBuilder(
                 budgeter=budgeter,
@@ -25,22 +24,21 @@ class ContextInstructionCacheTests(unittest.TestCase):
                     instruction_root=root,
                 ),
             )
-            profile = SimpleNamespace(system_prompt="base", tool_mode="bot")
+            agent_spec = SimpleNamespace(instructions="base", tool_mode="coding")
 
-            first = builder.build(session=Session(id="web:test"), profile=profile)
-            self.assertIn("cached assistant rules", first.messages[0]["content"])
+            first = builder.build(session=Session(id="web:test"), agent_spec=agent_spec)
+            self.assertIn("cached project rules", first.messages[0]["content"])
 
             with patch.object(Path, "read_text", side_effect=AssertionError("cache miss")):
-                second = builder.build(session=Session(id="web:test"), profile=profile)
+                second = builder.build(session=Session(id="web:test"), agent_spec=agent_spec)
 
-            self.assertIn("cached assistant rules", second.messages[0]["content"])
+            self.assertIn("cached project rules", second.messages[0]["content"])
 
     def test_explicit_prefix_reuses_stable_instruction_block(self) -> None:
         ContextBuilder._instruction_cache.clear()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / ".agent").mkdir()
-            instruction = root / ".agent" / "assistant.md"
+            instruction = root / "AGENTS.md"
             instruction.write_text("stable prefix rules", encoding="utf-8")
             budgeter = ContextBudgeter.from_env()
             builder = ContextBuilder(
@@ -50,15 +48,15 @@ class ContextInstructionCacheTests(unittest.TestCase):
                     instruction_root=root,
                 ),
             )
-            profile = SimpleNamespace(system_prompt="base", tool_mode="bot")
+            agent_spec = SimpleNamespace(instructions="base", tool_mode="coding")
 
-            prefix = builder.build_prefix(profile)
+            prefix = builder.build_prefix(agent_spec)
             self.assertFalse(prefix.cache_hit)
 
             instruction.write_text("changed after prefix build", encoding="utf-8")
             context = builder.build(
                 session=Session(id="web:test"),
-                profile=profile,
+                agent_spec=agent_spec,
                 prefix=prefix,
             )
 
@@ -73,8 +71,7 @@ class ContextInstructionCacheTests(unittest.TestCase):
         ContextBuilder._instruction_cache.clear()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / ".agent").mkdir()
-            instruction = root / ".agent" / "assistant.md"
+            instruction = root / "AGENTS.md"
             instruction.write_text("first rules", encoding="utf-8")
             budgeter = ContextBudgeter.from_env()
             builder = ContextBuilder(
@@ -84,15 +81,15 @@ class ContextInstructionCacheTests(unittest.TestCase):
                     instruction_root=root,
                 ),
             )
-            profile = SimpleNamespace(system_prompt="base", tool_mode="bot")
+            agent_spec = SimpleNamespace(instructions="base", tool_mode="coding")
 
-            first = builder.build_prefix(profile)
-            second = builder.build_prefix(profile)
+            first = builder.build_prefix(agent_spec)
+            second = builder.build_prefix(agent_spec)
             self.assertTrue(second.cache_hit)
             self.assertEqual(first.fingerprint, second.fingerprint)
 
             instruction.write_text("second rules with changed size", encoding="utf-8")
-            third = builder.build_prefix(profile)
+            third = builder.build_prefix(agent_spec)
             self.assertFalse(third.cache_hit)
             self.assertNotEqual(first.fingerprint, third.fingerprint)
             self.assertIn("second rules", third.system_prompt)

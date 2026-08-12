@@ -64,7 +64,7 @@ def _render_report(
         f"- Mode: `{_value(run_state.get('mode'))}`",
         f"- Execution Path: `{_value(run_state.get('execution_path'))}`",
         f"- Intent: `{_value(run_state.get('intent'))}`",
-        f"- Profile: `{_value(run_state.get('profile'))}`",
+        f"- Agent: `{_value(run_state.get('agent'))}`",
         f"- User: `{_value(run_state.get('user_id'))}` ({_value(run_state.get('user_role'))})",
         f"- Session: `{_value(run_state.get('session_id'))}`",
         f"- Started: {_value(run_state.get('started_at'))}",
@@ -75,7 +75,6 @@ def _render_report(
         f"- Tool Calls: {_value(metrics.get('tool_calls'))} total, {_value(metrics.get('tool_failures'))} failed, {_value(metrics.get('tool_denials'))} denied",
         f"- Duplicate Tool Call Ratio: {_value(metrics.get('duplicate_tool_call_ratio'))}",
         f"- Truncated Tool Outputs: {_value(metrics.get('truncated_tool_output_count'))}",
-        f"- Subagent Incomplete: {_value(metrics.get('subagent_incomplete_count'))}",
         f"- Subagent Fan-out: {_value(metrics.get('subagent_fanout_count'))}",
         f"- Tokens: {_value(metrics.get('total_tokens'))} total ({_value(metrics.get('input_tokens'))} in / {_value(metrics.get('output_tokens'))} out)",
         f"- Sanitized Messages: {_value(metrics.get('sanitized_messages'))}",
@@ -86,7 +85,7 @@ def _render_report(
         f"- Context Compression Savings: {_value(metrics.get('context_compression_savings_ratio'))}",
         f"- Context Token Compression Saved: {_value(metrics.get('context_token_compression_saved_tokens'))}",
         f"- Context Token Compression Ratio: {_value(metrics.get('context_token_compression_ratio'))}",
-        f"- Coding Context State Builds: {_value(metrics.get('coding_context_state_builds'))}",
+        f"- Coding Context Builds: {_value(metrics.get('coding_context_builds'))}",
         f"- Coding Context Compactions: {_value(metrics.get('coding_context_compacted_count'))}",
         f"- Coding Context Generation: {_value(metrics.get('coding_context_latest_generation'))} / max {_value(metrics.get('coding_context_max_generation'))}",
         f"- Coding Context Tail: prompt_tail={_value(metrics.get('coding_context_latest_prompt_tail_start_index'))}, compacted_until={_value(metrics.get('coding_context_latest_compacted_until_index'))}",
@@ -99,7 +98,7 @@ def _render_report(
         "",
         f"- Intent: `{_value(route.get('intent'))}`",
         f"- Execution: `{_value(route.get('execution'))}`",
-        f"- Profile: `{_value(route.get('profile'))}`",
+        f"- Agent: `{_value(route.get('agent'))}`",
         f"- Tool Mode: `{_value(route.get('tool_mode'))}`",
         f"- Confidence: {_value(route.get('confidence'))}",
         f"- Reason: {_value(route.get('reason'))}",
@@ -181,7 +180,7 @@ def _context_section(context: dict[str, Any], sanitized: list[dict[str, Any]]) -
         f"- Empty Assistant Messages: {_value(context.get('empty_assistant_messages'))}",
         f"- Role Breakdown: `{json.dumps(roles, ensure_ascii=False, default=str)}`",
     ]
-    coding_context = context.get("coding_context_state")
+    coding_context = context.get("coding_context")
     if isinstance(coding_context, dict) and coding_context.get("enabled"):
         lines.extend([
             f"- Coding Context Compacted: {_value(coding_context.get('compacted'))}",
@@ -235,7 +234,7 @@ def _error_section(run_state: dict[str, Any], events: list[dict[str, Any]]) -> s
             for attempt in attempts:
                 lines.append(
                     "- "
-                    f"profile=`{_value(attempt.get('profile'))}`, "
+                    f"model_profile=`{_value(attempt.get('profile'))}`, "
                     f"provider=`{_value(attempt.get('provider'))}`, "
                     f"model=`{_value(attempt.get('model'))}`, "
                     f"status=`{_value(attempt.get('status'))}`"

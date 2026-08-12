@@ -104,7 +104,7 @@ def _registry() -> ToolRegistry:
     return registry
 
 
-def _pipeline(registry: ToolRegistry) -> Runtime:
+def _runtime(registry: ToolRegistry) -> Runtime:
     return Runtime(
         tools=registry,
         provider=DummyProvider(),
@@ -119,7 +119,7 @@ class SubagentToolTests(unittest.TestCase):
         configure_subagent_runner(None)
 
     def test_subagent_tool_filter_excludes_team_tools(self) -> None:
-        runner = TaskSubagentRunner(base_pipeline=_pipeline(_registry()))
+        runner = TaskSubagentRunner(base_runtime=_runtime(_registry()))
 
         tools = runner._filtered_tools("code")
 
@@ -134,7 +134,7 @@ class SubagentToolTests(unittest.TestCase):
         self.assertNotIn("task", tools._tools)
         self.assertNotIn("spawn_teammate", tools._tools)
 
-    def test_parallel_tasks_is_preloaded_for_coding_agent(self) -> None:
+    def test_parallel_tasks_and_convenience_readers_are_deferred(self) -> None:
         registry = build_lead_tool_registry(FakeTeam())
         session = Session(
             id="task:parent",
@@ -144,16 +144,24 @@ class SubagentToolTests(unittest.TestCase):
 
         visible = registry.visible_names_for_turn(session, "coding")
 
-        self.assertIn("repo_map", visible)
+        self.assertNotIn("repo_map", visible)
         self.assertIn("rg", visible)
-        self.assertIn("grep", visible)
-        self.assertIn("nl", visible)
-        self.assertIn("code_outline", visible)
-        self.assertIn("read_files", visible)
-        self.assertIn("parallel_tasks", visible)
-        self.assertIn("task", visible)
-        self.assertIn("parallel_tasks", registry.tool_catalog_text(session, "coding"))
-        self.assertIn("Build a deterministic file map first with repo_map", CODING_AGENT_SPEC.system_prompt)
+        self.assertNotIn("grep", visible)
+        self.assertNotIn("nl", visible)
+        self.assertNotIn("code_outline", visible)
+        self.assertNotIn("read_files", visible)
+        self.assertNotIn("parallel_tasks", visible)
+        self.assertNotIn("task", visible)
+        self.assertIn(
+            "parallel_tasks",
+            registry.execute(
+                "tool_search",
+                {"query": "parallel"},
+                session=session,
+                mode="coding",
+            ),
+        )
+        self.assertIn("Use rg/list_files/read_file", CODING_AGENT_SPEC.instructions)
 
     def test_task_handler_invokes_configured_runner(self) -> None:
         fake_runner = FakeRunner()

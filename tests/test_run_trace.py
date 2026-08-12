@@ -1,7 +1,6 @@
 import asyncio
 import json
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +9,6 @@ from runtime.messaging.events import InboundMessage
 from runtime.messaging.user_bus import MessageBus
 from plugins import PluginManager
 from plugins.run_report import RunReportPlugin
-from memory.background_lifecycle import BackgroundMemoryLifecycle
 from applications.turn_coordinator import TurnCoordinator as AgentLoop
 from runtime.context import ContextBuilder as RealContextBuilder
 from runtime.runtime import RunContext, Runtime
@@ -21,9 +19,8 @@ from runtime.trace.summary import build_trace_summary_payload
 from runtime.trace.trace_store import TraceStore
 from runtime.trace.workspace import capture_workspace_snapshot, diff_workspace_snapshots
 from runtime.workspace import WorkspaceResolver
-from memory.store import MemoryStore
-from memory.lifecycle import MemoryLifecycleResult
 from runtime.routing.agent_router import AgentRouter
+from tests.fakes import make_agent_spec
 from runtime.sessions.session import Session, SessionManager
 from tests.postgres_utils import temporary_postgres_schema
 from applications.coding.conclusions import ConclusionExtraction
@@ -38,7 +35,7 @@ from tools.spec import ToolInjection, ToolRisk, ToolSpec, ToolStateEffect
 
 
 class ContextBuilder:
-    def build_prefix(self, profile, *, session, active_turn_start_index):
+    def build_prefix(self, agent_spec, *, session, active_turn_start_index):
         return None
 
     def build(self, **kwargs):
@@ -71,58 +68,6 @@ class RecordingSessions:
         self.saved.append(session)
 
 
-class FakeMemoryLifecycle:
-    def after_turn(self, session) -> MemoryLifecycleResult:
-        result = MemoryLifecycleResult(
-            pending_added=1,
-            candidates_updated=1,
-            related_triggered=0,
-            promoted_count=1,
-            vector_indexed=1,
-            vector_errors=0,
-            history_updated=True,
-            recent_context_updated=True,
-        )
-        result.trace_events.extend([
-            {
-                "event": "memory.candidate.evaluated",
-                "payload": {
-                    "source_ref": "web:default:1",
-                    "method": "history_vector_similarity",
-                    "similar_hit_count": 2,
-                    "candidate_selected": True,
-                },
-            },
-            {
-                "event": "memory.candidate.promoted",
-                "payload": {
-                    "candidate_id": "mem_cand_0001",
-                    "memory_text_preview": "用户偏好使用 pytest。",
-                },
-            },
-            {
-                "event": "memory.history_vector.upserted",
-                "payload": {
-                    "source_ref": "web:default:1",
-                    "source_type": "session_turn",
-                    "message_count": 2,
-                },
-            },
-        ])
-        return result
-
-
-class SlowMemoryLifecycle(FakeMemoryLifecycle):
-    def __init__(self, delay: float = 0.2) -> None:
-        self.delay = delay
-        self.calls = 0
-
-    def after_turn(self, session) -> MemoryLifecycleResult:
-        self.calls += 1
-        time.sleep(self.delay)
-        return super().after_turn(session)
-
-
 def _tool_response(index: int, name="echo", arguments=None) -> LLMResponse:
     arguments = arguments or {"text": "hello"}
     return LLMResponse(
@@ -147,18 +92,17 @@ def _final_response(content="done") -> LLMResponse:
     )
 
 
-def _run_pipeline(pipeline, session, profile, *, run_state=None, trace_store=None):
+def _run_runtime(runtime, session, agent_spec, *, run_state=None, trace_store=None):
     user_input = next(
         str(message.get("content") or "")
         for message in reversed(session.messages)
         if message.get("role") == "user"
     )
-    return pipeline.run(
-        AgentSpec(name="test", profile=profile),
+    return runtime.run(
+        agent_spec,
         user_input,
         RunContext(
             session=session,
-            profile=profile,
             run_state=run_state,
             trace_store=trace_store,
         ),
@@ -186,7 +130,7 @@ def _registry() -> ToolRegistry:
     return registry
 
 
-def _pipeline(provider) -> Runtime:
+def _runtime(provider) -> Runtime:
     return Runtime(
         tools=_registry(),
         provider=provider,
@@ -196,18 +140,7 @@ def _pipeline(provider) -> Runtime:
     )
 
 
-def _pipeline_with_memory_trace(provider) -> Runtime:
-    return Runtime(
-        tools=_registry(),
-        provider=provider,
-        model="test-model",
-        tool_executor=ToolExecutor([]),
-        context_builder=ContextBuilder(),
-        memory_lifecycle=FakeMemoryLifecycle(),
-    )
-
-
-def _real_context_pipeline(provider) -> Runtime:
+def _real_context_runtime(provider) -> Runtime:
     return Runtime(
         tools=_registry(),
         provider=provider,
@@ -217,7 +150,7 @@ def _real_context_pipeline(provider) -> Runtime:
     )
 
 
-def _workspace_pipeline(provider) -> Runtime:
+def _workspace_runtime(provider) -> Runtime:
     registry = ToolRegistry()
     write_schema = function_tool(
             "write_file",
@@ -380,7 +313,6 @@ class RunTraceTests(unittest.TestCase):
                 "duration_ms": 1,
                 "final_arguments_preview": json.dumps({"tasks": []}),
                 "output_preview": "{}",
-                "subagent_incomplete_count": 2,
             })
             run_state.finish_success("done")
             trace_store.write_run_state(run_state)
@@ -393,7 +325,6 @@ class RunTraceTests(unittest.TestCase):
             self.assertEqual(1, metrics["duplicate_tool_call_count"])
             self.assertEqual(0.3333, metrics["duplicate_tool_call_ratio"])
             self.assertEqual(1, metrics["truncated_tool_output_count"])
-            self.assertEqual(2, metrics["subagent_incomplete_count"])
             self.assertEqual(1, metrics["subagent_fanout_count"])
 
     def test_trace_metrics_include_context_compression_and_file(self) -> None:
@@ -465,7 +396,7 @@ class RunTraceTests(unittest.TestCase):
                 context_metrics["builds"][0]["reduced_sections"][0]["section"],
             )
 
-    def test_trace_metrics_include_coding_context_state(self) -> None:
+    def test_trace_metrics_include_coding_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             trace_store = TraceStore(Path(tmp) / ".runs")
             run_state = RunState.create(session_id="task:coding")
@@ -477,7 +408,7 @@ class RunTraceTests(unittest.TestCase):
                     "duration_ms": 9.25,
                     "context_summary": {
                         "message_count": 5,
-                        "coding_context_state": {
+                        "coding_context": {
                             "enabled": True,
                             "compacted": True,
                             "generation": 2,
@@ -486,7 +417,7 @@ class RunTraceTests(unittest.TestCase):
                     "context_report": {
                         "total_chars": 1200,
                         "sections": {
-                            "coding_context_state": {
+                            "coding_context": {
                                 "raw_chars": 3000,
                                 "rendered_chars": 1200,
                                 "budget_chars": 8000,
@@ -505,7 +436,7 @@ class RunTraceTests(unittest.TestCase):
                         },
                         "reductions": [
                             {
-                                "section": "coding_context_state",
+                                "section": "coding_context",
                                 "reason": "coding_prompt_state_compaction",
                                 "before_tokens": 13000,
                                 "after_tokens": 7600,
@@ -513,7 +444,7 @@ class RunTraceTests(unittest.TestCase):
                             }
                         ],
                         "metadata": {
-                            "coding_context_state_enabled": True,
+                            "coding_context_enabled": True,
                             "coding_context_generation": 2,
                             "coding_context_prompt_tail_start_index": 17,
                             "coding_context_compacted_until_index": 17,
@@ -544,10 +475,10 @@ class RunTraceTests(unittest.TestCase):
             self.assertEqual(17, metrics["coding_context_latest_prompt_tail_start_index"])
             self.assertEqual([4], context_metrics["aggregate"]["token_compressed_steps"])
             self.assertEqual([4], context_metrics["aggregate"]["coding_context_compacted_steps"])
-            self.assertTrue(context_metrics["builds"][0]["coding_context_state_enabled"])
+            self.assertTrue(context_metrics["builds"][0]["coding_context_enabled"])
             self.assertEqual(
                 5400,
-                context_metrics["builds"][0]["coding_context_state"]["saved_tokens"],
+                context_metrics["builds"][0]["coding_context"]["saved_tokens"],
             )
             self.assertEqual(
                 5400,
@@ -694,9 +625,13 @@ class RunTraceTests(unittest.TestCase):
             _tool_response(1, arguments={"text": "hello"}),
             _final_response("done"),
         ])
-        pipeline = _real_context_pipeline(provider)
+        runtime = _real_context_runtime(provider)
 
-        _run_pipeline(pipeline, session, SimpleNamespace(tool_mode="bot"))
+        _run_runtime(
+            runtime,
+            session,
+            make_agent_spec("test", "test", "bot"),
+        )
 
         self.assertEqual(2, len(provider.calls))
         second_call_messages = provider.calls[1]["messages"]
@@ -723,7 +658,7 @@ class RunTraceTests(unittest.TestCase):
             loop = AgentLoop(
                 bus,
                 sessions,
-                _pipeline(provider),
+                _runtime(provider),
                 AgentRouter(),
                 plugin_manager=PluginManager(
                     [RunReportPlugin()],
@@ -787,116 +722,6 @@ class RunTraceTests(unittest.TestCase):
             self.assertIn("echo", markdown_report)
             self.assertIn("done", markdown_report)
 
-    def test_memory_lifecycle_trace_events_are_recorded(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            trace_store = TraceStore(Path(tmp) / ".runs")
-            session = Session(id="web:default", active_agent="bot")
-            sessions = RecordingSessions(session)
-            provider = ScriptedProvider([_final_response("done")])
-            bus = MessageBus()
-            loop = AgentLoop(
-                bus,
-                sessions,
-                _pipeline_with_memory_trace(provider),
-                AgentRouter(),
-                plugin_manager=PluginManager([], workspace=Path(tmp), tool_registry=_registry()),
-                trace_store=trace_store,
-            )
-
-            async def run() -> str:
-                await bus.publish_inbound(InboundMessage(
-                    channel="web",
-                    chat_id="default",
-                    sender="user",
-                    content="我希望这个项目用 pytest 写测试",
-                    metadata={"user_id": "local", "user_role": "admin"},
-                ))
-                await loop.run_once()
-                outbound = await bus._outbound.get()
-                return outbound.content
-
-            self.assertEqual("done", asyncio.run(run()))
-
-            run_dir = trace_store.run_dir(_last_message_run_id(session))
-            events = _events(run_dir / "trace.jsonl")
-            by_name = {event["event"]: event for event in events}
-            trace_summary = json.loads(
-                (run_dir / "trace_summary.json").read_text(encoding="utf-8")
-            )
-
-            self.assertIn("memory.candidate.evaluated", by_name)
-            self.assertIn("memory.candidate.promoted", by_name)
-            self.assertIn("memory.history_vector.upserted", by_name)
-            self.assertIn("memory.lifecycle.completed", by_name)
-            self.assertEqual(
-                2,
-                by_name["memory.candidate.evaluated"]["payload"]["similar_hit_count"],
-            )
-            self.assertTrue(
-                by_name["memory.candidate.evaluated"]["payload"]["candidate_selected"]
-            )
-            self.assertEqual(
-                "session_turn",
-                by_name["memory.history_vector.upserted"]["payload"]["source_type"],
-            )
-            self.assertEqual(
-                1,
-                by_name["memory.lifecycle.completed"]["payload"]["promoted_count"],
-            )
-            self.assertEqual(
-                1,
-                trace_summary["memory"]["candidate_evaluations"],
-            )
-            self.assertEqual(
-                1,
-                trace_summary["memory"]["candidate_promotions"],
-            )
-
-    def test_background_memory_lifecycle_does_not_block_pipeline_reply(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            trace_store = TraceStore(Path(tmp) / ".runs")
-            session = Session(id="web:default", active_agent="bot")
-            run_state = RunState.create(
-                session_id=session.id,
-                channel="web",
-                chat_id="default",
-                mode="bot",
-                execution_path="runtime",
-            )
-            trace_store.start_run(run_state)
-            slow_lifecycle = SlowMemoryLifecycle(delay=0.25)
-            background_lifecycle = BackgroundMemoryLifecycle(slow_lifecycle)
-            provider = ScriptedProvider([_final_response("done")])
-            pipeline = Runtime(
-                tools=_registry(),
-                provider=provider,
-                model="test-model",
-                tool_executor=ToolExecutor([]),
-                context_builder=ContextBuilder(),
-                memory_lifecycle=background_lifecycle,
-            )
-
-            session.add_message("user", "我希望这个项目用 pytest 写测试")
-            started = time.perf_counter()
-            reply = _run_pipeline(
-                pipeline,
-                session,
-                SimpleNamespace(tool_mode="bot"),
-                run_state=run_state,
-                trace_store=trace_store,
-            )
-            elapsed = time.perf_counter() - started
-
-            self.assertEqual("done", reply)
-            self.assertLess(elapsed, 0.2)
-            self.assertTrue(background_lifecycle.wait(timeout=2.0))
-            self.assertEqual(1, slow_lifecycle.calls)
-
-            events = _events(trace_store.run_dir(run_state) / "trace.jsonl")
-            event_names = [event["event"] for event in events]
-            self.assertIn("memory.lifecycle.scheduled", event_names)
-            self.assertIn("memory.lifecycle.completed", event_names)
-
     def test_coding_coding_application_is_bound_to_parent_run(self) -> None:
         class Extractor:
             def extract(self, **kwargs):
@@ -906,11 +731,10 @@ class RunTraceTests(unittest.TestCase):
             root = Path(tmp)
             sessions = SessionManager(dsn)
             provider = ScriptedProvider([_final_response("coding done")])
-            base_pipeline = _pipeline(provider)
+            base_runtime = _runtime(provider)
             runner = CodingApplication(
                 sessions=sessions,
-                base_pipeline=base_pipeline,
-                global_memory=MemoryStore(root / "memory"),
+                base_runtime=base_runtime,
                 workspace_root=root,
             )
             runner.factory = TaskSessionFactory(sessions, root=root / ".coding_applications")
@@ -933,11 +757,7 @@ class RunTraceTests(unittest.TestCase):
                 reply = runner.run_coding_task(
                     parent_session=parent,
                     user_text="fix code",
-                    profile=SimpleNamespace(
-                        name="coding",
-                        tool_mode="coding",
-                        system_prompt="coding",
-                    ),
+                    agent_spec=make_agent_spec("coding", "coding", "coding"),
                     run_state=run_state,
                     trace_store=trace_store,
                 )
@@ -981,7 +801,7 @@ class RunTraceTests(unittest.TestCase):
             loop = AgentLoop(
                 bus,
                 sessions,
-                _pipeline(provider),
+                _runtime(provider),
                 AgentRouter(),
                 trace_store=trace_store,
             )
@@ -1029,7 +849,7 @@ class RunTraceTests(unittest.TestCase):
             loop = AgentLoop(
                 bus,
                 sessions,
-                _pipeline(provider),
+                _runtime(provider),
                 AgentRouter(),
                 trace_store=trace_store,
             )
@@ -1081,7 +901,7 @@ class RunTraceTests(unittest.TestCase):
             loop = AgentLoop(
                 bus,
                 sessions,
-                _pipeline(provider),
+                _runtime(provider),
                 AgentRouter(),
                 trace_store=trace_store,
             )
@@ -1222,8 +1042,7 @@ class RunTraceTests(unittest.TestCase):
             ])
             runner = CodingApplication(
                 sessions=sessions,
-                base_pipeline=_workspace_pipeline(provider),
-                global_memory=MemoryStore(root / "memory"),
+                base_runtime=_workspace_runtime(provider),
                 workspace_root=workspace,
             )
             runner.factory = TaskSessionFactory(sessions, root=root / ".coding_applications")
@@ -1246,11 +1065,7 @@ class RunTraceTests(unittest.TestCase):
                 runner.run_coding_task(
                     parent_session=parent,
                     user_text="create answer file",
-                    profile=SimpleNamespace(
-                        name="coding",
-                        tool_mode="coding",
-                        system_prompt="coding",
-                    ),
+                    agent_spec=make_agent_spec("coding", "coding", "coding"),
                     workspace_root=str(workspace),
                     run_state=run_state,
                     trace_store=trace_store,

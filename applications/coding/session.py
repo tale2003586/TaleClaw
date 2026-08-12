@@ -13,7 +13,7 @@ class TaskSessionRecord:
     task_id: str
     parent_session_id: str
     task_type: str
-    memory_root: Path
+    task_root: Path
 
 
 class TaskSessionFactory:
@@ -40,13 +40,8 @@ class TaskSessionFactory:
     ) -> TaskSessionRecord:
         task_id = f"{_slug(task_type)}-{uuid4().hex[:8]}"
         session_id = f"task:{task_id}"
-        memory_root = self.root / task_id / "memory"
-        memory_root.mkdir(parents=True, exist_ok=True)
-        resolved_memory_root = memory_root.resolve()
-        try:
-            stored_memory_root = str(resolved_memory_root.relative_to(WORKDIR.resolve()))
-        except ValueError:
-            stored_memory_root = str(resolved_memory_root)
+        task_root = self.root / task_id
+        task_root.mkdir(parents=True, exist_ok=True)
         session = self.sessions.get_or_create(session_id)
         session.active_agent = task_type
         session.metadata.update({
@@ -58,7 +53,6 @@ class TaskSessionFactory:
             "user_request_summary": _request_summary(user_request),
             "original_request_ref": str(original_request_ref or ""),
             "artifact_refs": list(artifact_refs or []),
-            "memory_root": stored_memory_root,
         })
         if user_id:
             session.metadata["user_id"] = user_id
@@ -69,7 +63,7 @@ class TaskSessionFactory:
             task_id=task_id,
             parent_session_id=parent_session_id,
             task_type=task_type,
-            memory_root=memory_root,
+            task_root=task_root,
         )
 
 

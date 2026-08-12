@@ -60,14 +60,9 @@ class SpawnPolicy:
 
 @dataclass(frozen=True)
 class AgentSpec:
-    """Immutable definition of an agent, separate from Session and per-run state.
-
-    ``profile`` remains only for external compatibility fixtures; production
-    routing and execution use AgentSpec directly.
-    """
+    """Immutable definition of an agent, separate from Session and per-run state."""
 
     name: str
-    profile: Any = None
     model_purpose: str = ""
     role: str = ""
     max_tokens: int | None = None
@@ -88,17 +83,10 @@ class AgentSpec:
     def __post_init__(self) -> None:
         if not str(self.name or "").strip():
             raise ValueError("AgentSpec.name is required.")
-        profile = self.profile
-        instructions = self.instructions or str(
-            getattr(profile, "system_prompt", "") or ""
-        )
-        purpose = self.model_purpose or (
-            "coding" if getattr(profile, "tool_mode", "") == "coding" else "chat"
-        )
+        instructions = self.instructions
+        purpose = self.model_purpose or "chat"
         model_policy = self.model_policy or ModelPolicy(purpose=purpose)
-        tool_set = self.tool_set or ToolSet(
-            mode=str(getattr(profile, "tool_mode", "bot") or "bot")
-        )
+        tool_set = self.tool_set or ToolSet()
         limits = self.limits or RunLimits(
             max_tokens=self.max_tokens,
             max_reasoning_steps=self.max_reasoning_steps,
@@ -117,22 +105,6 @@ class AgentSpec:
         object.__setattr__(self, "metadata", dict(self.metadata or {}))
         object.__setattr__(self, "skills", tuple(self.skills or ()))
         object.__setattr__(self, "hooks", tuple(self.hooks or ()))
-
-    @classmethod
-    def from_profile(
-        cls,
-        profile,
-        *,
-        name: str | None = None,
-        model_purpose: str | None = None,
-        **kwargs,
-    ) -> "AgentSpec":
-        return cls(
-            name=name or str(getattr(profile, "name", "agent") or "agent"),
-            profile=profile,
-            model_purpose=model_purpose or "",
-            **kwargs,
-        )
 
     def with_limits(
         self,
@@ -158,10 +130,6 @@ class AgentSpec:
                 ),
             ),
         )
-
-    @property
-    def system_prompt(self) -> str:
-        return self.instructions
 
     @property
     def tool_mode(self) -> str:

@@ -5,7 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from models.provider import LLMResponse, OpenAICompatibleProvider
-from memory.store import MemoryStore
 from runtime.sessions.session import Session, SessionManager
 from tests.postgres_utils import temporary_postgres_schema
 from applications.coding.artifacts import TaskArtifactWriter
@@ -14,10 +13,13 @@ from applications.coding.conclusions import (
     ConclusionExtraction,
     TaskConclusionExtractor,
 )
-from applications.coding.memory_lifecycle import TaskMemoryLifecycle
 from applications.coding.promotion import PromotionResult, TaskMemoryPromoter
 from applications.coding.runner import CodingApplication
 from applications.coding.session import TaskSessionFactory, TaskSessionRecord
+from tests.fakes import make_agent_spec
+from runtime.context import ContextBuilder
+from runtime.runtime import Runtime
+from tools.executor import ToolExecutor
 
 
 class RecordingProvider:
@@ -31,7 +33,7 @@ class RecordingProvider:
 
 
 class TaskMemoryPromotionTests(unittest.TestCase):
-    def test_runner_writes_artifacts_and_promotes_filtered_llm_conclusion(self) -> None:
+    def test_runner_writes_artifacts_without_task_local_memory(self) -> None:
         class RunnerProvider:
             def __init__(self) -> None:
                 self.calls = 0
@@ -67,24 +69,24 @@ class TaskMemoryPromotionTests(unittest.TestCase):
             root = Path(tmp)
             sessions = SessionManager(dsn)
             provider = RunnerProvider()
-            base_pipeline = SimpleNamespace(
+            base_runtime = Runtime(
                 tools=RunnerTools(),
                 provider=provider,
                 model="test-model",
-                tool_executor=object(),
+                tool_executor=ToolExecutor([]),
+                context_builder=ContextBuilder(),
                 max_tokens=8000,
             )
             runner = CodingApplication(
                 sessions=sessions,
-                base_pipeline=base_pipeline,
-                global_memory=MemoryStore(root / "memory"),
+                base_runtime=base_runtime,
             )
             runner.factory = TaskSessionFactory(sessions, root=root / ".coding_applications")
             try:
                 reply = runner.run_coding_task(
                     parent_session=Session(id="web:default"),
                     user_text="Add storage persistence",
-                    profile=SimpleNamespace(tool_mode="coding", system_prompt="coding"),
+                    agent_spec=make_agent_spec("coding", "coding", "coding"),
                 )
             finally:
                 sessions.close()
@@ -93,69 +95,8 @@ class TaskMemoryPromotionTests(unittest.TestCase):
             self.assertEqual(1, len(task_dirs))
             self.assertTrue((task_dirs[0] / "TASK_LOG.md").exists())
             self.assertTrue((task_dirs[0] / "CONCLUSIONS.json").exists())
-            self.assertIn("Uploaded files are stored under storage/.", runner.global_memory.read_pending())
+            self.assertFalse((task_dirs[0] / "memory").exists())
             self.assertIn("Task log:", reply)
-
-    def test_task_lifecycle_keeps_wrapped_prompt_out_of_pending(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            memory = MemoryStore(Path(tmp) / "memory")
-            session = Session(id="task:coding-12345678", active_agent="coding")
-            session.add_message(
-                "user",
-                "<task-session>\n我希望这里使用 pytest\n</task-session>",
-            )
-            session.add_message("assistant", "done")
-
-            TaskMemoryLifecycle(memory).after_turn(session)
-
-            self.assertEqual("# Pending Memory\n\n", memory.read_pending())
-            self.assertIn("我希望这里使用 pytest", memory.read_history())
-
-    def test_promoter_keeps_reusable_candidates_and_rejects_noise(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            global_memory = MemoryStore(root / "global")
-            task_memory = MemoryStore(root / "task")
-            task_memory.pending_path.write_text(
-                "# Pending Memory\n\n"
-                "- [project] Docker Compose mounts storage/ to /app/storage.\n"
-                "- Task recent context: latest_user: wrapped prompt\n"
-                "- <task-session>temporary wrapper</task-session>\n",
-                encoding="utf-8",
-            )
-            extracted = [
-                ConclusionCandidate(
-                    category="decision",
-                    content="The web server keeps uploaded files in storage/.",
-                    evidence="web/server.py",
-                    confidence=0.94,
-                ),
-                ConclusionCandidate(
-                    category="fact",
-                    content="Temporary thought",
-                    confidence=0.3,
-                ),
-                ConclusionCandidate(
-                    category="project",
-                    content="Docker Compose mounts storage/ to /app/storage.",
-                    confidence=0.98,
-                ),
-            ]
-
-            result = TaskMemoryPromoter(global_memory).promote(
-                task_id="coding-12345678",
-                task_memory=task_memory,
-                extracted_conclusions=extracted,
-            )
-            pending = global_memory.read_pending()
-
-            self.assertEqual(2, len(result.promoted))
-            self.assertGreaterEqual(len(result.rejected), 3)
-            self.assertIn("Docker Compose mounts storage/ to /app/storage.", pending)
-            self.assertIn("The web server keeps uploaded files in storage/.", pending)
-            self.assertNotIn("Task recent context", pending)
-            self.assertNotIn("<task-session>", pending)
-            self.assertNotIn("Temporary thought", pending)
 
     def test_extractor_parses_structured_json(self) -> None:
         provider = RecordingProvider(
@@ -180,7 +121,6 @@ class TaskMemoryPromotionTests(unittest.TestCase):
     def test_artifact_writer_persists_log_and_conclusions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             task_root = Path(tmp) / "coding-12345678"
-            memory_root = task_root / "memory"
             session = Session(
                 id="task:coding-12345678",
                 active_agent="coding",
@@ -199,7 +139,7 @@ class TaskMemoryPromotionTests(unittest.TestCase):
                 task_id="coding-12345678",
                 parent_session_id="web:default",
                 task_type="coding",
-                memory_root=memory_root,
+                task_root=task_root,
             )
             candidate = ConclusionCandidate(
                 category="project",

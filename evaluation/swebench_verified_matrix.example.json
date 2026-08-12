@@ -57,45 +57,26 @@
       "name": "budget-on",
       "enabled": true,
       "env": {
-        "CONTEXT_ENABLE_SECTION_BUDGET": "1",
-        "WORKING_MEMORY_RESUME_ENABLED": "1"
+        "CONTEXT_ENABLE_SECTION_BUDGET": "1"
       },
       "harness": {
         "max_reasoning_steps": 80
       },
       "dimensions": {
-        "context_budget": "on",
-        "working_memory_resume": "on"
+        "context_budget": "on"
       }
     },
     {
       "name": "context-budget-off",
       "enabled": true,
       "env": {
-        "CONTEXT_ENABLE_SECTION_BUDGET": "0",
-        "WORKING_MEMORY_RESUME_ENABLED": "1"
+        "CONTEXT_ENABLE_SECTION_BUDGET": "0"
       },
       "harness": {
         "max_reasoning_steps": 80
       },
       "dimensions": {
-        "context_budget": "off",
-        "working_memory_resume": "on"
-      }
-    },
-    {
-      "name": "working-memory-resume-off",
-      "enabled": false,
-      "env": {
-        "CONTEXT_ENABLE_SECTION_BUDGET": "1",
-        "WORKING_MEMORY_RESUME_ENABLED": "0"
-      },
-      "harness": {
-        "max_reasoning_steps": 80
-      },
-      "dimensions": {
-        "context_budget": "on",
-        "working_memory_resume": "off"
+        "context_budget": "off"
       }
     }
   ],

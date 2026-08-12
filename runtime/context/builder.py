@@ -48,10 +48,9 @@ class ContextPrefix:
     """Stable prompt prefix reused across reasoning steps in one turn."""
 
     system_prompt: str
-    profile_prompt: str
+    agent_instructions: str
     instruction_sections: list[ContextSection]
     instruction_reductions: list[dict[str, Any]]
-    skill_catalog: BudgetedText
     runtime_guidance: str
     fingerprint: str
     base_fingerprint: str = ""
@@ -66,10 +65,6 @@ class ContextPrefix:
 class ContextBuilder:
     _instruction_cache = PromptAssetsService._instruction_cache
     _guidance_registry: list[str] = [
-        "Use recall_memory when the user asks about prior preferences or project conventions.",
-        "Use memorize when the user states a durable preference or important fact.",
-        "Some tools are deferred. Use tool_search to find or unlock tools that are not currently visible.",
-        "For code-security questions involving vulnerabilities, CVE/CWE/GHSA, dependencies, auth, authorization, injection, XSS, SSRF, tokens, secrets, file upload, path traversal, or secure coding guidance, call security_rag_search for local evidence before giving a final answer.",
         "Search-like tools are limited opportunities. Batch queries and gather enough evidence before deciding whether another search is necessary.",
         (
             "An attachment reference indicates that the user supplied a file. "
@@ -129,12 +124,12 @@ class ContextBuilder:
 
     def build_prefix(
         self,
-        profile,
+        agent_spec,
         *,
         session=None,
         active_turn_start_index: int | None = None,
     ) -> ContextPrefix:
-        base = self._build_base_prefix(profile)
+        base = self._build_base_prefix(agent_spec)
         if session is None:
             return base
 
@@ -143,9 +138,9 @@ class ContextBuilder:
             session_messages,
             active_turn_start_index=active_turn_start_index,
         )
-        budgeted_history = self._budget_conversation_history_for_profile(
+        budgeted_history = self._budget_conversation_history(
             history_messages,
-            profile=profile,
+            agent_spec=agent_spec,
             session=session,
         )
         messages = [
@@ -165,7 +160,7 @@ class ContextBuilder:
             "history_message_count": len(history_messages),
             "rendered_history_message_count": len(budgeted_history.rendered_messages),
             "coding_active_turn_only": self._coding_uses_active_turn_only_history(
-                profile,
+                agent_spec,
                 session=session,
             ),
         }
@@ -180,8 +175,8 @@ class ContextBuilder:
             metadata=metadata,
         )
 
-    def _build_base_prefix(self, profile) -> ContextPrefix:
-        fingerprint = self._prefix_fingerprint(profile)
+    def _build_base_prefix(self, agent_spec) -> ContextPrefix:
+        fingerprint = self._prefix_fingerprint(agent_spec)
         with self._prefix_cache_lock:
             cached = self._prefix_cache.get(fingerprint)
         if cached is not None:
@@ -194,32 +189,25 @@ class ContextBuilder:
                 },
             )
 
-        profile_prompt = str(getattr(profile, "system_prompt", "") or "")
+        agent_instructions = str(getattr(agent_spec, "instructions", "") or "")
         instruction_block, instruction_sections, instruction_reductions = (
-            self.prompt_assets_service.build_instruction_block(profile)
-        )
-        raw_skill_catalog = self.prompt_assets_service.build_skill_catalog_block()
-        budgeted_skill_catalog = self.budgeter.apply(
-            "skill_catalog",
-            raw_skill_catalog,
+            self.prompt_assets_service.build_instruction_block(agent_spec)
         )
         runtime_guidance = self._runtime_guidance()
-        if str(getattr(profile, "tool_mode", "") or "") == "coding":
+        if str(getattr(agent_spec, "tool_mode", "") or "") == "coding":
             runtime_guidance = "\n".join(
                 item for item in (runtime_guidance, self._coding_context_guidance) if item
             )
         system_prompt = self._build_system_prompt(
-            profile_prompt=profile_prompt,
+            agent_instructions=agent_instructions,
             instruction_block=instruction_block,
-            skill_catalog_block=budgeted_skill_catalog.rendered_text,
             runtime_guidance=runtime_guidance,
         )
         prefix = ContextPrefix(
             system_prompt=system_prompt,
-            profile_prompt=profile_prompt,
+            agent_instructions=agent_instructions,
             instruction_sections=instruction_sections,
             instruction_reductions=instruction_reductions,
-            skill_catalog=budgeted_skill_catalog,
             runtime_guidance=runtime_guidance,
             fingerprint=fingerprint,
             base_fingerprint=fingerprint,
@@ -228,9 +216,9 @@ class ContextBuilder:
                 "fingerprint": fingerprint,
                 "base_fingerprint": fingerprint,
                 "cache_hit": False,
-                "mode": str(getattr(profile, "tool_mode", "bot") or "bot"),
+                "mode": str(getattr(agent_spec, "tool_mode", "bot") or "bot"),
                 "includes_history": False,
-                "skill_catalog_chars": len(budgeted_skill_catalog.rendered_text),
+                "skill_catalog_chars": 0,
             },
         )
         with self._prefix_cache_lock:
@@ -241,7 +229,7 @@ class ContextBuilder:
         self,
         *,
         session,
-        profile,
+        agent_spec,
         prefix: ContextPrefix | None = None,
         inbox: list | None = None,
         background_results: list | None = None,
@@ -260,12 +248,12 @@ class ContextBuilder:
     ) -> ContextBundle:
         prefix = self.context_providers["prompt"].provide(
             self,
-            profile=profile,
+            agent_spec=agent_spec,
             session=session,
             active_turn_start_index=active_turn_start_index,
             prefix=prefix,
         )
-        profile_prompt = prefix.profile_prompt
+        agent_instructions = prefix.agent_instructions
         instruction_sections = prefix.instruction_sections
         instruction_reductions = prefix.instruction_reductions
         runtime_guidance = prefix.runtime_guidance
@@ -273,7 +261,7 @@ class ContextBuilder:
         history_context = self.context_providers["history"].provide(
             self,
             session=session,
-            profile=profile,
+            agent_spec=agent_spec,
             prefix=prefix,
             active_turn_start_index=active_turn_start_index,
             include_history=bool(
@@ -303,7 +291,7 @@ class ContextBuilder:
         memory_context = self.context_providers["memory"].provide(
             self,
             session=session,
-            profile=profile,
+            agent_spec=agent_spec,
             current_request=current_request,
             include_memory=bool(
                 getattr(context_policy, "include_memory", True)
@@ -341,12 +329,12 @@ class ContextBuilder:
 
         coding_context_enabled = self.context_providers["coding"].enabled(
             self,
-            profile=profile,
+            agent_spec=agent_spec,
             session=session,
         )
         runtime_state_messages = self._build_shared_runtime_state_messages(
             session,
-            profile=profile,
+            agent_spec=agent_spec,
             current_request=current_request,
             include_task_state=not coding_context_enabled,
         )
@@ -365,14 +353,13 @@ class ContextBuilder:
         )
 
         if coding_context_enabled:
-            bundle = self._build_coding_context_state_bundle(
+            bundle = self._build_coding_context_bundle(
                 session=session,
-                profile=profile,
+                agent_spec=agent_spec,
                 prefix=prefix,
-                profile_prompt=profile_prompt,
+                agent_instructions=agent_instructions,
                 instruction_sections=instruction_sections,
                 instruction_reductions=instruction_reductions,
-                skill_catalog=prefix.skill_catalog,
                 runtime_guidance=runtime_guidance,
                 system_prompt=system_prompt,
                 session_messages=session_messages,
@@ -419,16 +406,16 @@ class ContextBuilder:
         budgeted_active_turn = budget_active_turn(
             active_turn_messages,
             enabled=self.budgeter.enabled,
-            rule=self._active_turn_rule_for_profile(profile, session=session),
+            rule=self._active_turn_rule(agent_spec, session=session),
         )
-        budgeted_active_turn = self._annotate_active_turn_budget_for_profile(
+        budgeted_active_turn = self._annotate_active_turn_budget(
             budgeted_active_turn,
-            profile=profile,
+            agent_spec=agent_spec,
             session=session,
         )
         if self._can_reuse_prefix_messages(
             prefix,
-            profile=profile,
+            agent_spec=agent_spec,
             session=session,
             active_turn_start_index=active_turn_start_index,
         ):
@@ -450,9 +437,8 @@ class ContextBuilder:
 
         build_state = BuildState(
             messages=messages,
-            profile_prompt=profile_prompt,
+            agent_instructions=agent_instructions,
             instruction_sections=instruction_sections,
-            skill_catalog=prefix.skill_catalog,
             runtime_guidance=runtime_guidance,
             system_prompt=system_prompt,
             session_messages=session_messages,
@@ -485,7 +471,6 @@ class ContextBuilder:
                 *self._reduction_list(
                     budgeted_history,
                     budgeted_active_turn,
-                    prefix.skill_catalog,
                     budgeted_memory,
                     budgeted_retrieved_history,
                     budgeted_security_knowledge,
@@ -550,7 +535,7 @@ class ContextBuilder:
                 tool_output_tokens=tokens("task_runtime_events"),
                 memory_tokens=tokens("memory"),
                 retrieval_tokens=retrieval_tokens,
-                code_context_tokens=tokens("coding_context_state"),
+                code_context_tokens=tokens("coding_context"),
             ),
             retrieved_note_count=int(
                 (sections.get("episodic_history").metadata or {}).get("hit_count", 0)
@@ -568,16 +553,15 @@ class ContextBuilder:
                 step=reasoning_step,
             )
 
-    def _build_coding_context_state_bundle(
+    def _build_coding_context_bundle(
         self,
         *,
         session,
-        profile,
+        agent_spec,
         prefix: ContextPrefix,
-        profile_prompt: str,
+        agent_instructions: str,
         instruction_sections: list[ContextSection],
         instruction_reductions: list[dict[str, Any]],
-        skill_catalog: BudgetedText,
         runtime_guidance: str,
         system_prompt: str,
         session_messages: list[dict],
@@ -618,7 +602,7 @@ class ContextBuilder:
 
         if self._can_reuse_prefix_messages(
             prefix,
-            profile=profile,
+            agent_spec=agent_spec,
             session=session,
             active_turn_start_index=active_turn_start_index,
         ):
@@ -701,9 +685,8 @@ class ContextBuilder:
 
         build_state = BuildState(
             messages=messages,
-            profile_prompt=profile_prompt,
+            agent_instructions=agent_instructions,
             instruction_sections=instruction_sections,
-            skill_catalog=skill_catalog,
             runtime_guidance=runtime_guidance,
             system_prompt=system_prompt,
             session_messages=session_messages,
@@ -736,7 +719,6 @@ class ContextBuilder:
                 *self._reduction_list(
                     budgeted_history,
                     budgeted_active_turn,
-                    skill_catalog,
                     budgeted_memory,
                     budgeted_retrieved_history,
                     budgeted_security_knowledge,
@@ -748,7 +730,7 @@ class ContextBuilder:
             prefix_metadata=dict(prefix.metadata),
         )
         report = self._build_report(build_state)
-        self._append_coding_context_state_report(report, view)
+        self._append_coding_context_report(report, view)
         self._append_runtime_state_reports(report, runtime_state_messages)
         context_metrics = {
             **dict(view.state.metrics or {}),
@@ -770,14 +752,14 @@ class ContextBuilder:
         self,
         session,
         *,
-        profile,
+        agent_spec,
         current_request: str,
         include_task_state: bool,
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         if (
             include_task_state
-            and str(getattr(profile, "tool_mode", "") or "") in {"coding", "teammate"}
+            and str(getattr(agent_spec, "tool_mode", "") or "") in {"coding", "teammate"}
         ):
             refs = []
             for item in latest_user_attachments(session):
@@ -821,14 +803,14 @@ class ContextBuilder:
                 },
             ))
 
-    def _append_coding_context_state_report(
+    def _append_coding_context_report(
         self,
         report: ContextBuildReport,
         view: Any,
     ) -> None:
         report.sections.append(
             ContextSection.from_text(
-                "coding_context_state",
+                "coding_context",
                 str(view.state_message.get("content") or ""),
                 raw_text=json.dumps(
                     view.task_state.to_dict(),
@@ -858,7 +840,7 @@ class ContextBuilder:
         )
         report.metadata = {
             **dict(report.metadata or {}),
-            "coding_context_state_enabled": True,
+            "coding_context_enabled": True,
             "coding_context_generation": view.state.generation,
             "coding_context_prompt_tail_start_index": view.state.prompt_tail_start_index,
             "coding_context_compacted_until_index": view.state.compacted_until_index,
@@ -907,15 +889,13 @@ class ContextBuilder:
     def _build_system_prompt(
         self,
         *,
-        profile_prompt: str,
+        agent_instructions: str,
         instruction_block: str,
-        skill_catalog_block: str,
         runtime_guidance: str,
     ) -> str:
         sections = [
-            profile_prompt,
+            agent_instructions,
             instruction_block,
-            skill_catalog_block,
             runtime_guidance,
         ]
         return "\n\n".join(section for section in sections if section.strip())
@@ -930,9 +910,9 @@ class ContextBuilder:
             return
         cls._guidance_registry.append(item)
 
-    def _prefix_fingerprint(self, profile) -> str:
+    def _prefix_fingerprint(self, agent_spec) -> str:
         return self.prompt_assets_service.fingerprint(
-            profile,
+            agent_spec,
             runtime_guidance=self._runtime_guidance(),
         )
     
@@ -947,9 +927,8 @@ class ContextBuilder:
         state: BuildState,
     ) -> ContextBuildReport:
         messages = state.messages
-        profile_prompt = state.profile_prompt
+        agent_instructions = state.agent_instructions
         instruction_sections = state.instruction_sections
-        skill_catalog = state.skill_catalog
         runtime_guidance = state.runtime_guidance
         system_prompt = state.system_prompt
         budgeted_history = state.budgeted_history
@@ -977,19 +956,8 @@ class ContextBuilder:
         context_frame = state.context_frame
         reductions = state.reductions
         sections = [
-            ContextSection.from_text("system_profile", profile_prompt),
+            ContextSection.from_text("agent_instructions", agent_instructions),
             *instruction_sections,
-            ContextSection.from_text(
-                "skill_catalog",
-                skill_catalog.rendered_text,
-                raw_text=skill_catalog.raw_text,
-                budget_chars=skill_catalog.budget_chars,
-                truncated=skill_catalog.truncated,
-                metadata={
-                    "transport": "system_prompt",
-                    **skill_catalog.metadata,
-                },
-            ),
             ContextSection.from_text("runtime_guidance", runtime_guidance),
             ContextSection.from_text(
                 "system_prompt",
@@ -1174,15 +1142,15 @@ class ContextBuilder:
                 return _message_text(message)
         return ""
 
-    def _budget_conversation_history_for_profile(
+    def _budget_conversation_history(
         self,
         history_messages: list[dict],
         *,
-        profile,
+        agent_spec,
         session=None,
     ) -> BudgetedMessages:
         rule = self.budgeter.rules.get("conversation_history")
-        if not self._coding_uses_active_turn_only_history(profile, session=session):
+        if not self._coding_uses_active_turn_only_history(agent_spec, session=session):
             return budget_conversation_history(
                 history_messages,
                 enabled=self.budgeter.enabled,
@@ -1230,10 +1198,10 @@ class ContextBuilder:
             },
         )
 
-    def _active_turn_rule_for_profile(self, profile, *, session=None) -> Any:
+    def _active_turn_rule(self, agent_spec, *, session=None) -> Any:
         rule = self.budgeter.rules.get("active_turn")
         if rule is None or not self._coding_uses_active_turn_only_history(
-            profile,
+            agent_spec,
             session=session,
         ):
             return rule
@@ -1246,14 +1214,14 @@ class ContextBuilder:
             floor_chars=max(0, int(rule.floor_chars) + int(history_rule.floor_chars)),
         )
 
-    def _annotate_active_turn_budget_for_profile(
+    def _annotate_active_turn_budget(
         self,
         budgeted: BudgetedMessages,
         *,
-        profile,
+        agent_spec,
         session=None,
     ) -> BudgetedMessages:
-        if not self._coding_uses_active_turn_only_history(profile, session=session):
+        if not self._coding_uses_active_turn_only_history(agent_spec, session=session):
             return budgeted
         history_rule = self.budgeter.rules.get("conversation_history")
         transferred_budget = max(0, int(getattr(history_rule, "budget_chars", 0) or 0))
@@ -1279,15 +1247,15 @@ class ContextBuilder:
             reduction=reduction,
         )
 
-    def _coding_context_state_enabled(self, profile, *, session=None) -> bool:
+    def _coding_context_enabled(self, agent_spec, *, session=None) -> bool:
         return (
             bool(
-                str(getattr(profile, "tool_mode", "") or "")
+                str(getattr(agent_spec, "tool_mode", "") or "")
                 in {"coding", "teammate"}
             )
             and callable(self.coding_context_view_builder)
             and self._coding_uses_active_turn_only_history(
-                profile,
+                agent_spec,
                 session=session,
             )
         )
@@ -1296,7 +1264,7 @@ class ContextBuilder:
         self,
         prefix: ContextPrefix,
         *,
-        profile,
+        agent_spec,
         session=None,
         active_turn_start_index: int | None,
     ) -> bool:
@@ -1305,7 +1273,7 @@ class ContextBuilder:
         if prefix.active_turn_start_index != active_turn_start_index:
             return False
         coding_context = self._coding_uses_active_turn_only_history(
-            profile,
+            agent_spec,
             session=session,
         )
         history_is_coding = bool(
@@ -1317,7 +1285,7 @@ class ContextBuilder:
         self,
         prefix: ContextPrefix,
         *,
-        profile,
+        agent_spec,
         session=None,
         active_turn_start_index: int | None,
     ) -> bool:
@@ -1325,15 +1293,15 @@ class ContextBuilder:
             return False
         return self._can_reuse_prefix_history(
             prefix,
-            profile=profile,
+            agent_spec=agent_spec,
             session=session,
             active_turn_start_index=active_turn_start_index,
         )
 
-    def _coding_uses_active_turn_only_history(self, profile, *, session=None) -> bool:
-        if _normalized_mode(getattr(profile, "tool_mode", "")) == "coding":
+    def _coding_uses_active_turn_only_history(self, agent_spec, *, session=None) -> bool:
+        if _normalized_mode(getattr(agent_spec, "tool_mode", "")) == "coding":
             return True
-        if str(getattr(profile, "name", "") or "").startswith("subagent:"):
+        if str(getattr(agent_spec, "name", "") or "").startswith("subagent:"):
             return True
         if session is None:
             return False

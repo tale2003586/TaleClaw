@@ -56,6 +56,20 @@ class MemoryCommandService:
         self._authorize(proposal, context)
         return self._create_or_merge(proposal, context, MemoryStatus.CANDIDATE)
 
+    def record_verified_conclusion(
+        self,
+        proposal: MemoryWriteProposal,
+        context: MemoryContext,
+    ) -> MemoryItem:
+        self._authorize(proposal, context)
+        if proposal.source_type is not MemorySourceType.CODING_CONCLUSION:
+            raise ValueError("verified conclusion must use CODING_CONCLUSION source.")
+        if not proposal.evidence or not all(
+            bool(evidence.metadata.get("verified")) for evidence in proposal.evidence
+        ):
+            raise ValueError("verified conclusion requires verified evidence.")
+        return self._create_or_merge(proposal, context, MemoryStatus.ACTIVE)
+
     def confirm(self, memory_id: str, context: MemoryContext) -> MemoryItem:
         item = self._owned(memory_id, context)
         updated = self.repository.transition(MemoryTransition(
