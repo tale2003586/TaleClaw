@@ -40,6 +40,7 @@ class RecordingTaskRunner:
         agent_spec,
         workspace_root=None,
         cancel_requested=None,
+        on_text=None,
     ) -> str:
         self.calls.append((parent_session, user_text, agent_spec, workspace_root))
         return "coding task completed"

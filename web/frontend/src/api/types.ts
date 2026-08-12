@@ -204,6 +204,8 @@ export interface TraceStep { number: number; events: TraceEvent[] }
 export type ChatStreamEvent =
   | { type: "delta"; text?: string }
   | { type: "thinking"; text?: string }
+  | { type: "assistant_segment"; step?: number; has_content?: boolean; final?: boolean }
+  | { type: "assistant_completed"; step?: number; reason?: string }
   | { type: "status"; status?: string; text?: string }
   | ({ type: "event" } & Record<string, unknown>)
   | ({ type: "complete" } & Record<string, unknown>)

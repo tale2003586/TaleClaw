@@ -172,6 +172,7 @@ class CodingSessionHandoffTests(unittest.TestCase):
                 user_text,
                 agent_spec,
                 cancel_requested=None,
+                on_text=None,
             ) -> str:
                 parent_session.metadata[PENDING_CODING_TASK_SUMMARY_METADATA_KEY] = {
                     "task_id": "coding-abcdef12",
