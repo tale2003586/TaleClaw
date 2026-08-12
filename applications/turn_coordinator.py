@@ -6,7 +6,12 @@ from runtime.context.long_content import LongContentDetector
 from runtime.context.events import ContextEventType
 from runtime.runtime import RunContext, Runtime
 from runtime.execution.state import RunExecutionState
-from runtime.trace.events import RUN_COMPLETED, RUN_FAILED
+from runtime.trace.events import (
+    RUN_COMPLETED,
+    RUN_FAILED,
+    TURN_COMPLETED,
+    TURN_FINALIZE_STARTED,
+)
 from runtime.trace.run_state import RunState
 from runtime.trace.trace_store import event_preview
 from runtime.routing.agent_router import AgentRouter
@@ -268,6 +273,7 @@ class TurnCoordinator:
                 "user_text": inbound.content,
                 "agent_spec": route.agent_spec,
                 "cancel_requested": cancel_requested,
+                "on_text": on_text,
             }
             workspace_root = (inbound.metadata or {}).get("workspace_root")
             if workspace_root:
@@ -291,7 +297,6 @@ class TurnCoordinator:
                 reply,
                 metadata=assistant_metadata,
             )
-            self._emit_text(on_text, reply)
             return reply
         agent_spec = route.agent_spec
         if self.runtime is None:
@@ -321,6 +326,9 @@ class TurnCoordinator:
             self.plugin_manager.after_turn(inbound, session, reply)
 
     async def _deliver(self, session, inbound, reply, route, run_state, on_text) -> None:
+        self._trace(run_state, TURN_FINALIZE_STARTED, {
+            "reply_chars": len(str(reply or "")),
+        })
         self._finish_run(
             run_state,
             session,
@@ -333,6 +341,9 @@ class TurnCoordinator:
             chat_id=inbound.chat_id,
             content=reply,
         ))
+        self._trace(run_state, TURN_COMPLETED, {
+            "status": run_state.status,
+        })
 
     def _emit_text(
         self,

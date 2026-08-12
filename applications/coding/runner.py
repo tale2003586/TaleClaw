@@ -111,6 +111,7 @@ class CodingApplication:
         agent_spec: AgentSpec,
         workspace_root=None,
         cancel_requested=None,
+        on_text=None,
         run_state=None,
         trace_store=None,
     ) -> str:
@@ -219,6 +220,7 @@ class CodingApplication:
             user_text,
             RunContext(
                 session=record.session,
+                on_text=on_text,
                 cancel_requested=cancel_requested,
                 checkpoint_callback=lambda session: self.sessions.save(session),
                 run_state=run_state,

@@ -9,6 +9,7 @@ such as nginx/Caddy and restrict direct access to the Python process.
 import argparse
 import asyncio
 import base64
+from copy import deepcopy
 import hmac
 import json
 import logging
@@ -147,6 +148,8 @@ class AgentService:
         self._session_title_service: WebSessionTitleService | None = None
         self._shutdown_event: asyncio.Event | None = None
         self._request_tasks: set[asyncio.Task[Any]] = set()
+        self._background_tasks: set[asyncio.Task[Any]] = set()
+        self._session_title_tasks: dict[str, asyncio.Task[Any]] = {}
         self._stopping = False
         self._stopped = threading.Event()
 
@@ -360,6 +363,10 @@ class AgentService:
     async def _stop_async(self) -> None:
         current = asyncio.current_task()
         tasks = [task for task in self._request_tasks if task is not current]
+        tasks.extend(
+            task for task in self._background_tasks
+            if task is not current and task not in tasks
+        )
         for task in tasks:
             if not task.done():
                 task.cancel()
@@ -382,6 +389,8 @@ class AgentService:
                         sessions.close()
         finally:
             self._pending.clear()
+            self._background_tasks.clear()
+            self._session_title_tasks.clear()
             self._session_locks = None
             self._session_title_service = None
 
@@ -427,40 +436,115 @@ class AgentService:
             if model_profile:
                 metadata["model_profile"] = str(model_profile)
             try:
-                await self._runtime.run_message(
+                run_state = await self._runtime.run_message(
                     content=content,
                     channel="web",
                     chat_id=scoped_chat_id,
                     metadata=metadata,
                     on_text=on_text,
                 )
-                await self._ensure_session_title(session_key)
-                return await asyncio.wait_for(
+                reply = await asyncio.wait_for(
                     reply_future,
                     timeout=max(1, int(reply_timeout)),
                 )
+                self._schedule_session_title(
+                    session_key,
+                    run_id=str(getattr(run_state, "run_id", "") or ""),
+                )
+                return reply
             finally:
                 self._pending.pop(scoped_chat_id, None)
 
-    async def _ensure_session_title(self, session_key: str) -> None:
+    async def _ensure_session_title(
+        self,
+        session_key: str,
+        *,
+        run_id: str = "",
+    ) -> None:
         if self._runtime is None or self._session_title_service is None:
             return
         sessions = getattr(self._runtime.services, "session_manager", None)
         if sessions is None:
             return
-        session = sessions.get_or_create(session_key)
+        async with self._lock_for_session(session_key):
+            session = sessions.get_or_create(session_key)
+            title_session = deepcopy(session)
+        started = asyncio.get_running_loop().time()
+        logger.info(
+            "session_title.started run_id=%s session_id=%s",
+            run_id,
+            session_key,
+        )
         try:
-            result = await self._session_title_service.ensure_title(session)
+            result = await self._session_title_service.ensure_title(title_session)
+        except asyncio.CancelledError:
+            raise
         except Exception:
+            logger.exception(
+                "session_title.failed run_id=%s session_id=%s",
+                run_id,
+                session_key,
+            )
             return
         if result.updated:
-            sessions.save(session)
+            async with self._lock_for_session(session_key):
+                session = sessions.get_or_create(session_key)
+                if not str((session.metadata or {}).get("title") or "").strip():
+                    session.metadata["title"] = result.title
+                    sessions.save(session)
+        logger.info(
+            "session_title.completed run_id=%s session_id=%s duration_ms=%.3f source=%s updated=%s",
+            run_id,
+            session_key,
+            (asyncio.get_running_loop().time() - started) * 1000,
+            result.source,
+            result.updated,
+        )
+
+    def _schedule_session_title(self, session_key: str, *, run_id: str = "") -> None:
+        if self._stopping or self._loop is None or not self._loop.is_running():
+            return
+        existing = self._session_title_tasks.get(session_key)
+        if existing is not None and not existing.done():
+            return
+        task = self._loop.create_task(
+            self._ensure_session_title(session_key, run_id=run_id),
+            name=f"session-title:{session_key}",
+        )
+        self._background_tasks.add(task)
+        self._session_title_tasks[session_key] = task
+        task.add_done_callback(
+            lambda completed: self._background_task_done(
+                completed,
+                session_key=session_key,
+            )
+        )
+
+    def _background_task_done(
+        self,
+        task: asyncio.Task[Any],
+        *,
+        session_key: str = "",
+    ) -> None:
+        self._background_tasks.discard(task)
+        if session_key and self._session_title_tasks.get(session_key) is task:
+            self._session_title_tasks.pop(session_key, None)
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:
+            logger.exception("Agent background task failed: %s", task.get_name())
 
     async def _delete_session_async(self, session_id: str) -> bool:
         if self._runtime is None or self._session_locks is None:
             raise RuntimeError("Agent runtime is not started.")
 
         async with self._lock_for_session(session_id):
+            title_task = self._session_title_tasks.pop(session_id, None)
+            if title_task is not None and not title_task.done():
+                title_task.cancel()
+                await asyncio.gather(title_task, return_exceptions=True)
             sessions = getattr(
                 getattr(self._runtime, "coordinator", None),
                 "sessions",
@@ -1876,6 +1960,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                     events.put({"type": "thinking", "text": text})
 
                 setattr(on_text, "on_thinking", on_thinking)
+
+                def on_assistant_segment(payload: dict[str, Any]) -> None:
+                    events.put({"type": "assistant_segment", **payload})
+
+                def on_assistant_completed(payload: dict[str, Any]) -> None:
+                    events.put({"type": "assistant_completed", **payload})
+
+                setattr(on_text, "on_assistant_segment", on_assistant_segment)
+                setattr(on_text, "on_assistant_completed", on_assistant_completed)
                 ask_kwargs = dict(
                     session_id=session_id,
                     content=agent_content,

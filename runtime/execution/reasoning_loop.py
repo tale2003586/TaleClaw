@@ -41,6 +41,8 @@ from runtime.ports import (
     ToolPort,
 )
 from runtime.trace.events import (
+    ASSISTANT_COMPLETED,
+    ASSISTANT_SEGMENT_COMPLETED,
     CONTEXT_BUILD_COMPLETED,
     CONTEXT_BUILD_STARTED,
     CONTEXT_SANITIZED,
@@ -353,9 +355,23 @@ class ReasoningLoop:
 
             empty_model_responses = 0
             self._after_reasoning_step(session, response)
+            self._complete_assistant_segment(
+                on_text,
+                response=response,
+                reasoning_step=reasoning_steps,
+                run_state=run_state,
+                trace_store=trace_store,
+            )
             tool_calls = _response_tool_calls_payload(response)
 
             if not response.tool_calls:
+                self._complete_assistant_response(
+                    on_text,
+                    response=response,
+                    reasoning_step=reasoning_steps,
+                    run_state=run_state,
+                    trace_store=trace_store,
+                )
                 self._checkpoint_reasoning_step(
                     session,
                     agent_spec,
@@ -740,6 +756,35 @@ class ReasoningLoop:
             span_id=span_id,
             parent_span_id=parent_span_id,
         )
+        first_delta_at: float | None = None
+        last_delta_at: float | None = None
+
+        def emit_text(text: str) -> None:
+            nonlocal first_delta_at, last_delta_at
+            now = time.perf_counter()
+            if first_delta_at is None:
+                first_delta_at = now
+                self._trace(
+                    trace_store,
+                    run_state,
+                    "stream.first_delta",
+                    {
+                        "model": model,
+                        "provider": provider_name,
+                        "since_model_start_ms": round((now - started) * 1000, 3),
+                    },
+                    step=reasoning_step,
+                    span_id=span_id,
+                    parent_span_id=parent_span_id,
+                )
+            last_delta_at = now
+            if on_text is not None:
+                on_text(text)
+
+        on_thinking = getattr(on_text, "on_thinking", None)
+        if callable(on_thinking):
+            setattr(emit_text, "on_thinking", on_thinking)
+
         try:
             response = invoke_model(
                 provider,
@@ -747,7 +792,7 @@ class ReasoningLoop:
                 messages=context_messages,
                 tools=tools,
                 max_tokens=request_max_tokens,
-                on_text=on_text,
+                on_text=emit_text if on_text is not None else None,
                 thinking_enabled=bool(
                     getattr(getattr(self, "run_context", None), "state", None)
                     and getattr(self.run_context.state, "thinking_enabled", False)
@@ -796,7 +841,22 @@ class ReasoningLoop:
             )
             raise
         if on_text is not None and not use_stream and response.content:
-            on_text(response.content)
+            emit_text(response.content)
+        if last_delta_at is not None:
+            self._trace(
+                trace_store,
+                run_state,
+                "stream.last_delta",
+                {
+                    "model": model,
+                    "provider": provider_name,
+                    "since_model_start_ms": round((last_delta_at - started) * 1000, 3),
+                    "stream": use_stream,
+                },
+                step=reasoning_step,
+                span_id=span_id,
+                parent_span_id=parent_span_id,
+            )
         completed_payload = {
             "model": model,
             "provider": provider_name,
@@ -884,6 +944,55 @@ class ReasoningLoop:
                 "role": "assistant",
                 "content": response.content or "",
             })
+
+    def _complete_assistant_segment(
+        self,
+        on_text,
+        *,
+        response,
+        reasoning_step: int,
+        run_state=None,
+        trace_store=None,
+    ) -> None:
+        payload = {
+            "step": reasoning_step,
+            "has_content": bool(response.content),
+            "tool_call_count": len(response.tool_calls or ()),
+            "final": not bool(response.tool_calls),
+        }
+        self._trace(
+            trace_store,
+            run_state,
+            ASSISTANT_SEGMENT_COMPLETED,
+            payload,
+            step=reasoning_step,
+            span_id=_step_span_id(run_state, reasoning_step),
+        )
+        _notify_stream_callback(on_text, "on_assistant_segment", payload, run_state)
+
+    def _complete_assistant_response(
+        self,
+        on_text,
+        *,
+        response,
+        reasoning_step: int,
+        run_state=None,
+        trace_store=None,
+    ) -> None:
+        payload = {
+            "step": reasoning_step,
+            "content_chars": len(str(response.content or "")),
+            "reason": "assistant_final_message",
+        }
+        self._trace(
+            trace_store,
+            run_state,
+            ASSISTANT_COMPLETED,
+            payload,
+            step=reasoning_step,
+            span_id=_step_span_id(run_state, reasoning_step),
+        )
+        _notify_stream_callback(on_text, "on_assistant_completed", payload, run_state)
 
     def _execute_tool_calls(
         self,
@@ -1255,6 +1364,28 @@ class ReasoningLoop:
             checkpoint_callback(session)
         if on_text is not None:
             on_text(message)
+        completion_payload = {
+            "step": reasoning_step or 0,
+            "content_chars": len(message),
+            "reason": reason_value,
+        }
+        self._trace(
+            trace_store,
+            run_state,
+            ASSISTANT_COMPLETED,
+            completion_payload,
+            step=reasoning_step,
+            span_id=(
+                _step_span_id(run_state, reasoning_step)
+                if reasoning_step is not None else None
+            ),
+        )
+        _notify_stream_callback(
+            on_text,
+            "on_assistant_completed",
+            completion_payload,
+            run_state,
+        )
         if run_state is not None:
             run_state.stop(reason_value, message)
             if trace_store is not None:
@@ -1563,6 +1694,16 @@ def _response_tool_calls_payload(response) -> list[dict]:
             "arguments": getattr(call, "arguments", {}),
         })
     return payload
+
+
+def _notify_stream_callback(on_text, attribute: str, payload: dict, run_state) -> None:
+    callback = getattr(on_text, attribute, None)
+    if not callable(callback):
+        return
+    callback({
+        **payload,
+        "run_id": str(getattr(run_state, "run_id", "") or ""),
+    })
 
 
 def _tool_names(tools: list[dict]) -> list[str]:

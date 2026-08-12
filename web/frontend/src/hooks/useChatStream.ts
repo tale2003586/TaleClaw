@@ -6,7 +6,7 @@ export interface ActivityItem { id: string; event: string; label: string; step: 
 export interface ActivitySnapshot { sessionId: string; items: ActivityItem[]; startedAt: number; finishedAt: number; status: "complete" | "error" }
 
 export function useChatStream(onComplete: (session: SessionDto | null, reply: string, activity: ActivitySnapshot) => void) {
-  const [status, setStatus] = useState<"idle" | "streaming" | "stopping" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "streaming" | "finalizing" | "stopping" | "error">("idle");
   const [text, setText] = useState(""); const [error, setError] = useState("");
   const [thinking, setThinking] = useState("");
   const [progressText, setProgressText] = useState("");
@@ -20,15 +20,18 @@ export function useChatStream(onComplete: (session: SessionDto | null, reply: st
     let complete: Record<string, unknown> | null = null;
     let accumulated = "";
     let accumulatedThinking = "";
+    let separateNextSegment = false;
     let activityItems: ActivityItem[] = [];
     try {
       await streamNdjson<ChatStreamEvent>("/api/chat/stream", { session_id: sessionId, message, attachments, thinking_enabled: thinkingEnabled, ...(modelProfile ? { model_profile: modelProfile } : {}), ...(workspaceRoot ? { workspace_root: workspaceRoot } : {}) }, (event) => {
-        if (event.type === "delta") { accumulated += event.text || ""; setText(accumulated); setProgressText(""); }
+        if (event.type === "delta") { const delta = event.text || ""; if (delta && separateNextSegment && accumulated) accumulated += "\n\n"; separateNextSegment = false; accumulated += delta; setText(accumulated); setProgressText(""); }
         else if (event.type === "thinking") { accumulatedThinking += event.text || ""; setThinking(accumulatedThinking); setProgressText(""); }
+        else if (event.type === "assistant_segment") { if (event.has_content && !event.final) separateNextSegment = true; }
+        else if (event.type === "assistant_completed") { setStatus("finalizing"); setProgressText(event.reason === "user_cancelled" ? "已停止，正在保存会话…" : "回答完成，正在保存会话…"); }
         else if (event.type === "status") setProgressText(event.text || "");
         else if (event.type === "event") {
           const raw = event as Record<string, unknown>; const name = String(raw.event || "runtime.event");
-          if (!name.startsWith("tool.call.")) return;
+          if (!name.startsWith("tool.call.") && !name.startsWith("subagent.")) return;
           const item = { id: `${String(raw.span_id || "")}:${name}:${activityItems.length}`, event: name, label: activityLabel(raw), step: numberOrNull(raw.step), receivedAt: performance.now(), raw };
           activityItems = [...activityItems, item]; setActivity(activityItems);
         } else if (event.type === "complete") complete = event as Record<string, unknown>;

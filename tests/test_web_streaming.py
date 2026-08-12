@@ -286,6 +286,15 @@ class StreamingHttpTests(unittest.TestCase):
                 self.thinking_enabled = thinking_enabled
                 on_text("你")
                 on_text("好")
+                on_text.on_assistant_segment({
+                    "step": 1,
+                    "has_content": True,
+                    "final": True,
+                })
+                on_text.on_assistant_completed({
+                    "step": 1,
+                    "reason": "assistant_final_message",
+                })
                 return "你好"
 
         agent_service = AgentService()
@@ -312,7 +321,17 @@ class StreamingHttpTests(unittest.TestCase):
         self.assertFalse(agent_service.thinking_enabled)
         self.assertEqual("web:local:default", agent_service.session_key)
         self.assertTrue(agent_service.unsubscribed)
-        self.assertEqual(["event", "delta", "delta", "complete"], [event["type"] for event in events])
+        self.assertEqual(
+            [
+                "event",
+                "delta",
+                "delta",
+                "assistant_segment",
+                "assistant_completed",
+                "complete",
+            ],
+            [event["type"] for event in events],
+        )
         self.assertEqual("tool.call.started", events[0]["event"])
         self.assertEqual("read_file", events[0]["tool"])
         self.assertEqual('{"path":"README.md"}', events[0]["args"])

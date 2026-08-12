@@ -11,6 +11,8 @@
   "model.call.started",
   "model.call.completed",
   "model_returned",
+  "assistant.segment.completed",
+  "assistant.completed",
   "reasoning.step.completed",
   "reasoning_loop_completed",
   "workspace.snapshot.captured",

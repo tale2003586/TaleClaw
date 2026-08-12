@@ -254,20 +254,79 @@ def test_agent_service_streams_body_before_generating_and_saving_title():
 
     async def ask():
         service._loop = asyncio.get_running_loop()
-        return await service._ask_async(
+        reply = await service._ask_async(
             session_id="stable-id",
             content="first question",
             user_id="local",
             user_role="admin",
             on_text=emitted.append,
         )
+        events.append("reply")
+        await asyncio.gather(*service._background_tasks)
+        return reply
 
     reply = asyncio.run(ask())
 
     assert reply == "流式正文"
     assert emitted == ["流式", "正文"]
-    assert events == ["delta-1", "delta-2", "title"]
+    assert events == ["delta-1", "delta-2", "reply", "title"]
     assert manager.saved[-1] == ("web:local:stable-id", "首轮主题")
+
+
+def test_agent_service_reply_does_not_wait_for_slow_title_generation():
+    manager = SimpleNamespace(
+        session=Session(id="web:local:slow-title"),
+        saved=[],
+    )
+    manager.get_or_create = lambda session_id: manager.session
+    manager.save = lambda session: manager.saved.append(
+        session.metadata.get("title", "")
+    )
+    service = AgentService()
+    title_started = asyncio.Event()
+    release_title = asyncio.Event()
+
+    class TitleService:
+        async def ensure_title(self, session):
+            title_started.set()
+            await release_title.wait()
+            session.metadata["title"] = "后台标题"
+            return SessionTitleResult("后台标题", "model", True)
+
+    class Runtime:
+        services = SimpleNamespace(session_manager=manager)
+
+        async def run_message(self, *, content, channel, chat_id, metadata, on_text):
+            manager.session.add_message("user", content)
+            manager.session.add_message("assistant", "answer")
+            await service._handle_outbound(
+                SimpleNamespace(chat_id=chat_id, content="answer")
+            )
+            return SimpleNamespace(run_id="run-slow-title")
+
+    service._runtime = Runtime()
+    service._session_title_service = TitleService()
+    service._session_locks = {}
+
+    async def ask():
+        service._loop = asyncio.get_running_loop()
+        reply = await asyncio.wait_for(
+            service._ask_async(
+                session_id="slow-title",
+                content="question",
+                user_id="local",
+                user_role="admin",
+            ),
+            timeout=0.1,
+        )
+        await asyncio.wait_for(title_started.wait(), timeout=0.1)
+        assert manager.saved == []
+        release_title.set()
+        await asyncio.gather(*service._background_tasks)
+        return reply
+
+    assert asyncio.run(ask()) == "answer"
+    assert manager.saved == ["后台标题"]
 
 
 def test_agent_service_title_failure_does_not_fail_completed_reply():
@@ -297,12 +356,14 @@ def test_agent_service_title_failure_does_not_fail_completed_reply():
 
     async def ask():
         service._loop = asyncio.get_running_loop()
-        return await service._ask_async(
+        reply = await service._ask_async(
             session_id="stable-id",
             content="question",
             user_id="local",
             user_role="admin",
         )
+        await asyncio.gather(*service._background_tasks)
+        return reply
 
     assert asyncio.run(ask()) == "answer"
 
@@ -353,13 +414,16 @@ def test_agent_service_timeout_keeps_stream_and_persists_fallback_title():
 
     async def ask():
         service._loop = asyncio.get_running_loop()
-        return await service._ask_async(
+        reply = await service._ask_async(
             session_id="timeout",
             content="超时后使用首问题",
             user_id="local",
             user_role="admin",
             on_text=lambda text: events.append("on_text"),
         )
+        assert not manager.saved_titles or manager.saved_titles[-1] == ""
+        await asyncio.gather(*service._background_tasks)
+        return reply
 
     reply = asyncio.run(ask())
 

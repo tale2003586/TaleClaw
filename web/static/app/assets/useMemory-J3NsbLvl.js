@@ -1,1 +1,0 @@
-import{r as c,n as i,q as m}from"./index-DHx5vdZz.js";function l(){var o,n;const r=c.useCallback(async a=>(await i("/api/memory",{signal:a})).files||[],[]),s=m(r),[t,u]=c.useState("MEMORY.md"),e=((o=s.data)==null?void 0:o.find(a=>a.name===t))||((n=s.data)==null?void 0:n[0])||null;return{...s,active:(e==null?void 0:e.name)||t,setActive:u,current:e}}export{l as u};
