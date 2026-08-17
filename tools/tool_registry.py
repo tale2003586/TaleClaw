@@ -1,41 +1,252 @@
 import json
 import re
+from dataclasses import dataclass, field
 from typing import Callable, Any
 
 from tools.policy import UNLOCKED_TOOLS_KEY, ToolPolicy
 from tools.spec import ToolExposure, ToolRisk, ToolSpec, ToolStateEffect
-_SESSION_SCOPED_TOOLS = {
-    "update_task_state",
-    "bash",
-    "list_files",
-    "rg",
-    "grep",
-    "nl",
-    "repo_map",
-    "code_outline",
-    "read_file",
-    "read_files",
-    "read_artifact",
-    "write_file",
-    "edit_file",
-    "git_status",
-    "git_diff",
-    "git_log",
-    "git_branch",
-    "git_add",
-    "git_commit",
-    "memorize",
-    "recall_memory",
-    "storage_list_files",
-    "storage_read_file",
-    "storage_write_file",
-    "sandbox_list_files",
-    "sandbox_read_file",
-    "sandbox_write_file",
-    "publish_artifact",
-    "task",
-    "parallel_tasks",
-}
+from tools.schema import CORE_TASK_STATE_TOOL, LEAD_TOOLS, SEARCH_TOOLS, TEAMMATE_TOOLS
+from tools.handlers import make_lead_handlers, make_teammate_handlers
+
+
+_CODING_TEAMMATE = frozenset({"coding", "teammate"})
+_ALL_AGENT_MODES = frozenset({"bot", "coding", "teammate"})
+
+
+@dataclass(frozen=True)
+class BuiltinToolDeclaration:
+    """Canonical semantic declaration for one built-in tool.
+
+    Schemas remain in ``tools.schema`` and handlers remain in
+    ``tools.handlers``. This object owns the runtime semantics used to create
+    the ToolSpec which the registry, policy, discovery, and executor consume.
+    """
+
+    name: str
+    allowed_modes: frozenset[str] = _CODING_TEAMMATE
+    risk: ToolRisk = ToolRisk.NORMAL
+    idempotent: bool = True
+    side_effect: bool = False
+    state_effect: ToolStateEffect = ToolStateEffect.NONE
+    exposure: ToolExposure = ToolExposure.DEFERRED
+    discovery_summary: str = ""
+    capabilities: tuple[str, ...] = ()
+    aliases: tuple[str, ...] = ()
+    keywords: tuple[str, ...] = ()
+    allowed_agent_types: frozenset[str] = field(default_factory=frozenset)
+    condition: str = ""
+    session_scoped: bool = False
+    admin_only: bool = False
+    policy_tag: str = ""
+    runtime_parameters: frozenset[str] = field(default_factory=frozenset)
+    schemas_by_mode: dict[str, dict] = field(default_factory=dict)
+    teammate_exposure: ToolExposure | None = None
+    registry_owned_execution: bool = False
+
+    def bind(self, schema: dict, handler: Callable[..., str], *, source: str) -> ToolSpec:
+        schema_name = str(schema.get("function", {}).get("name") or "")
+        if schema_name != self.name:
+            raise ValueError(
+                f"Builtin declaration {self.name!r} does not match schema {schema_name!r}."
+            )
+        exposure = self.exposure
+        if self.teammate_exposure is not None and source.startswith("teammate:"):
+            exposure = self.teammate_exposure
+        fallback_term = self.name.replace("_", " ")
+        return ToolSpec(
+            schema=schema,
+            handler=handler,
+            allowed_modes=self.allowed_modes,
+            risk=self.risk,
+            idempotent=self.idempotent,
+            side_effect=self.side_effect,
+            state_effect=self.state_effect,
+            exposure=exposure,
+            discovery_summary=self.discovery_summary,
+            capabilities=self.capabilities or (fallback_term,),
+            aliases=self.aliases or (self.name,),
+            keywords=self.keywords or (fallback_term,),
+            allowed_agent_types=self.allowed_agent_types,
+            condition=self.condition,
+            source=source,
+            session_scoped=self.session_scoped,
+            admin_only=self.admin_only,
+            policy_tag=self.policy_tag,
+            runtime_parameters=self.runtime_parameters,
+            schemas_by_mode=self.schemas_by_mode,
+        )
+
+
+def _builtin(name: str, **kwargs) -> BuiltinToolDeclaration:
+    return BuiltinToolDeclaration(name=name, **kwargs)
+
+
+_HIGH_RISK = ToolRisk.HIGH
+_LOW_RISK = ToolRisk.LOW
+_PRELOADED = ToolExposure.PRELOADED
+_CONDITIONAL = ToolExposure.CONDITIONAL
+_EXTERNAL_EFFECT = ToolStateEffect.EXTERNAL
+
+
+BUILTIN_TOOL_DECLARATIONS = (
+    _builtin("bash", risk=_HIGH_RISK, idempotent=False, side_effect=True,
+             state_effect=_EXTERNAL_EFFECT, exposure=_PRELOADED, session_scoped=True),
+    _builtin("list_files", risk=_LOW_RISK, exposure=_PRELOADED, session_scoped=True),
+    _builtin("rg", risk=_LOW_RISK, exposure=_PRELOADED, session_scoped=True),
+    _builtin("grep", risk=_LOW_RISK, session_scoped=True),
+    _builtin("nl", risk=_LOW_RISK, session_scoped=True),
+    _builtin("repo_map", risk=_LOW_RISK, session_scoped=True),
+    _builtin("code_outline", risk=_LOW_RISK, exposure=_PRELOADED, session_scoped=True),
+    _builtin("read_file", risk=_LOW_RISK, exposure=_PRELOADED, session_scoped=True),
+    _builtin("read_files", risk=_LOW_RISK, exposure=_PRELOADED, session_scoped=True),
+    _builtin("read_artifact", allowed_modes=_ALL_AGENT_MODES, risk=_LOW_RISK,
+             session_scoped=True),
+    _builtin("retrieve_tool_result", allowed_modes=_ALL_AGENT_MODES, risk=_LOW_RISK,
+             discovery_summary="Retrieve a previously externalized large tool result.",
+             capabilities=("tool result retrieval", "large result access"),
+             aliases=("retrieve result", "读取工具结果", "取回大结果"),
+             keywords=("artifact", "tool output", "result reference")),
+    _builtin("write_file", risk=_HIGH_RISK, idempotent=False, side_effect=True,
+             state_effect=_EXTERNAL_EFFECT, exposure=_PRELOADED, session_scoped=True),
+    _builtin("edit_file", risk=_HIGH_RISK, idempotent=False, side_effect=True,
+             state_effect=_EXTERNAL_EFFECT, exposure=_PRELOADED, session_scoped=True),
+    _builtin("git_status", risk=_LOW_RISK, session_scoped=True),
+    _builtin("git_diff", risk=_LOW_RISK, session_scoped=True),
+    _builtin("git_log", risk=_LOW_RISK, session_scoped=True),
+    _builtin("git_branch", risk=_LOW_RISK, session_scoped=True),
+    _builtin("git_add", risk=_HIGH_RISK, idempotent=False, side_effect=True,
+             state_effect=_EXTERNAL_EFFECT, session_scoped=True,
+             discovery_summary="Stage selected repository changes for a Git commit.",
+             capabilities=("git stage", "version control write"),
+             aliases=("stage changes", "stage these changes", "git add", "暂存修改"),
+             keywords=("git", "index", "commit preparation")),
+    _builtin("git_commit", risk=_HIGH_RISK, idempotent=False, side_effect=True,
+             state_effect=_EXTERNAL_EFFECT, session_scoped=True,
+             discovery_summary="Create a Git commit from staged changes.",
+             capabilities=("git commit", "version control write"),
+             aliases=("commit changes", "提交代码", "创建提交"),
+             keywords=("git", "commit", "版本控制")),
+    _builtin("load_skill", allowed_modes=_ALL_AGENT_MODES,
+             discovery_summary="Discover and load a specialized workflow from an installed skill.",
+             capabilities=("skill discovery", "specialized workflow", "procedure"),
+             aliases=("skill", "load workflow", "技能", "流程", "操作指南"),
+             keywords=("specialized instruction", "适合这个任务", "专业流程")),
+    _builtin("update_task_state", allowed_modes=frozenset({"bot", "coding", "hybrid", "teammate"}),
+             idempotent=False, side_effect=True, state_effect=_EXTERNAL_EFFECT,
+             exposure=_CONDITIONAL, condition="task_state_active", session_scoped=True,
+             runtime_parameters=frozenset({"_mode"}),
+             schemas_by_mode={"bot": CORE_TASK_STATE_TOOL, "hybrid": CORE_TASK_STATE_TOOL}),
+    _builtin("task_create", idempotent=False, side_effect=True, state_effect=_EXTERNAL_EFFECT),
+    _builtin("task_update", idempotent=False, side_effect=True, state_effect=_EXTERNAL_EFFECT),
+    _builtin("task_list", risk=_LOW_RISK),
+    _builtin("task_get", risk=_LOW_RISK),
+    _builtin("claim_task", idempotent=False, side_effect=True, state_effect=_EXTERNAL_EFFECT,
+             discovery_summary="Claim an available team task for execution.",
+             capabilities=("claim task", "team task coordination"),
+             aliases=("take task", "领取任务", "认领任务"), keywords=("task", "team", "claim")),
+    _builtin("background_run", risk=_HIGH_RISK, idempotent=False, side_effect=True,
+             state_effect=_EXTERNAL_EFFECT,
+             discovery_summary="Start a long-running command as a background task.",
+             capabilities=("background task", "long running command"),
+             aliases=("run in background", "后台运行", "后台任务"),
+             keywords=("async", "long process", "后台")),
+    _builtin("check_background", risk=_LOW_RISK),
+    _builtin("send_message", idempotent=False, side_effect=True, state_effect=_EXTERNAL_EFFECT,
+             teammate_exposure=_PRELOADED),
+    _builtin("read_inbox"),
+    _builtin("idle", allowed_modes=frozenset({"teammate"}), exposure=_PRELOADED),
+    _builtin("shutdown_response", allowed_modes=frozenset({"teammate"}), idempotent=False,
+             side_effect=True, state_effect=_EXTERNAL_EFFECT),
+    _builtin("plan_approval_request", allowed_modes=frozenset({"teammate"}), idempotent=False,
+             side_effect=True, state_effect=_EXTERNAL_EFFECT),
+    _builtin("task", allowed_modes=frozenset({"coding"}), idempotent=False, side_effect=True,
+             state_effect=_EXTERNAL_EFFECT, session_scoped=True,
+             runtime_parameters=frozenset({"_trace_store", "_run_state", "_parent_span_id"}),
+             discovery_summary="Delegate one bounded task to a specialized subagent.",
+             capabilities=("subagent", "delegate task", "research worker"),
+             aliases=("delegate", "spawn subagent", "子智能体", "委派", "拆任务"),
+             keywords=("agent", "worker", "parallel research", "子任务")),
+    _builtin("parallel_tasks", allowed_modes=frozenset({"coding"}), idempotent=False,
+             side_effect=True, state_effect=_EXTERNAL_EFFECT, session_scoped=True,
+             runtime_parameters=frozenset({"_trace_store", "_run_state", "_parent_span_id"}),
+             discovery_summary="Run multiple independent subagent tasks in parallel.",
+             capabilities=("parallel subagents", "parallel delegation", "fan out"),
+             aliases=("parallel agents", "并行子智能体", "并行分析", "并行委派"),
+             keywords=("subagent", "delegate", "workers", "拆任务")),
+    _builtin("compact", allowed_modes=frozenset({"coding"})),
+    _builtin("spawn_teammate", allowed_modes=frozenset({"coding"}), idempotent=False,
+             side_effect=True, state_effect=_EXTERNAL_EFFECT,
+             discovery_summary="Start a persistent coding teammate for collaborative work.",
+             capabilities=("teammate", "collaborative agent", "delegate coding"),
+             aliases=("spawn teammate", "启动队友", "协作智能体"),
+             keywords=("agent", "team", "collaboration", "协作")),
+    _builtin("list_teammates", allowed_modes=frozenset({"coding"}),
+             discovery_summary="List active collaborative teammates and their status.",
+             capabilities=("teammate status", "agent roster"),
+             aliases=("list agents", "队友列表", "智能体状态"), keywords=("team", "agents", "status")),
+    _builtin("broadcast", allowed_modes=frozenset({"coding"}), idempotent=False,
+             side_effect=True, state_effect=_EXTERNAL_EFFECT,
+             discovery_summary="Send one message to all active teammates.",
+             capabilities=("team broadcast", "agent communication"),
+             aliases=("message all agents", "广播消息", "通知所有队友"),
+             keywords=("team", "message", "communication")),
+    _builtin("shutdown_request", allowed_modes=frozenset({"coding"}), idempotent=False,
+             side_effect=True, state_effect=_EXTERNAL_EFFECT,
+             discovery_summary="Request a teammate to stop after completing safe cleanup.",
+             capabilities=("teammate shutdown", "agent lifecycle"),
+             aliases=("stop teammate", "关闭队友", "停止智能体"), keywords=("shutdown", "agent", "team")),
+    _builtin("shutdown_status", allowed_modes=frozenset({"coding"}),
+             discovery_summary="Inspect teammate shutdown request status.",
+             capabilities=("shutdown status", "agent lifecycle status"),
+             aliases=("check shutdown", "关闭状态"), keywords=("shutdown", "status", "agent")),
+    _builtin("plan_approval", allowed_modes=frozenset({"coding"}), idempotent=False,
+             side_effect=True, state_effect=_EXTERNAL_EFFECT,
+             discovery_summary="Approve or reject a teammate's submitted plan.",
+             capabilities=("plan approval", "teammate governance"),
+             aliases=("approve plan", "审批计划", "批准方案"), keywords=("plan", "approval", "team")),
+    _builtin("memorize", allowed_modes=_ALL_AGENT_MODES, idempotent=False, side_effect=True,
+             state_effect=ToolStateEffect.AGENT_STATE, session_scoped=True, policy_tag="memory.write",
+             discovery_summary="Save a durable fact or preference to long-term memory.",
+             capabilities=("memory write", "save preference", "remember fact"),
+             aliases=("remember", "记住", "保存偏好", "长期保存"),
+             keywords=("memory", "preference", "long term", "以后记得")),
+    _builtin("recall_memory", allowed_modes=_ALL_AGENT_MODES, session_scoped=True,
+             policy_tag="memory.read",
+             discovery_summary="Search long-term memory for prior facts and preferences.",
+             capabilities=("memory recall", "memory search", "prior context"),
+             aliases=("recall", "previous preference", "mentioned before", "回忆", "之前说过", "以前偏好"),
+             keywords=("memory", "previous preference", "长期记忆")),
+    _builtin("storage_list_files", allowed_modes=frozenset({"bot", "coding"}), risk=_LOW_RISK,
+             session_scoped=True),
+    _builtin("storage_read_file", allowed_modes=frozenset({"bot", "coding"}), risk=_LOW_RISK,
+             session_scoped=True),
+    _builtin("storage_write_file", allowed_modes=frozenset({"bot", "coding"}), idempotent=False,
+             side_effect=True, state_effect=_EXTERNAL_EFFECT, session_scoped=True),
+    _builtin("sandbox_list_files", allowed_modes=frozenset({"bot", "coding"}), risk=_LOW_RISK,
+             session_scoped=True),
+    _builtin("sandbox_read_file", allowed_modes=frozenset({"bot", "coding"}), risk=_LOW_RISK,
+             session_scoped=True),
+    _builtin("sandbox_write_file", allowed_modes=frozenset({"bot", "coding"}), idempotent=False,
+             side_effect=True, state_effect=_EXTERNAL_EFFECT, session_scoped=True),
+    _builtin("publish_artifact", allowed_modes=frozenset({"bot", "coding"}), idempotent=False,
+             side_effect=True, state_effect=_EXTERNAL_EFFECT, session_scoped=True),
+    _builtin("tool_search", allowed_modes=_ALL_AGENT_MODES, risk=_LOW_RISK, exposure=_PRELOADED,
+             registry_owned_execution=True),
+)
+
+
+def index_builtin_declarations(
+    declarations: tuple[BuiltinToolDeclaration, ...] | list[BuiltinToolDeclaration],
+) -> dict[str, BuiltinToolDeclaration]:
+    indexed: dict[str, BuiltinToolDeclaration] = {}
+    for declaration in declarations:
+        if declaration.name in indexed:
+            raise ValueError(f"Duplicate builtin tool declaration: {declaration.name}")
+        indexed[declaration.name] = declaration
+    return indexed
+
+
+_BUILTIN_DECLARATIONS_BY_NAME = index_builtin_declarations(BUILTIN_TOOL_DECLARATIONS)
 
 
 class ToolRegistry:
@@ -413,279 +624,67 @@ class ToolRegistry:
         return self._schema_for_mode(tool, mode)["function"].get("description", "")
 
 
-from .schema import CORE_TASK_STATE_TOOL, LEAD_TOOLS, SEARCH_TOOLS, TEAMMATE_TOOLS
-from .handlers import make_lead_handlers, make_teammate_handlers
-
-
 def build_lead_tool_registry(team=None, *, artifact_store=None) -> ToolRegistry:
-    registry = ToolRegistry()
     if team is None:
         from applications.coding.orchestration.teammate import TEAM
 
         team = TEAM
-    handlers = make_lead_handlers(team, artifact_store=artifact_store)
-
-    for schema in LEAD_TOOLS:
-        name = schema["function"]["name"]
-        handler = handlers.get(name)
-        if handler is None and name != "tool_search":
-            continue
-
-        registry.register(_builtin_spec(
-            schema,
-            handler or (lambda **kw: "tool_search is handled by ToolRegistry."),
-            source="lead",
-        ))
-
-    return registry
+    return build_builtin_registry(
+        schemas=LEAD_TOOLS,
+        handlers=make_lead_handlers(team, artifact_store=artifact_store),
+        source="lead",
+    )
 
 
 def build_teammate_tool_registry(name: str, *, artifact_store=None) -> ToolRegistry:
+    return build_builtin_registry(
+        schemas=TEAMMATE_TOOLS + SEARCH_TOOLS,
+        handlers=make_teammate_handlers(name, artifact_store=artifact_store),
+        source=f"teammate:{name}",
+    )
+
+
+def build_builtin_registry(
+    *,
+    schemas: tuple[dict, ...] | list[dict],
+    handlers: dict[str, Callable[..., str]],
+    source: str,
+    declarations: dict[str, BuiltinToolDeclaration] | None = None,
+) -> ToolRegistry:
+    """Bind one declared builtin schema/handler set into a complete registry."""
+    declarations = declarations or _BUILTIN_DECLARATIONS_BY_NAME
     registry = ToolRegistry()
-    handlers = make_teammate_handlers(name, artifact_store=artifact_store)
+    seen_names: set[str] = set()
+    declared_names: set[str] = set()
 
-    for schema in TEAMMATE_TOOLS + SEARCH_TOOLS:
-        tool_name = schema["function"]["name"]
-        handler = handlers.get(tool_name)
-        if handler is None and tool_name != "tool_search":
-            continue
-        registry.register(_builtin_spec(
-            schema,
-            handler or (lambda **kw: "tool_search is handled by ToolRegistry."),
-            source=f"teammate:{name}",
-        ))
+    for schema in schemas:
+        name = str(schema.get("function", {}).get("name") or "")
+        if not name:
+            raise ValueError("Builtin schema is missing function.name.")
+        if name in seen_names:
+            raise ValueError(f"Duplicate builtin schema declaration: {name}")
+        seen_names.add(name)
+        declaration = declarations.get(name)
+        if declaration is None:
+            raise ValueError(f"Builtin schema has no semantic declaration: {name}")
+        declared_names.add(name)
+        handler = handlers.get(name)
+        if handler is None:
+            if not declaration.registry_owned_execution:
+                raise ValueError(f"Builtin tool has no handler: {name}")
+            handler = _registry_owned_handler
+        registry.register(declaration.bind(schema, handler, source=source))
 
+    orphaned_handlers = set(handlers) - declared_names
+    if orphaned_handlers:
+        names = ", ".join(sorted(orphaned_handlers))
+        raise ValueError(f"Builtin handlers have no registered schema: {names}")
     return registry
 
 
-def _risk_for_tool(name: str) -> ToolRisk:
-    if name in {
-        "bash",
-        "write_file",
-        "edit_file",
-        "background_run",
-        "git_add",
-        "git_commit",
-    }:
-        return ToolRisk.HIGH
-    if name in {
-        "list_files",
-        "rg",
-        "grep",
-        "nl",
-        "repo_map",
-        "code_outline",
-        "read_file",
-        "read_files",
-        "read_artifact",
-        "retrieve_tool_result",
-        "git_status",
-        "git_diff",
-        "git_log",
-        "git_branch",
-        "storage_list_files",
-        "storage_read_file",
-        "sandbox_list_files",
-        "sandbox_read_file",
-        "task_list",
-        "task_get",
-        "check_background",
-    }:
-        return ToolRisk.LOW
-    if name == "tool_search":
-        return ToolRisk.LOW
-    return ToolRisk.NORMAL
-
-
-_NON_IDEMPOTENT_TOOLS = {
-    "bash", "write_file", "edit_file", "storage_write_file",
-    "sandbox_write_file", "publish_artifact", "git_add", "git_commit",
-    "memorize", "update_task_state", "task_create", "task_update",
-    "claim_task", "background_run", "task", "parallel_tasks",
-    "spawn_teammate", "broadcast", "send_message", "shutdown_request",
-    "shutdown_response", "plan_approval", "plan_approval_request",
-}
-
-_PRELOADED_TOOLS = {
-    "tool_search",
-    "bash",
-    "list_files",
-    "rg",
-    "read_file",
-    "read_files",
-    "code_outline",
-    "write_file",
-    "edit_file",
-    "idle",
-}
-_DEFERRED_TOOLS = {
-    "background_run", "git_add",
-    "git_commit", "spawn_teammate", "list_teammates", "broadcast",
-    "shutdown_request", "shutdown_status", "plan_approval", "claim_task",
-    "load_skill", "memorize", "recall_memory", "retrieve_tool_result",
-}
-
-_DISCOVERY_METADATA: dict[str, dict[str, tuple[str, ...] | str]] = {
-    "web_search": {
-        "summary": "Search the public web for current information and official sources.",
-        "capabilities": ("web search", "internet research", "current information"),
-        "aliases": ("search online", "联网搜索", "网络搜索", "网上查"),
-        "keywords": ("web", "internet", "latest", "官网", "最新资料"),
-    },
-    "memorize": {
-        "summary": "Save a durable fact or preference to long-term memory.",
-        "capabilities": ("memory write", "save preference", "remember fact"),
-        "aliases": ("remember", "记住", "保存偏好", "长期保存"),
-        "keywords": ("memory", "preference", "long term", "以后记得"),
-    },
-    "recall_memory": {
-        "summary": "Search long-term memory for prior facts and preferences.",
-        "capabilities": ("memory recall", "memory search", "prior context"),
-        "aliases": (
-            "recall", "previous preference", "mentioned before",
-            "回忆", "之前说过", "以前偏好",
-        ),
-        "keywords": ("memory", "previous preference", "长期记忆"),
-    },
-    "load_skill": {
-        "summary": "Discover and load a specialized workflow from an installed skill.",
-        "capabilities": ("skill discovery", "specialized workflow", "procedure"),
-        "aliases": ("skill", "load workflow", "技能", "流程", "操作指南"),
-        "keywords": ("specialized instruction", "适合这个任务", "专业流程"),
-    },
-    "task": {
-        "summary": "Delegate one bounded task to a specialized subagent.",
-        "capabilities": ("subagent", "delegate task", "research worker"),
-        "aliases": ("delegate", "spawn subagent", "子智能体", "委派", "拆任务"),
-        "keywords": ("agent", "worker", "parallel research", "子任务"),
-    },
-    "parallel_tasks": {
-        "summary": "Run multiple independent subagent tasks in parallel.",
-        "capabilities": ("parallel subagents", "parallel delegation", "fan out"),
-        "aliases": ("parallel agents", "并行子智能体", "并行分析", "并行委派"),
-        "keywords": ("subagent", "delegate", "workers", "拆任务"),
-    },
-    "background_run": {
-        "summary": "Start a long-running command as a background task.",
-        "capabilities": ("background task", "long running command"),
-        "aliases": ("run in background", "后台运行", "后台任务"),
-        "keywords": ("async", "long process", "后台"),
-    },
-    "git_add": {
-        "summary": "Stage selected repository changes for a Git commit.",
-        "capabilities": ("git stage", "version control write"),
-        "aliases": ("stage changes", "stage these changes", "git add", "暂存修改"),
-        "keywords": ("git", "index", "commit preparation"),
-    },
-    "git_commit": {
-        "summary": "Create a Git commit from staged changes.",
-        "capabilities": ("git commit", "version control write"),
-        "aliases": ("commit changes", "提交代码", "创建提交"),
-        "keywords": ("git", "commit", "版本控制"),
-    },
-    "spawn_teammate": {
-        "summary": "Start a persistent coding teammate for collaborative work.",
-        "capabilities": ("teammate", "collaborative agent", "delegate coding"),
-        "aliases": ("spawn teammate", "启动队友", "协作智能体"),
-        "keywords": ("agent", "team", "collaboration", "协作"),
-    },
-    "list_teammates": {
-        "summary": "List active collaborative teammates and their status.",
-        "capabilities": ("teammate status", "agent roster"),
-        "aliases": ("list agents", "队友列表", "智能体状态"),
-        "keywords": ("team", "agents", "status"),
-    },
-    "broadcast": {
-        "summary": "Send one message to all active teammates.",
-        "capabilities": ("team broadcast", "agent communication"),
-        "aliases": ("message all agents", "广播消息", "通知所有队友"),
-        "keywords": ("team", "message", "communication"),
-    },
-    "shutdown_request": {
-        "summary": "Request a teammate to stop after completing safe cleanup.",
-        "capabilities": ("teammate shutdown", "agent lifecycle"),
-        "aliases": ("stop teammate", "关闭队友", "停止智能体"),
-        "keywords": ("shutdown", "agent", "team"),
-    },
-    "shutdown_status": {
-        "summary": "Inspect teammate shutdown request status.",
-        "capabilities": ("shutdown status", "agent lifecycle status"),
-        "aliases": ("check shutdown", "关闭状态"),
-        "keywords": ("shutdown", "status", "agent"),
-    },
-    "plan_approval": {
-        "summary": "Approve or reject a teammate's submitted plan.",
-        "capabilities": ("plan approval", "teammate governance"),
-        "aliases": ("approve plan", "审批计划", "批准方案"),
-        "keywords": ("plan", "approval", "team"),
-    },
-    "claim_task": {
-        "summary": "Claim an available team task for execution.",
-        "capabilities": ("claim task", "team task coordination"),
-        "aliases": ("take task", "领取任务", "认领任务"),
-        "keywords": ("task", "team", "claim"),
-    },
-    "retrieve_tool_result": {
-        "summary": "Retrieve a previously externalized large tool result.",
-        "capabilities": ("tool result retrieval", "large result access"),
-        "aliases": ("retrieve result", "读取工具结果", "取回大结果"),
-        "keywords": ("artifact", "tool output", "result reference"),
-    },
-}
-
-
-def _builtin_spec(schema: dict, handler: Callable[..., str], *, source: str) -> ToolSpec:
-    name = str(schema["function"]["name"])
-    non_idempotent = name in _NON_IDEMPOTENT_TOOLS
-    if name == "update_task_state":
-        exposure = ToolExposure.CONDITIONAL
-    elif name in _PRELOADED_TOOLS or (
-        name == "send_message" and source.startswith("teammate:")
-    ):
-        exposure = ToolExposure.PRELOADED
-    else:
-        exposure = ToolExposure.DEFERRED
-    discovery = _DISCOVERY_METADATA.get(name, {})
-    state_effect = ToolStateEffect.NONE
-    policy_tag = ""
-    if name == "memorize":
-        state_effect = ToolStateEffect.AGENT_STATE
-        policy_tag = "memory.write"
-    elif name == "recall_memory":
-        policy_tag = "memory.read"
-    elif non_idempotent:
-        state_effect = ToolStateEffect.EXTERNAL
-    return ToolSpec(
-        schema=schema,
-        handler=handler,
-        allowed_modes=frozenset(_modes_for_tool(name)),
-        risk=_risk_for_tool(name),
-        idempotent=not non_idempotent,
-        side_effect=non_idempotent,
-        state_effect=state_effect,
-        exposure=exposure,
-        discovery_summary=str(discovery.get("summary") or schema["function"].get("description", "")),
-        capabilities=tuple(discovery.get("capabilities") or (name.replace("_", " "),)),
-        aliases=tuple(discovery.get("aliases") or (name,)),
-        keywords=tuple(discovery.get("keywords") or (name.replace("_", " "),)),
-        condition="task_state_active" if name == "update_task_state" else "",
-        source=source,
-        session_scoped=name in _SESSION_SCOPED_TOOLS,
-        policy_tag=policy_tag,
-        runtime_parameters=frozenset(
-            ({"_mode"} if name == "update_task_state" else set())
-            | (
-                {"_trace_store", "_run_state", "_parent_span_id"}
-                if name in {"task", "parallel_tasks"}
-                else set()
-            )
-        ),
-        schemas_by_mode=(
-            {"bot": CORE_TASK_STATE_TOOL, "hybrid": CORE_TASK_STATE_TOOL}
-            if name == "update_task_state"
-            else {}
-        ),
-    )
+def _registry_owned_handler(**_kwargs) -> str:
+    """Marker for a ToolSpec whose execution is implemented by ToolRegistry."""
+    raise RuntimeError("Registry-owned tool execution should not call its ToolSpec handler.")
 
 
 def _discovery_score(query: str, tool: ToolSpec) -> tuple[int, str]:
@@ -746,119 +745,3 @@ def _has_memory_write_intent(value: str) -> bool:
     return any(term in value for term in (
         "remember", "save", "store", "记住", "保存", "以后记得", "长期保存",
     ))
-
-
-def _modes_for_tool(name: str) -> set[str]:
-    coding_tools = {
-        "update_task_state",
-        "bash",
-        "list_files",
-        "rg",
-        "grep",
-        "nl",
-        "repo_map",
-        "code_outline",
-        "read_file",
-        "read_files",
-        "read_artifact",
-        "retrieve_tool_result",
-        "write_file",
-        "edit_file",
-        "git_status",
-        "git_diff",
-        "git_log",
-        "git_branch",
-        "git_add",
-        "git_commit",
-        "load_skill",
-        "task_create",
-        "task_update",
-        "task_list",
-        "task_get",
-        "claim_task",
-        "background_run",
-        "check_background",
-        "compact",
-        "task",
-        "parallel_tasks",
-        "spawn_teammate",
-        "list_teammates",
-        "broadcast",
-        "send_message",
-        "read_inbox",
-        "shutdown_request",
-        "shutdown_status",
-        "plan_approval",
-    }
-
-    teammate_tools = {
-        "update_task_state",
-        "bash",
-        "list_files",
-        "rg",
-        "grep",
-        "nl",
-        "repo_map",
-        "code_outline",
-        "read_file",
-        "read_files",
-        "retrieve_tool_result",
-        "write_file",
-        "edit_file",
-        "git_status",
-        "git_diff",
-        "git_log",
-        "git_branch",
-        "git_add",
-        "git_commit",
-        "load_skill",
-        "task_create",
-        "task_update",
-        "task_list",
-        "task_get",
-        "claim_task",
-        "background_run",
-        "check_background",
-        "send_message",
-        "read_inbox",
-        "idle",
-        "shutdown_response",
-        "plan_approval_request",
-    }
-
-    bot_tools = {
-        "update_task_state",
-        "load_skill",
-        "storage_list_files",
-        "storage_read_file",
-        "storage_write_file",
-        "sandbox_list_files",
-        "sandbox_read_file",
-        "sandbox_write_file",
-        "publish_artifact",
-    }
-
-    enabled = set()
-    if name in coding_tools:
-        enabled.add("coding")
-    if name in teammate_tools:
-        enabled.add("teammate")
-    if name in bot_tools:
-        enabled.add("bot")
-    if name in {
-        "storage_list_files",
-        "storage_read_file",
-        "storage_write_file",
-        "sandbox_list_files",
-        "sandbox_read_file",
-        "sandbox_write_file",
-        "publish_artifact",
-    }:
-        enabled.add("coding")
-    if name in {"memorize", "recall_memory", "tool_search", "retrieve_tool_result"}:
-        enabled.update({"bot", "coding", "teammate"})
-    if name == "read_artifact":
-        enabled.update({"bot", "coding", "teammate"})
-    if name == "update_task_state":
-        enabled.update({"bot", "hybrid"})
-    return enabled

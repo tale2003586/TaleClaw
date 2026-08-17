@@ -7,9 +7,17 @@ from plugins.plugin_manager import PluginManager
 from runtime.execution.recovery import RecoveryController
 from runtime.execution.state import RunExecutionState
 from models.provider import ToolCall
-from tools.schema import function_tool
+from tools.schema import LEAD_TOOLS, SEARCH_TOOLS, TEAMMATE_TOOLS, function_tool
 from tools.spec import ToolExposure, ToolRisk, ToolSpec, ToolStateEffect
-from tools.tool_registry import ToolRegistry, build_lead_tool_registry
+from tools.tool_registry import (
+    BUILTIN_TOOL_DECLARATIONS,
+    BuiltinToolDeclaration,
+    ToolRegistry,
+    build_builtin_registry,
+    build_lead_tool_registry,
+    build_teammate_tool_registry,
+    index_builtin_declarations,
+)
 from runtime.sessions import Session
 
 
@@ -149,6 +157,73 @@ class ToolSpecTests(unittest.TestCase):
         self.assertIn("tool_search", visible)
         self.assertIn("recall_memory", visible)
         self.assertNotIn("memorize", visible)
+
+    def test_builtin_registry_registers_every_schema_exactly_once(self):
+        lead = build_lead_tool_registry()
+        teammate = build_teammate_tool_registry("spec-test")
+
+        self.assertEqual(52, len(lead._tools))
+        self.assertEqual(34, len(teammate._tools))
+        self.assertEqual(
+            {schema["function"]["name"] for schema in LEAD_TOOLS},
+            set(lead._tools),
+        )
+        self.assertEqual(
+            {schema["function"]["name"] for schema in LEAD_TOOLS},
+            {declaration.name for declaration in BUILTIN_TOOL_DECLARATIONS},
+        )
+        self.assertEqual(
+            {schema["function"]["name"] for schema in TEAMMATE_TOOLS + SEARCH_TOOLS},
+            set(teammate._tools),
+        )
+        self.assertEqual("tool_search", lead.spec_for("tool_search").name)
+        self.assertEqual("tool_search", teammate.spec_for("tool_search").name)
+
+    def test_builtin_registry_fails_fast_for_missing_handler(self):
+        schema = function_tool("missing_handler", "missing", {}, [])
+        declarations = {
+            "missing_handler": BuiltinToolDeclaration("missing_handler"),
+        }
+
+        with self.assertRaisesRegex(ValueError, "no handler: missing_handler"):
+            build_builtin_registry(
+                schemas=(schema,),
+                handlers={},
+                source="test",
+                declarations=declarations,
+            )
+
+    def test_builtin_declaration_duplicate_and_schema_mismatch_fail_fast(self):
+        duplicate = BuiltinToolDeclaration("duplicate")
+        with self.assertRaisesRegex(ValueError, "Duplicate builtin tool declaration"):
+            index_builtin_declarations((duplicate, duplicate))
+
+        with self.assertRaisesRegex(ValueError, "does not match schema"):
+            BuiltinToolDeclaration("declared").bind(
+                function_tool("actual", "actual", {}, []),
+                lambda **_: "ok",
+                source="test",
+            )
+
+    def test_builtin_registry_rejects_duplicate_schemas_and_orphaned_handlers(self):
+        schema = function_tool("declared", "declared", {}, [])
+        declarations = {"declared": BuiltinToolDeclaration("declared")}
+        handler = lambda **_: "ok"
+
+        with self.assertRaisesRegex(ValueError, "Duplicate builtin schema declaration"):
+            build_builtin_registry(
+                schemas=(schema, schema),
+                handlers={"declared": handler},
+                source="test",
+                declarations=declarations,
+            )
+        with self.assertRaisesRegex(ValueError, "handlers have no registered schema"):
+            build_builtin_registry(
+                schemas=(schema,),
+                handlers={"declared": handler, "orphan": handler},
+                source="test",
+                declarations=declarations,
+            )
 
 
 if __name__ == "__main__":
