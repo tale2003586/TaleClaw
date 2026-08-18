@@ -190,5 +190,34 @@ class MemoryScopeTests(unittest.TestCase):
         self.assertEqual(["first preference"], [item.content for item in first_repository.items.values()])
         self.assertEqual(["second preference"], [item.content for item in second_repository.items.values()])
 
+    def test_memory_dependencies_cannot_be_replaced_by_invocation_kwargs(self) -> None:
+        configured_command = MemoryCommandService(InMemoryMemoryRepository())
+        replacement_command = MemoryCommandService(InMemoryMemoryRepository())
+        configured_retrieval = object()
+        replacement_retrieval = object()
+        configured_sync = object()
+        replacement_sync = object()
+        memory_handlers = handlers.make_memory_handlers(
+            command_service=configured_command,
+            retrieval_service=configured_retrieval,
+            index_synchronizer=configured_sync,
+        )
+
+        with self.assertRaises(TypeError):
+            memory_handlers["memorize"](
+                content="should not run",
+                command_service=replacement_command,
+            )
+        with self.assertRaises(TypeError):
+            memory_handlers["memorize"](
+                content="should not run",
+                index_synchronizer=replacement_sync,
+            )
+        with self.assertRaises(TypeError):
+            memory_handlers["recall_memory"](
+                query="should not run",
+                retrieval_service=replacement_retrieval,
+            )
+
 if __name__ == "__main__":
     unittest.main()

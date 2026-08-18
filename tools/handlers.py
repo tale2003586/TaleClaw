@@ -2761,8 +2761,9 @@ def _broadcast_structured(team, content: str) -> str:
 
 
 def _run_subagent_task(
-    *,
     runner=None,
+    /,
+    *,
     prompt: str,
     description: str = "",
     agent_type: str = "explore",
@@ -2840,8 +2841,9 @@ def _compose_subagent_prompt(
 
 
 def _run_parallel_subagent_tasks(
-    *,
     runner=None,
+    /,
+    *,
     tasks,
     max_workers: int | None = None,
     _session=None,
@@ -2926,8 +2928,8 @@ def _trace_subagent_rejection(
 def make_subagent_handlers(runner=None) -> dict:
     """Bind task tools to one runtime's subagent runner, if available."""
     return {
-        "task": partial(_run_subagent_task, runner=runner),
-        "parallel_tasks": partial(_run_parallel_subagent_tasks, runner=runner),
+        "task": partial(_run_subagent_task, runner),
+        "parallel_tasks": partial(_run_parallel_subagent_tasks, runner),
     }
 
 
@@ -3019,19 +3021,20 @@ def make_memory_handlers(
     return {
         "memorize": partial(
             run_memorize,
-            command_service=command_service,
-            index_synchronizer=index_synchronizer,
+            command_service,
+            index_synchronizer,
         ),
-        "recall_memory": partial(run_recall_memory, retrieval_service=retrieval_service),
+        "recall_memory": partial(run_recall_memory, retrieval_service),
     }
 
 
 def run_memorize(
+    command_service=None,
+    index_synchronizer=None,
+    /,
     *,
     content: str,
     _session=None,
-    command_service=None,
-    index_synchronizer=None,
 ) -> str:
     if command_service is None:
         return "Durable memory is not enabled."
@@ -3080,10 +3083,11 @@ def run_memorize(
 
 
 def run_recall_memory(
+    retrieval_service=None,
+    /,
     *,
     query: str | None = None,
     _session=None,
-    retrieval_service=None,
 ) -> str:
     if retrieval_service is not None:
         from memory.commands import MemoryContext

@@ -72,6 +72,7 @@ class FastEmbedProvider:
             ) from exc
 
         self.model_name = model_name
+        self._lock = threading.RLock()
         self._model = TextEmbedding(model_name=model_name)
         self._dimensions = int(dimensions or 0)
 
@@ -79,12 +80,15 @@ class FastEmbedProvider:
     def vector_size(self) -> int:
         if self._dimensions > 0:
             return self._dimensions
-        sample = self.embed("dimension probe")
-        self._dimensions = len(sample)
-        return self._dimensions
+        with self._lock:
+            if self._dimensions <= 0:
+                sample = self.embed("dimension probe")
+                self._dimensions = len(sample)
+            return self._dimensions
 
     def embed(self, text: str) -> list[float]:
-        vectors = list(self._model.embed([text or ""]))
+        with self._lock:
+            vectors = list(self._model.embed([text or ""]))
         if not vectors:
             return []
         vector = vectors[0]
