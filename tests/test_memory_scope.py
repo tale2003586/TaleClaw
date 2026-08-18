@@ -31,17 +31,18 @@ def _tool_schema(name: str) -> dict:
     }
 
 
-def _memory_registry() -> ToolRegistry:
+def _memory_registry(**memory_services) -> ToolRegistry:
+    memory_handlers = handlers.make_memory_handlers(**memory_services)
     registry = ToolRegistry()
     registry.register(ToolSpec(
         schema=_tool_schema("memorize"),
-        handler=handlers.MEMORY_HANDLERS["memorize"],
+        handler=memory_handlers["memorize"],
         allowed_modes=frozenset({"bot", "coding"}),
         session_scoped=True,
     ))
     registry.register(ToolSpec(
         schema=_tool_schema("recall_memory"),
-        handler=handlers.MEMORY_HANDLERS["recall_memory"],
+        handler=memory_handlers["recall_memory"],
         allowed_modes=frozenset({"bot", "coding"}),
         session_scoped=True,
     ))
@@ -60,9 +61,6 @@ def _unlock_memory(registry: ToolRegistry, session: Session) -> None:
 
 
 class MemoryScopeTests(unittest.TestCase):
-    def tearDown(self) -> None:
-        handlers.configure_semantic_memory_services()
-
     def test_coding_application_factory_does_not_create_memory_root(self) -> None:
         class RecordingSessions:
             def get_or_create(self, session_id: str) -> Session:
@@ -126,12 +124,11 @@ class MemoryScopeTests(unittest.TestCase):
             commands = MemoryCommandService(repository)
             retrieval = SemanticMemoryRetrievalService(repository, index)
             synchronizer = MemoryIndexSynchronizer(repository, index)
-            handlers.configure_semantic_memory_services(
+            registry = _memory_registry(
                 command_service=commands,
                 retrieval_service=retrieval,
                 index_synchronizer=synchronizer,
             )
-            registry = _memory_registry()
             session = Session(
                 id="web:alice:a",
                 metadata={"user_id": "alice"},
@@ -162,6 +159,36 @@ class MemoryScopeTests(unittest.TestCase):
             self.assertIn("memory.item.created", event_names)
             self.assertIn("memory.index.completed", event_names)
             self.assertIn("memory.semantic.retrieved", event_names)
+
+    def test_memory_handler_dependencies_are_isolated_per_registry(self) -> None:
+        first_repository = InMemoryMemoryRepository()
+        second_repository = InMemoryMemoryRepository()
+        first_registry = _memory_registry(
+            command_service=MemoryCommandService(first_repository),
+        )
+        second_registry = _memory_registry(
+            command_service=MemoryCommandService(second_repository),
+        )
+        first_session = Session(id="web:first", metadata={"user_id": "first"})
+        second_session = Session(id="web:second", metadata={"user_id": "second"})
+        _unlock_memory(first_registry, first_session)
+        _unlock_memory(second_registry, second_session)
+
+        first_registry.execute(
+            "memorize",
+            {"content": "first preference"},
+            session=first_session,
+            mode="bot",
+        )
+        second_registry.execute(
+            "memorize",
+            {"content": "second preference"},
+            session=second_session,
+            mode="bot",
+        )
+
+        self.assertEqual(["first preference"], [item.content for item in first_repository.items.values()])
+        self.assertEqual(["second preference"], [item.content for item in second_repository.items.values()])
 
 if __name__ == "__main__":
     unittest.main()

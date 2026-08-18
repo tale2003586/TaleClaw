@@ -9,6 +9,7 @@ import re
 import shutil
 import time
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 import subprocess
 from uuid import uuid4
@@ -47,7 +48,6 @@ from user_scope import (
 )
 
 
-SUBAGENT_RUNNER = None
 MAX_WORKSPACE_LIST_ENTRIES = 500
 MAX_WORKSPACE_READ_CHARS = 50_000
 MAX_BATCH_READ_FILES = 8
@@ -128,11 +128,6 @@ REPO_MAP_GENERIC_IDENTIFIERS = {
 }
 TOOL_RESULT_CACHE_KEY = "_tool_result_cache"
 TOOL_CACHE_STEP_KEY = "_tool_result_cache_step"
-
-
-def configure_subagent_runner(runner) -> None:
-    global SUBAGENT_RUNNER
-    SUBAGENT_RUNNER = runner
 
 
 def _format_tool_error(exc: Exception) -> str:
@@ -2767,6 +2762,7 @@ def _broadcast_structured(team, content: str) -> str:
 
 def _run_subagent_task(
     *,
+    runner=None,
     prompt: str,
     description: str = "",
     agent_type: str = "explore",
@@ -2779,7 +2775,7 @@ def _run_subagent_task(
     _run_state=None,
     _parent_span_id: str | None = None,
 ) -> str:
-    if SUBAGENT_RUNNER is None:
+    if runner is None:
         return "Error: The short-lived subagent task runner is not configured."
     task = {
         "prompt": prompt,
@@ -2802,7 +2798,7 @@ def _run_subagent_task(
         return rejection_response(decision)
     record_subagent_dispatch(_session, [task], tool_name="task")
     _checkpoint_subtasks_dispatched(_session, [task])
-    result = SUBAGENT_RUNNER.run(
+    result = runner.run(
         prompt=_compose_subagent_prompt(
             prompt,
             scope=scope,
@@ -2845,6 +2841,7 @@ def _compose_subagent_prompt(
 
 def _run_parallel_subagent_tasks(
     *,
+    runner=None,
     tasks,
     max_workers: int | None = None,
     _session=None,
@@ -2852,7 +2849,7 @@ def _run_parallel_subagent_tasks(
     _run_state=None,
     _parent_span_id: str | None = None,
 ) -> str:
-    if SUBAGENT_RUNNER is None:
+    if runner is None:
         return "Error: The short-lived subagent task runner is not configured."
     from agents.subagent.parallel import run_parallel_tasks
 
@@ -2872,7 +2869,7 @@ def _run_parallel_subagent_tasks(
     record_subagent_dispatch(_session, bounded_tasks, tool_name="parallel_tasks")
     _checkpoint_subtasks_dispatched(_session, bounded_tasks)
     results = run_parallel_tasks(
-        runner=SUBAGENT_RUNNER,
+        runner=runner,
         tasks=bounded_tasks,
         parent_session=_session,
         max_workers=max_workers,
@@ -2926,20 +2923,37 @@ def _trace_subagent_rejection(
     )
 
 
-def make_lead_handlers(team, *, artifact_store=None):
+def make_subagent_handlers(runner=None) -> dict:
+    """Bind task tools to one runtime's subagent runner, if available."""
+    return {
+        "task": partial(_run_subagent_task, runner=runner),
+        "parallel_tasks": partial(_run_parallel_subagent_tasks, runner=runner),
+    }
+
+
+def make_lead_handlers(
+    team,
+    *,
+    artifact_store=None,
+    subagent_runner=None,
+    memory_handlers=None,
+):
     return {
         **BASE_HANDLERS,
         **make_artifact_handlers(artifact_store),
         **TASK_HANDLERS,
         **BACKGROUND_HANDLERS,
-        **MEMORY_HANDLERS,
+        **(
+            memory_handlers
+            if memory_handlers is not None
+            else make_memory_handlers()
+        ),
         **STORAGE_HANDLERS,
         **SANDBOX_HANDLERS,
         **make_protocol_handlers("lead"),
+        **make_subagent_handlers(subagent_runner),
 
         "compact": lambda **kw: "Manual compression requested.",
-        "task": _run_subagent_task,
-        "parallel_tasks": _run_parallel_subagent_tasks,
         "claim_task": lambda **kw: TASKS.claim_task(
             kw["task_id"],
             "lead",
@@ -2996,29 +3010,32 @@ def make_teammate_handlers(name: str, *, artifact_store=None):
         "read_inbox": lambda **kw: _read_structured_inbox(name),
     }
 
-SEMANTIC_MEMORY_COMMAND_SERVICE = None
-SEMANTIC_MEMORY_RETRIEVAL_SERVICE = None
-SEMANTIC_MEMORY_INDEX_SYNCHRONIZER = None
-
-
-def configure_semantic_memory_services(
+def make_memory_handlers(
     *,
     command_service=None,
     retrieval_service=None,
     index_synchronizer=None,
-) -> None:
-    global SEMANTIC_MEMORY_COMMAND_SERVICE
-    global SEMANTIC_MEMORY_RETRIEVAL_SERVICE
-    global SEMANTIC_MEMORY_INDEX_SYNCHRONIZER
-    SEMANTIC_MEMORY_COMMAND_SERVICE = command_service
-    SEMANTIC_MEMORY_RETRIEVAL_SERVICE = retrieval_service
-    SEMANTIC_MEMORY_INDEX_SYNCHRONIZER = index_synchronizer
+) -> dict:
+    return {
+        "memorize": partial(
+            run_memorize,
+            command_service=command_service,
+            index_synchronizer=index_synchronizer,
+        ),
+        "recall_memory": partial(run_recall_memory, retrieval_service=retrieval_service),
+    }
 
 
-def run_memorize(*, content: str, _session=None) -> str:
-    if SEMANTIC_MEMORY_COMMAND_SERVICE is None:
+def run_memorize(
+    *,
+    content: str,
+    _session=None,
+    command_service=None,
+    index_synchronizer=None,
+) -> str:
+    if command_service is None:
         return "Durable memory is not enabled."
-    if SEMANTIC_MEMORY_COMMAND_SERVICE is not None:
+    if command_service is not None:
         from memory.commands import MemoryContext, MemoryWriteProposal
         from memory.domain import (
             MemoryEvidence,
@@ -3036,7 +3053,7 @@ def run_memorize(*, content: str, _session=None) -> str:
             session_id=context.session_id,
             excerpt=str(content or "")[:1000],
         )
-        item = SEMANTIC_MEMORY_COMMAND_SERVICE.remember(
+        item = command_service.remember(
             MemoryWriteProposal(
                 content=content,
                 kind=MemoryKind.PREFERENCE,
@@ -3051,27 +3068,32 @@ def run_memorize(*, content: str, _session=None) -> str:
             ),
             context,
         )
-        if SEMANTIC_MEMORY_INDEX_SYNCHRONIZER is not None:
+        if index_synchronizer is not None:
             try:
-                SEMANTIC_MEMORY_INDEX_SYNCHRONIZER.drain(limit=10)
+                index_synchronizer.drain(limit=10)
             except Exception:
                 pass
-        _queue_memory_trace_events(_session, SEMANTIC_MEMORY_COMMAND_SERVICE)
-        _queue_memory_trace_events(_session, SEMANTIC_MEMORY_INDEX_SYNCHRONIZER)
+        _queue_memory_trace_events(_session, command_service)
+        _queue_memory_trace_events(_session, index_synchronizer)
         return f"Saved semantic memory {item.id} ({item.status.value})."
     return "Durable memory is not enabled."
 
 
-def run_recall_memory(*, query: str | None = None, _session=None) -> str:
-    if SEMANTIC_MEMORY_RETRIEVAL_SERVICE is not None:
+def run_recall_memory(
+    *,
+    query: str | None = None,
+    _session=None,
+    retrieval_service=None,
+) -> str:
+    if retrieval_service is not None:
         from memory.commands import MemoryContext
 
-        result = SEMANTIC_MEMORY_RETRIEVAL_SERVICE.retrieve(
+        result = retrieval_service.retrieve(
             str(query or ""),
             MemoryContext.from_session(_session),
         )
-        _queue_memory_trace_events(_session, SEMANTIC_MEMORY_RETRIEVAL_SERVICE)
-        rendered = SEMANTIC_MEMORY_RETRIEVAL_SERVICE.render(result)
+        _queue_memory_trace_events(_session, retrieval_service)
+        rendered = retrieval_service.render(result)
         return rendered or "No relevant memory found."
     return "Durable memory retrieval is not enabled."
 
@@ -3085,11 +3107,6 @@ def _queue_memory_trace_events(session, service) -> None:
     metadata = getattr(session, "metadata", None)
     if isinstance(metadata, dict):
         metadata.setdefault("memory_trace_events", []).extend(events)
-
-MEMORY_HANDLERS = {
-    "memorize": run_memorize,
-    "recall_memory": run_recall_memory,
-}
 
 STORAGE_HANDLERS = {
     "storage_list_files": lambda **kw: run_storage_list(

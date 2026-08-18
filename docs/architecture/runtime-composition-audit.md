@@ -2,11 +2,12 @@
 
 Date: 2026-08-18
 
-Scope: Phase 0 reconnaissance only. This document describes the repository as
-inspected; it makes no production-code change. `CURRENT FACT` statements are
-grounded in the current implementation and tests. `DESIGN INTENT` is inferred
-from public types, call paths, and existing tests. Recommendations are for
-later phases, not approved changes in this phase.
+Scope: Phase 0 reconnaissance plus the Phase 1-6 implementation record.
+The Phase 0 sections below preserve the before-state as inspected. The
+implementation-result sections record later production changes separately;
+they do not reinterpret Phase 0 facts as if they had always described the
+post-refactor system. `CURRENT FACT` statements are grounded in the code and
+tests available during the relevant phase.
 
 ## Evidence and terminology
 
@@ -31,7 +32,7 @@ CLI, Telegram, Feishu, Web, and scripts call this `build_runtime()` path.
 * **Durable data**: filesystem or database data which outlives a runtime
   instance regardless of which object currently accesses it.
 
-## Current dependency graph
+## Phase 0 dependency graph (before implementation)
 
 ### Process composition graph
 
@@ -462,7 +463,7 @@ exposure, idempotency, scope, or discovery metadata tables.
   single-active-runtime assumption.
 * Phase 6: conditional vector-resource sharing.
 
-## Explicitly deferred in this round
+## Phase 1 deferrals (historical)
 
 * No production-code modification, API deletion, or behavior change.
 * No DI container, generic capability model, provider registry, scope engine,
@@ -476,10 +477,154 @@ exposure, idempotency, scope, or discovery metadata tables.
 * No conversion of suppressed optional security-RAG construction failures into
   startup failures; that is a product/reliability decision outside this audit.
 
-## Phase-0 validation record
+## Phase-0 validation record (historical)
 
 Read-only evidence reviewed: bootstrap, ToolSpec/ToolRegistry/ToolPolicy,
 AgentSpec, handlers, subagent runner, context composition, resource factories,
 AppRuntime shutdown path, and capability-wiring/subagent/memory tests. The
 next required execution before any implementation is the focused capability
 and lifecycle test set identified by the relevant phase.
+
+## Phase 2 Implementation Result
+
+**Implemented: two-stage registry assembly (candidate B).** Candidate A, a
+typed late-bound runner reference, would remove the module global but would
+add a one-purpose indirection and retain delayed mutation. Candidate B is
+smaller: bootstrap builds the lead registry without `task` and
+`parallel_tasks`, builds `Runtime`, builds `TaskSubagentRunner(runtime)`, and
+then registers runner-bound ToolSpecs into that same registry before returning
+`AppRuntime`.
+
+This is safe in the current implementation: `Runtime` stores the supplied
+registry reference through `AgentRunner`; each run constructs a
+`ReasoningLoop` with that reference; the loop calls `schemas_for_turn()` at
+each reasoning step and `execute()` for each tool call. No Runtime,
+AgentRunner, ReasoningLoop, or PluginManager construction path freezes or
+snapshots builtins. Plugin setup still runs before the second-stage task
+registration, and the completed registry is never exposed by bootstrap.
+
+`SUBAGENT_RUNNER` and `configure_subagent_runner` were removed. The new
+`register_lead_subagent_tools()` rejects an absent runner, while an explicitly
+incomplete registry simply has no task ToolSpecs and reports `Unknown tool:
+task`. `make_subagent_handlers(runner)` binds each handler directly to the
+owning runner, so independently assembled registries cannot overwrite one
+another. Tool names/schemas, fanout guards, task state, traces, filtered
+subagent tools, cancellation, and result rendering remain on their existing
+paths.
+
+Focused coverage includes incomplete assembly, completed registry/reference
+identity, execution through an AgentRunner created before registration,
+parallel-task behavior, dispatch validation, and two-registry isolation.
+
+## Phase 3 Implementation Result
+
+**No change justified.** `build_runtime()` remains a hand-written composition
+root with contiguous environment/model, storage/session, memory/retrieval,
+context, tools/plugins/execution, Runtime/subagent, and application assembly
+blocks. Its cross-dependencies are real DAG edges. Extracting the remaining
+blocks would require broad return tuples or a service bundle, making the
+dependency path less explicit. The one small Phase 6 helper below has a
+narrow resource-sharing contract; it is not a bootstrap layer or container.
+
+## Phase 4 Implementation Result
+
+**Implemented: explicit memory handler factories.**
+`make_memory_handlers(command_service=..., retrieval_service=...,
+index_synchronizer=...)` creates the two closures passed into the lead
+registry. `make_lead_handlers()` receives that mapping explicitly. The
+`SEMANTIC_MEMORY_*` module globals, `configure_semantic_memory_services`, and
+the shared `MEMORY_HANDLERS` map were removed.
+
+Each AppRuntime therefore retains the memory command/retrieval/index objects
+that its own registry handlers invoke. Disabled write/read paths keep their
+previous user-facing responses; a missing synchronizer still permits a write,
+and synchronization failures remain isolated. Existing `MemoryContext`, owner
+scope, repository, trace queueing, retrieval, and context-memory paths are
+unchanged. Focused tests cover disabled memory, write/read with an index,
+handler isolation across two registries, and the existing memory scope suite.
+
+## Phase 5 Implementation Result
+
+**Implemented: direct SessionManager shutdown ownership.** The post-change
+resource inventory is:
+
+| Resource | Scope | Explicit close from AppRuntime |
+| --- | --- | --- |
+| ModelPool, TEAM, BG, task/protocol/team buses | process-global | no; retained single-active-runtime assumption |
+| MessageBus dispatcher | AppRuntime-instance | yes, stopped and awaited by `AppRuntime.stop()` |
+| SessionManager -> SessionStore -> DB connection | AppRuntime-instance / durable data | yes, synchronous `SessionManager.close()` once |
+| ToolRegistry, ToolExecutor, ContextBuilder, Runtime, coordinator, trace store | AppRuntime-instance | no close contract observed |
+| history/semantic/security indexes and embedding providers | AppRuntime-instance | no safe shared close contract observed |
+| Session, ChildRun/coding workspace, RunState | session/task/turn-scoped | lifecycle remains with existing owners; durable rows/files outlive runtime |
+
+`AppRuntime.stop()` cancels and awaits the outbound dispatcher, then closes
+the `RuntimeServices.session_manager` once and marks the runtime closed. A
+SessionManager close exception is logged rather than preventing dispatcher
+termination or idempotent shutdown. No `AsyncExitStack` or lifecycle framework
+was justified. `TEAM`, `BG`, and the ModelPool cache remain process-global;
+they still encode the documented single-active-runtime assumption, but no
+longer determine subagent or semantic-memory handler binding.
+
+## Phase 6 Implementation Result
+
+**Implemented: conditional history/semantic embedding-provider sharing only.**
+History and semantic-memory indexes both use the same base embedding
+environment: `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, `QDRANT_VECTOR_SIZE`,
+and, for BGE-M3, `EMBEDDING_USE_FP16`, `EMBEDDING_MAX_LENGTH`, and
+`EMBEDDING_DEVICE`. Their Qdrant URL/API key/distance settings are also the
+same, but their collections intentionally differ. When both capabilities are
+enabled, bootstrap creates one provider and injects it into both builders.
+
+If common provider construction fails, bootstrap supplies no provider and each
+index builder retries its original construction independently, retaining its
+own strict flag and null-index fallback. A history index failure does not
+disable semantic indexing. Security RAG is deliberately excluded: it has
+separate `SECURITY_RAG_*` provider/model/vector-size/device/cache settings,
+optional sparse embeddings, hybrid/re-ranking behavior, and a distinct
+exception-to-disabled boundary. Qdrant clients are also not shared because
+their ownership/close contract and failure isolation are not established.
+
+This reduces redundant construction only when both equivalent history and
+semantic-memory configurations are active. The default hash provider is cheap;
+the meaningful benefit is conditional for FastEmbed/BGE-M3 model instances.
+Focused tests verify identity injection, distinct collections, and independent
+index failure behavior.
+
+## Final Runtime Composition
+
+```text
+process-global: environment initialization, cached ModelPool, TEAM/BG/task/team globals
+
+build_runtime()
+  -> AppRuntime-instance storage/session/trace/cancellation services
+  -> optional history + semantic indexes
+       -> one shared embedding provider only when their base configuration matches
+       -> distinct index/client/collection and fallback boundaries
+  -> memory handler closures bound to that runtime's memory services
+  -> lead ToolRegistry without task tools -> plugins/executor -> Runtime
+  -> TaskSubagentRunner(Runtime)
+  -> register task/parallel_tasks ToolSpecs bound directly to that runner
+  -> CodingApplication + TurnCoordinator + RuntimeServices -> AppRuntime
+
+turn: AgentRunner creates ReasoningLoop -> reads ToolRegistry dynamically
+task: task handler -> owning TaskSubagentRunner -> filtered Runtime fork
+shutdown: AppRuntime.stop -> MessageBus dispatcher -> SessionManager -> SessionStore -> DB connection
+```
+
+The result remains a DAG-shaped composition root, not a strict layer stack or
+DI container. `ToolSpec` is the builtin semantic source of truth, while plugin
+ToolSpecs continue to register directly.
+
+## Final Validation
+
+| Check | Result |
+| --- | --- |
+| Phase 2/4/5/6 focused suite | 48 passed |
+| Final full suite: `PYTHONPATH=. pytest -q` | 663 passed, 2 existing protobuf deprecation warnings, 36.83s |
+| Syntax: `PYTHONPATH=. python -m compileall -q applications tools memory runtime agents plugins` | passed |
+| Formatting/lint/type configuration | no repository-configured command found in `pyproject.toml` or project config |
+
+The final dead-code search found no runtime Python consumers of the removed
+subagent or semantic-memory wiring globals, or of the Phase 1 builtin metadata
+tables. Historical design documentation retains a `SUBAGENT_RUNNER` reference
+as before-state material and was not rewritten as current code.

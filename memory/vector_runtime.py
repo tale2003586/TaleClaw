@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from memory.embeddings import build_embedding_provider_from_env
+from memory.embeddings import EmbeddingProvider, build_embedding_provider_from_env
 from memory.qdrant_index import QdrantMemoryVectorIndex
 from memory.semantic_index import (
     NullSemanticMemoryIndex,
@@ -13,7 +13,10 @@ from memory.vector_index import MemoryVectorIndex, NullMemoryVectorIndex
 from user_scope import user_id_for_session
 
 
-def build_history_vector_index_from_env() -> MemoryVectorIndex:
+def build_history_vector_index_from_env(
+    *,
+    embeddings: EmbeddingProvider | None = None,
+) -> MemoryVectorIndex:
     if not _env_bool_any(
         ["HISTORY_VECTOR_ENABLED", "MEMORY_VECTOR_ENABLED"],
         default=True,
@@ -28,13 +31,17 @@ def build_history_vector_index_from_env() -> MemoryVectorIndex:
         raise RuntimeError(f"Unsupported HISTORY_VECTOR_BACKEND: {backend}")
 
     try:
-        embeddings = build_embedding_provider_from_env()
+        provider = (
+            embeddings
+            if embeddings is not None
+            else build_embedding_provider_from_env()
+        )
         return QdrantMemoryVectorIndex(
             url=os.getenv("QDRANT_URL", "http://127.0.0.1:6333").strip(),
             api_key=os.getenv("QDRANT_API_KEY", "").strip() or None,
             collection=os.getenv("QDRANT_COLLECTION", "taleclaw_history").strip(),
             distance=os.getenv("QDRANT_DISTANCE", "Cosine").strip(),
-            embeddings=embeddings,
+            embeddings=provider,
         )
     except Exception:
         if _env_bool("HISTORY_VECTOR_STRICT", default=False):
@@ -54,7 +61,10 @@ def memory_vector_scope_for_session(session) -> str:
     return history_vector_scope_for_session(session)
 
 
-def build_semantic_memory_index_from_env() -> SemanticMemoryIndex:
+def build_semantic_memory_index_from_env(
+    *,
+    embeddings: EmbeddingProvider | None = None,
+) -> SemanticMemoryIndex:
     if not _env_bool("SEMANTIC_MEMORY_INDEX_ENABLED", default=True):
         return NullSemanticMemoryIndex()
     try:
@@ -66,7 +76,11 @@ def build_semantic_memory_index_from_env() -> SemanticMemoryIndex:
                 "taleclaw_semantic_memory_v1",
             ).strip(),
             distance=os.getenv("QDRANT_DISTANCE", "Cosine").strip(),
-            embeddings=build_embedding_provider_from_env(),
+            embeddings=(
+                embeddings
+                if embeddings is not None
+                else build_embedding_provider_from_env()
+            ),
         )
     except Exception:
         if _env_bool("SEMANTIC_MEMORY_INDEX_STRICT", default=False):
