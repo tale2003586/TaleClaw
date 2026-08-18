@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from runtime.sessions.session import Session
-from tools.handlers import configure_subagent_runner, make_lead_handlers
+from tools.handlers import make_lead_handlers
 
 
 class FakeRunner:
@@ -36,13 +36,9 @@ class FakeTeam:
 
 
 class SubagentDispatchValidationTests(unittest.TestCase):
-    def tearDown(self) -> None:
-        configure_subagent_runner(None)
-
     def test_missing_scope_file_is_allowed_to_subagent(self) -> None:
         runner = FakeRunner()
-        configure_subagent_runner(runner)
-        handlers = make_lead_handlers(FakeTeam())
+        handlers = make_lead_handlers(FakeTeam(), subagent_runner=runner)
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             (workspace / "frontend" / "dashboard").mkdir(parents=True)
@@ -72,8 +68,7 @@ class SubagentDispatchValidationTests(unittest.TestCase):
 
     def test_prompt_only_file_hint_is_allowed_to_subagent(self) -> None:
         runner = FakeRunner()
-        configure_subagent_runner(runner)
-        handlers = make_lead_handlers(FakeTeam())
+        handlers = make_lead_handlers(FakeTeam(), subagent_runner=runner)
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             (workspace / "package.json").write_text("{}\n", encoding="utf-8")

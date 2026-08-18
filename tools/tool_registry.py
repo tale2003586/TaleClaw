@@ -6,7 +6,11 @@ from typing import Callable, Any
 from tools.policy import UNLOCKED_TOOLS_KEY, ToolPolicy
 from tools.spec import ToolExposure, ToolRisk, ToolSpec, ToolStateEffect
 from tools.schema import CORE_TASK_STATE_TOOL, LEAD_TOOLS, SEARCH_TOOLS, TEAMMATE_TOOLS
-from tools.handlers import make_lead_handlers, make_teammate_handlers
+from tools.handlers import (
+    make_lead_handlers,
+    make_subagent_handlers,
+    make_teammate_handlers,
+)
 
 
 _CODING_TEAMMATE = frozenset({"coding", "teammate"})
@@ -624,14 +628,42 @@ class ToolRegistry:
         return self._schema_for_mode(tool, mode)["function"].get("description", "")
 
 
-def build_lead_tool_registry(team=None, *, artifact_store=None) -> ToolRegistry:
+_SUBAGENT_TOOL_NAMES = frozenset({"task", "parallel_tasks"})
+
+
+def build_lead_tool_registry(
+    team=None,
+    *,
+    artifact_store=None,
+    subagent_runner=None,
+    memory_handlers=None,
+    include_subagent_tools: bool = True,
+) -> ToolRegistry:
     if team is None:
         from applications.coding.orchestration.teammate import TEAM
 
         team = TEAM
+    schemas = LEAD_TOOLS
+    handlers = make_lead_handlers(
+        team,
+        artifact_store=artifact_store,
+        subagent_runner=subagent_runner,
+        memory_handlers=memory_handlers,
+    )
+    if not include_subagent_tools:
+        schemas = tuple(
+            schema
+            for schema in schemas
+            if schema["function"]["name"] not in _SUBAGENT_TOOL_NAMES
+        )
+        handlers = {
+            name: handler
+            for name, handler in handlers.items()
+            if name not in _SUBAGENT_TOOL_NAMES
+        }
     return build_builtin_registry(
-        schemas=LEAD_TOOLS,
-        handlers=make_lead_handlers(team, artifact_store=artifact_store),
+        schemas=schemas,
+        handlers=handlers,
         source="lead",
     )
 
@@ -654,6 +686,26 @@ def build_builtin_registry(
     """Bind one declared builtin schema/handler set into a complete registry."""
     declarations = declarations or _BUILTIN_DECLARATIONS_BY_NAME
     registry = ToolRegistry()
+    register_builtin_tools(
+        registry,
+        schemas=schemas,
+        handlers=handlers,
+        source=source,
+        declarations=declarations,
+    )
+    return registry
+
+
+def register_builtin_tools(
+    registry: ToolRegistry,
+    *,
+    schemas: tuple[dict, ...] | list[dict],
+    handlers: dict[str, Callable[..., str]],
+    source: str,
+    declarations: dict[str, BuiltinToolDeclaration] | None = None,
+) -> None:
+    """Register one complete builtin subset into an existing registry."""
+    declarations = declarations or _BUILTIN_DECLARATIONS_BY_NAME
     seen_names: set[str] = set()
     declared_names: set[str] = set()
 
@@ -663,6 +715,8 @@ def build_builtin_registry(
             raise ValueError("Builtin schema is missing function.name.")
         if name in seen_names:
             raise ValueError(f"Duplicate builtin schema declaration: {name}")
+        if registry.spec_for(name) is not None:
+            raise ValueError(f"Builtin tool is already registered: {name}")
         seen_names.add(name)
         declaration = declarations.get(name)
         if declaration is None:
@@ -679,7 +733,25 @@ def build_builtin_registry(
     if orphaned_handlers:
         names = ", ".join(sorted(orphaned_handlers))
         raise ValueError(f"Builtin handlers have no registered schema: {names}")
-    return registry
+
+
+def register_lead_subagent_tools(registry: ToolRegistry, subagent_runner) -> None:
+    """Complete a lead registry after its Runtime-bound runner is available."""
+    if subagent_runner is None:
+        raise ValueError(
+            "register_lead_subagent_tools requires a constructed subagent runner."
+        )
+    schemas = tuple(
+        schema
+        for schema in LEAD_TOOLS
+        if schema["function"]["name"] in _SUBAGENT_TOOL_NAMES
+    )
+    register_builtin_tools(
+        registry,
+        schemas=schemas,
+        handlers=make_subagent_handlers(subagent_runner),
+        source="lead",
+    )
 
 
 def _registry_owned_handler(**_kwargs) -> str:

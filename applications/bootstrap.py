@@ -44,10 +44,9 @@ from tools.hooks import (
 from tools.executor import ToolExecutor
 from tools.handlers import (
     cleanup_expired_sandboxes,
-    configure_semantic_memory_services,
-    configure_subagent_runner,
+    make_memory_handlers,
 )
-from tools.tool_registry import build_lead_tool_registry
+from tools.tool_registry import build_lead_tool_registry, register_lead_subagent_tools
 from runtime.routing.agent_router import AgentRouter
 from runtime.routing.hybrid_classifier import HybridModeClassifier
 from runtime.sessions import SessionManager
@@ -125,14 +124,25 @@ def build_runtime() -> AppRuntime:
     sessions = SessionManager(long_content_detector=long_content_detector)
     trace_store = TraceStore()
     cancellation_registry = CancellationRegistry()
-    tools = build_lead_tool_registry(TEAM, artifact_store=artifact_store)
-
     provider = model_pool.routed_provider("chat")
     router = AgentRouter(
         hybrid_classifier=HybridModeClassifier(
             provider=model_pool.routed_provider("hybrid"),
             model=model_pool.model_for("hybrid"),
         ),
+    )
+
+    semantic_flags_enabled = _env_bool("SEMANTIC_MEMORY_ENABLED", False) or any(
+        _env_bool(name, False)
+        for name in (
+            "SEMANTIC_MEMORY_WRITE_ENABLED",
+            "SEMANTIC_MEMORY_READ_ENABLED",
+            "SEMANTIC_MEMORY_CONTEXT_ENABLED",
+        )
+    )
+    shared_memory_embeddings = _build_shared_memory_embeddings(
+        history_enabled=_history_vector_enabled(),
+        semantic_enabled=semantic_flags_enabled,
     )
 
     history_vector_index = None
@@ -143,20 +153,14 @@ def build_runtime() -> AppRuntime:
             history_vector_scope_for_session,
         )
 
-        history_vector_index = build_history_vector_index_from_env()
+        history_vector_index = build_history_vector_index_from_env(
+            embeddings=shared_memory_embeddings,
+        )
         history_scope_resolver = history_vector_scope_for_session
     semantic_memory_repository = None
     semantic_memory_command_service = None
     semantic_memory_retrieval_service = None
     semantic_memory_index_synchronizer = None
-    semantic_flags_enabled = _env_bool("SEMANTIC_MEMORY_ENABLED", False) or any(
-        _env_bool(name, False)
-        for name in (
-            "SEMANTIC_MEMORY_WRITE_ENABLED",
-            "SEMANTIC_MEMORY_READ_ENABLED",
-            "SEMANTIC_MEMORY_CONTEXT_ENABLED",
-        )
-    )
     if semantic_flags_enabled:
         from memory.command_service import MemoryCommandService
         from memory.index_sync import MemoryIndexSynchronizer
@@ -165,7 +169,9 @@ def build_runtime() -> AppRuntime:
         from memory.vector_runtime import build_semantic_memory_index_from_env
 
         semantic_memory_repository = PostgresMemoryRepository()
-        semantic_memory_index = build_semantic_memory_index_from_env()
+        semantic_memory_index = build_semantic_memory_index_from_env(
+            embeddings=shared_memory_embeddings,
+        )
         semantic_memory_command_service = MemoryCommandService(
             semantic_memory_repository,
         )
@@ -182,7 +188,7 @@ def build_runtime() -> AppRuntime:
             semantic_memory_repository,
             semantic_memory_index,
         )
-    configure_semantic_memory_services(
+    memory_handlers = make_memory_handlers(
         command_service=(
             semantic_memory_command_service
             if _env_bool("SEMANTIC_MEMORY_WRITE_ENABLED", False)
@@ -194,6 +200,12 @@ def build_runtime() -> AppRuntime:
             else None
         ),
         index_synchronizer=semantic_memory_index_synchronizer,
+    )
+    tools = build_lead_tool_registry(
+        TEAM,
+        artifact_store=artifact_store,
+        memory_handlers=memory_handlers,
+        include_subagent_tools=False,
     )
     security_retrieval_router = None
     security_route_classifier = None
@@ -350,7 +362,7 @@ def build_runtime() -> AppRuntime:
             SUBAGENT_MAX_REASONING_STEPS,
         ),
     )
-    configure_subagent_runner(subagent_runner)
+    register_lead_subagent_tools(tools, subagent_runner)
 
     coordinator = TurnCoordinator(
         bus,
@@ -430,6 +442,20 @@ def _env_bool_any(names: list[str], *, default: bool) -> bool:
         if value not in (None, ""):
             return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(default)
+
+
+def _build_shared_memory_embeddings(*, history_enabled: bool, semantic_enabled: bool):
+    """Share a provider only after its common configuration initializes."""
+    if not history_enabled or not semantic_enabled:
+        return None
+    from memory.embeddings import build_embedding_provider_from_env
+
+    try:
+        return build_embedding_provider_from_env()
+    except Exception:
+        # Each index builder will retry independently, retaining its own
+        # strict-mode and null-index fallback contract.
+        return None
 
 
 def _rag_enabled() -> bool:

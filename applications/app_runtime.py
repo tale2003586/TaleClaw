@@ -48,7 +48,19 @@ class AppRuntime:
                             exc_info=(type(result), result, result.__traceback__),
                         )
             self._dispatch_task = None
+            self._close_session_manager()
             self._closed = True
+
+    def _close_session_manager(self) -> None:
+        services = self.services
+        sessions = getattr(services, "session_manager", None)
+        close = getattr(sessions, "close", None)
+        if not callable(close):
+            return
+        try:
+            close()
+        except Exception:
+            logger.exception("session manager failed during runtime shutdown")
 
     async def submit_user_message(
         self,

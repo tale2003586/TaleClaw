@@ -40,6 +40,64 @@ class AsyncRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(finalized.is_set())
         self.assertIsNone(runtime._dispatch_task)
 
+    async def test_app_runtime_closes_its_session_manager_once(self) -> None:
+        class Bus:
+            def stop(self):
+                pass
+
+        class Sessions:
+            def __init__(self):
+                self.close_count = 0
+
+            def close(self):
+                self.close_count += 1
+
+        sessions = Sessions()
+        runtime = AppRuntime(
+            bus=Bus(),
+            coordinator=SimpleNamespace(),
+            services=SimpleNamespace(session_manager=sessions),
+        )
+
+        await runtime.stop()
+        await runtime.stop()
+
+        self.assertEqual(1, sessions.close_count)
+
+    async def test_session_manager_close_failure_does_not_block_shutdown(self) -> None:
+        class Bus:
+            def __init__(self):
+                self.entered = asyncio.Event()
+                self.finalized = asyncio.Event()
+
+            async def dispatch_outbound(self):
+                self.entered.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    self.finalized.set()
+
+            def stop(self):
+                pass
+
+        bus = Bus()
+        runtime = AppRuntime(
+            bus=bus,
+            coordinator=SimpleNamespace(),
+            services=SimpleNamespace(
+                session_manager=SimpleNamespace(
+                    close=lambda: (_ for _ in ()).throw(RuntimeError("close failed"))
+                )
+            ),
+        )
+
+        runtime.start()
+        await bus.entered.wait()
+        await runtime.stop()
+
+        self.assertTrue(runtime._closed)
+        self.assertTrue(bus.finalized.is_set())
+
     async def test_feishu_close_cancels_and_awaits_event_tasks_once(self) -> None:
         started = asyncio.Event()
         finalized = asyncio.Event()

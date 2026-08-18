@@ -8,12 +8,18 @@ from agents.subagent.orchestration_state import ORCHESTRATION_STATE_KEY
 from agents.subagent.runner import TaskSubagentRunner
 from agents.definitions import CODING_AGENT_SPEC
 from runtime.runtime import Runtime
+from runtime.agent_spec import AgentSpec, SpawnPolicy, ToolSet
 from runtime.sessions.session import Session
 from tools.executor import ToolExecutor
-from tools.handlers import configure_subagent_runner, make_lead_handlers
+from tools.handlers import make_lead_handlers
 from tools.schema import function_tool
-from tools.tool_registry import ToolRegistry, build_lead_tool_registry
+from tools.tool_registry import (
+    ToolRegistry,
+    build_lead_tool_registry,
+    register_lead_subagent_tools,
+)
 from tools.spec import ToolSpec
+from models.provider import LLMResponse, ToolCall
 
 
 class ContextBuilder:
@@ -23,6 +29,14 @@ class ContextBuilder:
 
 class DummyProvider:
     pass
+
+
+class RecordingProvider:
+    def __init__(self, responses) -> None:
+        self.responses = list(responses)
+
+    def chat(self, **_kwargs):
+        return self.responses.pop(0)
 
 
 class FakeRunner:
@@ -115,9 +129,6 @@ def _runtime(registry: ToolRegistry) -> Runtime:
 
 
 class SubagentToolTests(unittest.TestCase):
-    def tearDown(self) -> None:
-        configure_subagent_runner(None)
-
     def test_subagent_tool_filter_excludes_team_tools(self) -> None:
         runner = TaskSubagentRunner(base_runtime=_runtime(_registry()))
 
@@ -163,10 +174,95 @@ class SubagentToolTests(unittest.TestCase):
         )
         self.assertIn("Use rg/list_files/read_file", CODING_AGENT_SPEC.instructions)
 
+    def test_two_stage_registry_assembly_binds_runner_to_the_existing_runtime(self) -> None:
+        registry = build_lead_tool_registry(
+            FakeTeam(),
+            include_subagent_tools=False,
+        )
+        runtime = _runtime(registry)
+        runner = TaskSubagentRunner(base_runtime=runtime)
+
+        self.assertNotIn("task", registry._tools)
+        register_lead_subagent_tools(registry, runner)
+
+        self.assertIs(registry, runtime.agent_runner.tools)
+        self.assertIn("task", registry._tools)
+        self.assertIn("parallel_tasks", registry._tools)
+        self.assertEqual(
+            "Unknown tool: task",
+            build_lead_tool_registry(
+                FakeTeam(),
+                include_subagent_tools=False,
+            ).execute("task", {}, mode="coding"),
+        )
+        with self.assertRaisesRegex(ValueError, "requires a constructed subagent runner"):
+            register_lead_subagent_tools(registry, None)
+
+    def test_runner_bound_handlers_do_not_cross_contaminate_registries(self) -> None:
+        first = FakeRunner()
+        second = FakeRunner()
+        first_registry = build_lead_tool_registry(FakeTeam(), include_subagent_tools=False)
+        second_registry = build_lead_tool_registry(FakeTeam(), include_subagent_tools=False)
+        register_lead_subagent_tools(first_registry, first)
+        register_lead_subagent_tools(second_registry, second)
+
+        first_registry.spec_for("task").handler(
+            prompt="first", agent_type="explore", _session=SimpleNamespace(id="first"),
+        )
+        second_registry.spec_for("task").handler(
+            prompt="second", agent_type="explore", _session=SimpleNamespace(id="second"),
+        )
+
+        self.assertEqual("first", first.calls[0]["prompt"])
+        self.assertEqual("second", second.calls[0]["prompt"])
+
+    def test_agent_runner_reads_late_registered_task_tool_during_a_turn(self) -> None:
+        registry = build_lead_tool_registry(FakeTeam(), include_subagent_tools=False)
+        provider = RecordingProvider([
+            LLMResponse(
+                content=None,
+                tool_calls=[ToolCall(
+                    id="task-1",
+                    name="task",
+                    arguments={"prompt": "inspect auth", "agent_type": "explore"},
+                )],
+                raw_message={"role": "assistant", "content": None},
+            ),
+            LLMResponse(content="done", raw_message={"role": "assistant", "content": "done"}),
+        ])
+        runtime = Runtime(
+            tools=registry,
+            provider=provider,
+            model="test-model",
+            tool_executor=ToolExecutor([]),
+            context_builder=ContextBuilder(),
+        )
+        runner = FakeRunner()
+        register_lead_subagent_tools(registry, runner)
+        session = Session(
+            id="late-registration",
+            metadata={"user_role": "admin", "unlocked_tools": ["task"]},
+        )
+        session.add_message("user", "delegate this")
+
+        runtime.agent_runner.run(
+            session=session,
+            spec=AgentSpec(
+                name="coding",
+                tool_set=ToolSet(mode="coding"),
+                spawn_policy=SpawnPolicy(
+                    enabled=True,
+                    allowed_agent_types=("explore",),
+                ),
+            ),
+        )
+
+        self.assertEqual("inspect auth", runner.calls[0]["prompt"])
+        self.assertEqual("done", session.messages[-1]["content"])
+
     def test_task_handler_invokes_configured_runner(self) -> None:
         fake_runner = FakeRunner()
-        configure_subagent_runner(fake_runner)
-        handlers = make_lead_handlers(FakeTeam())
+        handlers = make_lead_handlers(FakeTeam(), subagent_runner=fake_runner)
 
         output = handlers["task"](
             prompt="inspect auth",
@@ -185,8 +281,7 @@ class SubagentToolTests(unittest.TestCase):
 
     def test_task_handler_allows_missing_scope_file_to_runner(self) -> None:
         fake_runner = FakeRunner()
-        configure_subagent_runner(fake_runner)
-        handlers = make_lead_handlers(FakeTeam())
+        handlers = make_lead_handlers(FakeTeam(), subagent_runner=fake_runner)
         with tempfile.TemporaryDirectory() as tmp:
             session = Session(
                 id="parent",
@@ -212,8 +307,7 @@ class SubagentToolTests(unittest.TestCase):
 
     def test_parallel_tasks_allows_directory_scope_to_runner(self) -> None:
         fake_runner = FakeRunner()
-        configure_subagent_runner(fake_runner)
-        handlers = make_lead_handlers(FakeTeam())
+        handlers = make_lead_handlers(FakeTeam(), subagent_runner=fake_runner)
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "pkg").mkdir()
             session = Session(
@@ -237,8 +331,7 @@ class SubagentToolTests(unittest.TestCase):
 
     def test_parallel_tasks_allows_many_scope_files_to_runner(self) -> None:
         fake_runner = FakeRunner()
-        configure_subagent_runner(fake_runner)
-        handlers = make_lead_handlers(FakeTeam())
+        handlers = make_lead_handlers(FakeTeam(), subagent_runner=fake_runner)
         with tempfile.TemporaryDirectory() as tmp:
             files = []
             for index in range(6):
@@ -267,8 +360,7 @@ class SubagentToolTests(unittest.TestCase):
 
     def test_parallel_tasks_handler_rejects_repeated_failed_clue(self) -> None:
         failing_runner = FailingRunner()
-        configure_subagent_runner(failing_runner)
-        handlers = make_lead_handlers(FakeTeam())
+        handlers = make_lead_handlers(FakeTeam(), subagent_runner=failing_runner)
         session = Session(id="parent", metadata={"user_role": "admin"})
         task = {
             "prompt": "locate memory facts",
