@@ -279,6 +279,25 @@ class SubagentToolTests(unittest.TestCase):
         self.assertTrue(fake_runner.calls[0]["prompt"].endswith("inspect auth"))
         self.assertEqual("parent", fake_runner.calls[0]["parent_session"].id)
 
+    def test_task_dependency_cannot_be_replaced_by_invocation_kwargs(self) -> None:
+        configured = FakeRunner()
+        replacement = FakeRunner()
+        handler = make_lead_handlers(
+            FakeTeam(),
+            subagent_runner=configured,
+        )["task"]
+
+        with self.assertRaises(TypeError):
+            handler(
+                prompt="inspect auth",
+                agent_type="explore",
+                runner=replacement,
+                _session=SimpleNamespace(id="parent"),
+            )
+
+        self.assertEqual([], configured.calls)
+        self.assertEqual([], replacement.calls)
+
     def test_task_handler_allows_missing_scope_file_to_runner(self) -> None:
         fake_runner = FakeRunner()
         handlers = make_lead_handlers(FakeTeam(), subagent_runner=fake_runner)

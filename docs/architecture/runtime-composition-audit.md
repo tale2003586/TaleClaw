@@ -387,14 +387,24 @@ The previous assembly silently omitted any schema whose handler was missing.
 
 ### After
 
-`BuiltinToolDeclaration` in `tools/tool_registry.py` is the canonical builtin
-semantic declaration. One declaration contains the ToolSpec semantic fields;
-its `bind()` method only checks schema identity, selects the explicitly
-declared teammate exposure where applicable, and builds the ToolSpec consumed
-by runtime policy, discovery, schemas, governance, and execution. Schemas stay
-in `tools/schema.py`; handlers stay in `tools/handlers.py`; lead and teammate
-schema groups remain bootstrap grouping metadata rather than semantic
-authorities.
+`BuiltinToolDeclaration` in `tools/tool_registry.py` is the builtin authoring
+SSOT. One declaration contains the ToolSpec semantic fields; its `bind()`
+method checks schema identity, selects the explicitly declared teammate
+exposure where applicable, and produces the runtime `ToolSpec`. `ToolSpec` is
+the runtime semantic representation and authority consumed by policy,
+discovery, schemas, governance, and execution. The flow is:
+
+```text
+schema + handler references + BuiltinToolDeclaration
+  -> bind()
+  -> ToolSpec
+  -> ToolRegistry
+  -> ToolPolicy / discovery / execution / governance
+```
+
+Schemas stay in `tools/schema.py`; handlers stay in `tools/handlers.py`; lead
+and teammate schema groups remain bootstrap grouping metadata rather than
+semantic authorities.
 
 `tool_search` remains an explicit Registry-owned execution exception: it has a
 normal declaration and ToolSpec, but ToolRegistry intercepts execution. Its
@@ -612,8 +622,9 @@ shutdown: AppRuntime.stop -> MessageBus dispatcher -> SessionManager -> SessionS
 ```
 
 The result remains a DAG-shaped composition root, not a strict layer stack or
-DI container. `ToolSpec` is the builtin semantic source of truth, while plugin
-ToolSpecs continue to register directly.
+DI container. `BuiltinToolDeclaration` is the builtin authoring SSOT;
+`ToolSpec` is the runtime authority produced by binding. Plugin ToolSpecs
+continue to register directly.
 
 ## Final Validation
 
