@@ -10,7 +10,6 @@ from memory.semantic_index import (
     SemanticMemoryIndex,
 )
 from memory.vector_index import MemoryVectorIndex, NullMemoryVectorIndex
-from user_scope import user_id_for_session
 
 
 def build_history_vector_index_from_env(
@@ -55,10 +54,6 @@ def history_vector_scope_for_session(session) -> str:
         task_id = metadata.get("task_id") or getattr(session, "id", "unknown")
         return f"task:{task_id}"
     return f"session:{getattr(session, 'id', 'unknown')}"
-
-
-def memory_vector_scope_for_session(session) -> str:
-    return history_vector_scope_for_session(session)
 
 
 def build_semantic_memory_index_from_env(

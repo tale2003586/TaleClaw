@@ -1,5 +1,6 @@
 import { createContext, useContext, type ReactNode } from "react";
 import type { CurrentUser, HealthResponse } from "../api/types";
+import type { ChatRunsController } from "../hooks/useChatRuns";
 import type { SessionsController } from "../hooks/useSessions";
 
 export interface AppContextValue {
@@ -26,5 +27,15 @@ export function SessionsContextProvider({ value, children }: { value: SessionsCo
 export function useSessionsContext() {
   const value = useContext(SessionsContext);
   if (!value) throw new Error("SessionsContext is unavailable");
+  return value;
+}
+
+const ChatRunsContext = createContext<ChatRunsController | null>(null);
+export function ChatRunsContextProvider({ value, children }: { value: ChatRunsController; children: ReactNode }) {
+  return <ChatRunsContext.Provider value={value}>{children}</ChatRunsContext.Provider>;
+}
+export function useChatRunsContext() {
+  const value = useContext(ChatRunsContext);
+  if (!value) throw new Error("ChatRunsContext is unavailable");
   return value;
 }

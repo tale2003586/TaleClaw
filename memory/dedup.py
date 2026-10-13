@@ -26,18 +26,6 @@ def parse_memory_items(markdown: str) -> list[str]:
     return items
 
 
-def is_duplicate_memory(new_text: str, existing_markdown: str) -> bool:
-    new_norm = normalize_memory_text(new_text)
-    if not new_norm:
-        return True
-    for item in parse_memory_items(existing_markdown):
-        if normalize_memory_text(item) == new_norm:
-            return True
-        if is_semantic_duplicate(new_text, item):
-            return True
-    return False
-
-
 def is_semantic_duplicate(
     left: str,
     right: str,

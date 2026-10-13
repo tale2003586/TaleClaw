@@ -9,7 +9,6 @@ class ContextRetrievalService:
         self,
         *,
         history_vector_index=None,
-        history_scope_resolver=None,
         retrieval_top_k: int = 6,
         retrieval_min_score: float = 0.35,
         security_retrieval_router=None,
@@ -19,9 +18,6 @@ class ContextRetrievalService:
         episodic_retrieval_service=None,
     ) -> None:
         self.history_vector_index = history_vector_index
-        self.history_scope_resolver = history_scope_resolver or (
-            lambda session: str(getattr(session, "id", "") or "global")
-        )
         self.retrieval_top_k = max(1, int(retrieval_top_k))
         self.retrieval_min_score = float(retrieval_min_score)
         self.security_retrieval_router = security_retrieval_router

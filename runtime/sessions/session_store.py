@@ -429,6 +429,56 @@ class SessionStore:
         # that case ``transaction()`` is a savepoint, so close the outer unit.
         self._conn.commit()
 
+    def save_branch(self, session: Any) -> None:
+        """Atomically persist a new task fork, including its cold recovery chain."""
+        session._backfill_legacy_messages()
+        with self._lock, self._conn.transaction():
+            exists = self._conn.execute(
+                sql(self.config, "SELECT id FROM sessions WHERE id = ?"), (session.id,),
+            ).fetchone()
+            if exists is not None:
+                raise ValueError("Branch session already exists")
+            self._upsert_session(session)
+            execute_many(self._conn, self.config, """
+                INSERT INTO messages (session_id, seq, role, timestamp, message_json)
+                VALUES (?, ?, ?, ?, ?)
+            """, [
+                (session.id, index, message.get("role", ""), message.get("timestamp"), canonical_json(message))
+                for index, message in enumerate(session.messages)
+            ])
+            self.last_event_insert_count = self._append_new_events(session)
+            for checkpoint in session.checkpoints:
+                state_json = canonical_json(checkpoint.get("state", {}))
+                state_hash = hashlib.sha256(state_json.encode("utf-8")).hexdigest()
+                self._conn.execute(sql(self.config, """
+                    INSERT INTO context_checkpoints (
+                        checkpoint_id, session_id, archive_boundary_seq,
+                        completion_event_id, created_at, state_json, state_sha256, metadata_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """), (
+                    checkpoint["checkpoint_id"], session.id, int(checkpoint.get("archive_boundary_seq") or 0),
+                    checkpoint.get("completion_event_id", ""), checkpoint.get("created_at", session.created_at),
+                    state_json, state_hash, canonical_json(checkpoint.get("metadata", {})),
+                ))
+            for snapshot in session.context_snapshots:
+                if snapshot.get("session_id") != session.id:
+                    raise ValueError("Branch snapshot belongs to another session")
+                self._conn.execute(sql(self.config, """
+                    INSERT INTO context_snapshots (
+                        snapshot_id, session_id, status, generation,
+                        covered_event_start_seq, covered_event_end_seq,
+                        source_task_state_version, source_hash, archive_completed,
+                        created_at, updated_at, snapshot_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """), (
+                    snapshot["snapshot_id"], session.id, snapshot["status"], snapshot["generation"],
+                    snapshot["covered_event_start_seq"], snapshot["covered_event_end_seq"],
+                    snapshot["source_task_state_version"], snapshot["source_hash"],
+                    bool(snapshot.get("archive_completed")), snapshot["created_at"],
+                    snapshot["updated_at"], canonical_json(snapshot),
+                ))
+        self._conn.commit()
+
     def compact_session(
         self,
         session: Any,

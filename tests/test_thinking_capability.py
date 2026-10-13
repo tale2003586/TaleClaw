@@ -20,13 +20,15 @@ class RecordingCompletions:
     def create(self, **kwargs):
         self.requests.append(kwargs)
         if kwargs.get("stream"):
-            return []
+            return [SimpleNamespace(choices=[SimpleNamespace(
+                delta=SimpleNamespace(content=None, tool_calls=[]), finish_reason="stop",
+            )])]
         message = SimpleNamespace(
             content="ok",
             tool_calls=[],
             model_dump=lambda **_: {"role": "assistant", "content": "ok"},
         )
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason="stop")], usage=None)
 
 
 def provider(*, supports=False, param="", value=True):
@@ -137,6 +139,7 @@ class ThinkingCapabilityTests(unittest.TestCase):
 
     def test_non_streaming_web_api_rejects_unsupported_true_with_400(self):
         handler = object.__new__(RequestHandler)
+        handler.headers = {"Content-Type": "application/json", "Host": "localhost:8000"}
         handler._read_json_body = lambda: {
             "session_id": "default",
             "message": "hello",

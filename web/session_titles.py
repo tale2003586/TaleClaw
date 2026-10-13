@@ -1,26 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Any, Literal
-
-from models.model_task_runner import ModelTaskRunner
-from runtime.agent_spec import AgentSpec
-from runtime.sessions import Session
-
+from typing import Any
 
 DEFAULT_SESSION_TITLE_MAX_CHARS = 20
-DEFAULT_SESSION_TITLE_TIMEOUT_SECONDS = 8.0
 _TITLE_EDGE_QUOTES = "\"'`“”‘’《》「」『』"
-
-
-@dataclass(frozen=True)
-class SessionTitleResult:
-    title: str
-    source: Literal["existing", "model", "fallback", "unavailable"]
-    updated: bool
 
 
 def first_question_answer(messages: list[dict[str, Any]]) -> tuple[str, str] | None:
@@ -63,73 +48,6 @@ def session_display_title(
     return title or str(fallback_id)
 
 
-class WebSessionTitleService:
-    def __init__(
-        self,
-        *,
-        runner: ModelTaskRunner,
-        timeout_seconds: float = DEFAULT_SESSION_TITLE_TIMEOUT_SECONDS,
-        max_chars: int = DEFAULT_SESSION_TITLE_MAX_CHARS,
-    ) -> None:
-        self.runner = runner
-        self.timeout_seconds = max(0.001, float(timeout_seconds))
-        self.max_chars = max(1, int(max_chars))
-        self.spec = AgentSpec(
-            name="web_session_title",
-            model_purpose="summary",
-            max_tokens=48,
-        )
-
-    async def ensure_title(self, session: Session) -> SessionTitleResult:
-        existing = str((session.metadata or {}).get("title") or "").strip()
-        if existing:
-            return SessionTitleResult(existing, "existing", False)
-
-        first_pair = first_question_answer(session.messages)
-        if first_pair is None:
-            return SessionTitleResult("", "unavailable", False)
-        question, answer = first_pair
-
-        source: Literal["model", "fallback"] = "model"
-        try:
-            generated = await asyncio.wait_for(
-                asyncio.to_thread(self._generate_title, question, answer),
-                timeout=self.timeout_seconds,
-            )
-            title = normalize_session_title(generated, max_chars=self.max_chars)
-        except Exception:
-            title = ""
-
-        if not title:
-            source = "fallback"
-            title = normalize_session_title(question, max_chars=self.max_chars)
-        if not title:
-            title = "新会话"[: self.max_chars]
-
-        session.metadata["title"] = title
-        return SessionTitleResult(title, source, True)
-
-    def _generate_title(self, question: str, answer: str) -> str:
-        return self.runner.run(
-            spec=self.spec,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "根据用户的第一个问题和助手的回答，总结一个会话主题。"
-                        "只输出标题，不要解释、引号、换行或 Markdown。"
-                        "标题不得超过20个字符。"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"问题：\n{question}\n\n回答：\n{answer}",
-                },
-            ],
-            max_tokens=48,
-        )
-
-
 def _message_text(message: Mapping[str, Any]) -> str:
     content = message.get("content", "")
     if isinstance(content, str):
@@ -147,9 +65,6 @@ def _message_text(message: Mapping[str, Any]) -> str:
 
 __all__ = (
     "DEFAULT_SESSION_TITLE_MAX_CHARS",
-    "DEFAULT_SESSION_TITLE_TIMEOUT_SECONDS",
-    "SessionTitleResult",
-    "WebSessionTitleService",
     "first_question_answer",
     "normalize_session_title",
     "session_display_title",

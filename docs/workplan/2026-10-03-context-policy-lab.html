@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent 上下文策略实验室 · 实现与验收</title>
+<style>
+:root{font-family:system-ui,-apple-system,"Microsoft YaHei",sans-serif;color:#17243a;background:#f3f6fa;font-size:16px}
+body{max-width:1150px;margin:0 auto;padding:44px 24px 90px}h1{font-size:38px;line-height:1.25;letter-spacing:-1px;margin:12px 0}h2{font-size:24px;margin:38px 0 16px}h3{font-size:18px}p,li{line-height:1.8}.muted{color:#516177}.eyebrow{color:#245ed4;letter-spacing:2px;font-size:13px;font-weight:700}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.card,section{background:white;padding:22px;border:1px solid #dce4ef;border-radius:12px}.card b{display:block;font-size:24px;margin-bottom:8px}.tag{display:inline-block;background:#eaf4ed;color:#23643d;border-radius:20px;padding:4px 12px;font-size:13px}.pending{background:#fff4de;border-left:4px solid #c78a20;padding:18px 22px;border-radius:6px;margin:24px 0}table{border-collapse:collapse;width:100%;font-size:14px;background:white}td,th{padding:14px;text-align:left;border-bottom:1px solid #e2e8f0;vertical-align:top}th{background:#eaf0fa}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{font-size:.9em}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#182337;color:#e4edf9;padding:20px;border-radius:9px;line-height:1.65;font-size:13px}a{color:#255bb8;text-underline-offset:3px}nav{display:flex;gap:20px;flex-wrap:wrap;margin:24px 0}.flow{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:22px 0}.flow span{padding:14px;background:#e9f0fd;border-radius:8px}.small{font-size:13px}.scroll{overflow:auto}@media(max-width:800px){.grid{grid-template-columns:1fr}h1{font-size:30px}td,th{min-width:110px}}
+</style>
+<div class="eyebrow">IMPLEMENTATION / ADVERSARIAL REVIEW / EXPERIMENTS</div>
+<h1>把上下文管理做成<br>可替换、可恢复、可验证的能力</h1>
+<p class="muted">默认仍使用 <code>current</code>。本轮交付真实运行接口、结构化推理状态、原生窗口适配与统一实验命令。没有用压缩率替代任务完成率。</p>
+<div class="pending"><b>现在的决策：默认保持 current；masking 保留为优先评测候选；adaptive 继续作为实验策略。</b><p>可替换策略、证据恢复、预算与实验报告已落地。真实压力对照全部跑完，结果和失败原因见下表；本轮没有证据支持直接更换默认策略。</p></div>
+<nav><a href="#pressure-result">真实对照结果</a><a href="#use">使用入口</a><a href="#strategies">策略对比</a><a href="#review">对抗审查</a><a href="#validation">验收证据</a><a href="#limits">边界与后续决策</a></nav>
+<div class="grid"><div class="card"><b>5 种策略</b><span class="tag">会话级切换 · 可审计</span><p>current / raw / masking / adaptive / native</p></div>
+<div class="card"><b>原生任务续接</b><span class="tag">new · continue · branch</span><p>恢复任务事件、状态、快照。分支重新标记证据有效性，不重放过去工具操作。</p></div>
+<div class="card"><b>3 位审查 Agent</b><span class="tag">分工实现 · 交叉反例</span><p>围绕状态洗白、分支持久化、原生窗口、报告归因进行独立审查。</p></div></div>
+<h2>数据如何流动</h2>
+<div class="flow"><span>不可变原始事件</span>→<span>策略选择 raw / abstract / drop</span>→<span>保护用户要求 + 当前 TaskState</span>→<span>预算守卫 / 原生精确计数</span>→<span>模型与工具</span></div>
+<p>选择改变可见内容，不删除源事件。文件改变、要求修订、分支复制后，失效沿证据 → 发现 → 决策 → 行动 / 完成依据传播。模型的“确认假设”始终属于解释，不能冒充工具验证。</p>
+<h2 id="use">直接使用</h2>
+<section><h3>HTTP：继续同一任务并切换策略</h3><p><code>POST /api/chat</code> 或 <code>/api/chat/stream</code> 的现有请求中加入：</p>
+<pre>{
+  "message": "继续检查 parser 的边界条件",
+  "coding_task": {
+    "mode": "continue",
+    "context_policy": {
+      "name": "adaptive",
+      "recent_groups": 2,
+      "preview_chars": 320,
+      "soft_ratio": 0.70,
+      "target_ratio": 0.45
+    }
+  }
+}</pre>
+<p><code>task_id</code> 可明确指定同一用户、同一父会话的任务。省略时用父会话绑定的活动任务。<code>auto</code> 只根据该绑定选择 new/continue，不猜“继续”等关键词。显式 <code>new</code> 不继承旧任务约束；<code>branch</code> 复制任务状态与来源引用。工作目录是否隔离由 <code>workspace_mode</code> 决定：<code>worktree</code> 使用独立 Git 工作树，<code>in_place</code> 使用原目录。工作树与交付能力由同期并行编码改动提供，不能把任务状态分支与文件副本视为同一件事。</p>
+<p>选择优先级：本次显式策略 → 当前任务已保存的策略覆盖 → 父会话默认。无效字段、比例或策略名在模型调用前拒绝。</p>
+<h3>Python</h3><pre>runner.run_coding_task(
+    parent_session=parent,
+    user_text="继续验证",
+    agent_spec=CODING_AGENT_SPEC,
+    task_mode="continue",
+    context_policy="masking",
+)</pre>
+<h3>明确修订用户要求</h3><pre>"coding_task": {
+  "mode": "continue",
+  "requirements_revision": {
+    "objective": "检查并修复 parser",
+    "constraints": [{"id": "scope", "text": "仅修改 src/parser.py", "required": true}],
+    "remove_constraint_ids": ["old_constraint_id"]
+  }
+}</pre>
+<p>只提交实际需要修改的字段。被撤销约束保留审计历史；完整原始用户要求也保留，并标出后续修订的覆盖范围。旧完成依据退休后仍允许用新证据重新完成任务。</p></section>
+<h2 id="strategies">每种策略做什么</h2>
+<div class="scroll"><table><thead><tr><th>策略</th><th>行为</th><th>用途与边界</th></tr></thead><tbody>
+<tr><td><b>current</b> · 默认</td><td>保留现有 TaskState + 事件快照压缩路径。</td><td>兼容基线；没有未经实测切换默认行为。</td></tr>
+<tr><td><b>raw</b></td><td>从源消息恢复全部候选内容，不主动压缩。</td><td>对照组；最终硬预算仍生效，不承诺无限上下文。</td></tr>
+<tr><td><b>masking</b></td><td>旧工具观察替换为短预览、完整内容哈希和 event:// 恢复引用，保留工具事务。</td><td>低开销基线；遮蔽摘要不构成新证据。</td></tr>
+<tr><td><b>adaptive</b></td><td>按当前焦点、结构化假设、证据引用选择完整内容、预览或移出；重要原文可置换无关预览。</td><td>确定性启发式，无额外规划 LLM 调用；每轮重新读取源窗口。移除旧工具结果时保留有界执行索引（工具、关键参数、状态、恢复引用），索引也占预算；放不下索引时保留短事务。索引不是任务验证，也不保证模型不会重复调查。</td></tr>
+<tr><td><b>native</b></td><td>Responses server/standalone compaction；保留整份 canonical items 与 opaque 内容；每次单独刷新 instructions。</td><td>需要明确支持的 endpoint、SDK 与 input-token-count。未知兼容服务不假定支持。</td></tr>
+</tbody></table></div>
+<p>真实用户要求、开放工具事务、最近事务、没有恢复引用的观察不会被策略悄悄移除。最终仍超过硬上限时明确停止。每轮选择理由、源摘要指纹、raw/abstract/drop 计数记录在 <code>context_policy_audit</code>；原始证据可通过 <code>read_artifact</code> 恢复。</p>
+<section><h3>模型主动压缩</h3><p>原有 <code>compact(focus=...)</code> 已从“仅记录请求”接成真实队列。待本轮所有工具结果闭合后由下一次上下文构建处理；连续无新工作请求被限制。请求被接受或队列处理完成，不保证该次实际缩短窗口；应核对实际请求审计与最终验收。它不能改变用户要求或把模型总结变成可信事实。</p>
+<h3>原生选项</h3><pre>{"name":"native","native_mode":"server",
+ "native_compact_threshold":12000,"native_fallback":"error"}</pre>
+<p><code>native_mode</code> 可用 server / standalone；<code>native_fallback</code> 默认 error，也可明确选择一种本地策略。回退仅用于调用前的能力判定；远端 404、未支持参数或计数不可用会明确终止，不静默换模型重试。切模型、endpoint 或 workspace 会切断旧原生窗口身份。首次切到 native 的原始输入必须能装入服务端上下文；不跨模型搬运密文。</p></section>
+<h2>统一实验命令</h2>
+<pre>.venv/bin/python -m evaluation.context_experiments \
+  --runner scripted \
+  --policy current --policy raw --policy masking \
+  --policy adaptive --policy native \
+  --repeat 1 --max-steps 20 \
+  --eval-root .evals/context</pre>
+<p>真实模型选择 <code>--runner real</code>；用户批准后，已固定 <code>openai_relay / gpt-5.6-sol</code> 完成隔离短任务烟测及上述真实压力矩阵。<code>--policy-config</code> 接受 JSON 配置数组，可调窗口、预览和压缩比例。每个任务有模型调用、工具调用、已知 token、时间预算；模型内部重试、压缩及结论提取纳入根调用账本。时间上限是协作式检查，不宣称能立即取消已发出的远端请求。</p>
+<p>每个实验产生 <code>matrix.json</code>、<code>rows.csv</code>、<code>report.html</code>、独立任务日志与源码/数据指纹。报告保留失败和遗漏任务分母，记录实际生效策略、回退、可观察模型身份、缓存用量与证据恢复代理指标。不完整用量记为未知；辅助调用身份未覆盖时不做同模型配对。</p>
+<section><h3>固定模型的压力对照入口</h3><p>两道合成题分别检查“失败测试 → 修复 → 再验证”和“读取四阶段日志 → 压缩 → 原样恢复早期证据 → 写入答案”。每份日志必须分轮完整读取；改动范围和最终测试由模型之外的验收器检查。</p><pre># 离线检查夹具与接线，不调用 API
+.venv/bin/python scripts/run_context_policy_trial.py \
+  --runner scripted --eval-root .evals/context-pressure
+
+# 使用本次已批准的 OpenAI 路由，重新运行会产生新的 API 用量
+.venv/bin/python scripts/run_context_policy_trial.py \
+  --runner real --profile openai_relay \
+  --expected-host sub.umapis.com --expected-model gpt-5.6-sol \
+  --env-file .env --eval-root .evals/context-pressure-openai</pre><p>脚本固定路由且禁用回退，使用复制的合成夹具，禁止生产数据库连接；这属于进程与工作目录隔离，不是操作系统沙箱。每题最多 20 次模型尝试、40 次工具尝试、250,000 已知 tokens、360 秒和 18 个推理步骤。时间/token 上限可能被一个正在进行的响应越过。为制造压力，本地窗口设为 32,000 tokens，目标比例 0.20；该数值不代表服务商模型的物理窗口。</p></section>
+<h2 id="review">对抗审查修掉了什么</h2>
+<div class="scroll"><table><thead><tr><th>攻击 / 故障条件</th><th>修正后的行为</th></tr></thead><tbody>
+<tr><td>分支第一次保存后、运行前崩溃</td><td>首次事务提交前就使继承证据及完成断言失效；事件、快照和检查点原子保存。</td></tr>
+<tr><td>模型伪造 host 验证来源或同 patch 改前提再直接完成</td><td>来源、任务作用域、证据新鲜度、依赖图与最终状态联合校验；不允许空引用洗白。</td></tr>
+<tr><td>修改文件后先有新读数、再处理旧状态</td><td>按事件顺序完成主机证据落地，再传播失效，避免误把未来读数永久判过期。</td></tr>
+<tr><td>旧完成依据过期后永远无法再完成</td><td>旧 basis 归档并退休；新鲜证据与重验项能恢复合法完成状态。</td></tr>
+<tr><td>压缩掉工具结果后仍声称全文可见</td><td>按实际 canonical 可见输出登记；密文不能代替可读取的工具原文。</td></tr>
+<tr><td>原始日志极大，但 native 窗口已经很小</td><td>本地指令预算与服务端精确输入计数分离，不把输出额度错误夹到 1 token。</td></tr>
+<tr><td>native 回退到 adaptive，或跨模型路由变化</td><td>记录真实策略及模型；不能冒充 native 成功，不做不公平配对。</td></tr>
+<tr><td>失败样本没返回、usage 缺失</td><td>失败仍在分母；缺失 usage 与模型身份是未知，不记免费或“同模型”。</td></tr>
+<tr><td>短用户要求紧邻巨大模型回复，整组一直无法压缩</td><td>adaptive 仅拆分普通闭合 user/assistant 组，保护用户原文和工具事务，保留源位置与最近事务边界。</td></tr>
+<tr><td>移除旧工具结果后，模型忘记已读文件并反复调查</td><td>增加有界执行索引，保留真实 event:// 引用；真实实验仍单独核查重复读取，不以索引存在推断模型已遵从。</td></tr>
+<tr><td>pytest 返回 1，编码循环在修复前退出</td><td>仅对已结束、输出完整的单条 pytest 命令标记诊断失败并允许继续修复；超时、复合命令和未知子进程保持原有停止规则。</td></tr>
+<tr><td>Responses 自动 strict 化可选工具参数</td><td>未显式声明时发送 strict:false；保留显式 true/false，并验证参数类型。普通、流式、原生计数调用共用转换路径。</td></tr>
+<tr><td>文件变更后无法重读、分支引用失联、新测试依赖旧版本</td><td>清理过期读取签名、仅在当前分支解析来源别名、记录主机已观察文件的执行前后版本；不宣称覆盖未观察文件或任意 ABA 变更。</td></tr>
+<tr><td>第二题被中断，第一题完成结果却未入账</td><td>逐题原子保存账本；可捕获中断明确区分已完成、被中断和未开始。未知用量保留未知，SIGKILL 只能保证此前已写入的检查点。</td></tr>
+</tbody></table></div>
+<h2 id="pressure-result">真实 OpenAI 压力对照：已完成</h2><section><p><b>8 个实际运行，5 个完整通过；另有 2 个 native 能力预检拒绝。</b>独立业务验收为 6 个通过、2 个未验证。修复题与恢复题各 1 次，不属于生产成功率估计。所有实际运行使用同一冻结源码与 <code>sub.umapis.com / gpt-5.6-sol</code>，两组并行，禁止模型回退。</p><div class="scroll"><table><thead><tr><th>策略</th><th>严格压力通过</th><th>独立业务验收</th><th>已知 tokens</th><th>实际观察</th></tr></thead><tbody><tr><td><b>current</b></td><td>1 / 2</td><td>1 通过 · 1 未验证</td><td>203,592 + 未知用量</td><td>恢复题通过；修复题单次请求约60秒超时，当时总预算仍有余量。</td></tr>
+<tr><td><b>raw</b></td><td>1 / 2</td><td>2 通过</td><td>325,561</td><td>两题代码结果均正确；修复题输入超限，未完成修改后的自测与收尾。</td></tr>
+<tr><td><b>masking</b></td><td>2 / 2</td><td>2 通过</td><td>266,861</td><td>两题完整通过，无重复 read_file；恢复题发生两次 read_artifact，其中第二次回读前次恢复结果。</td></tr>
+<tr><td><b>adaptive</b></td><td>1 / 2</td><td>1 通过 · 1 未验证</td><td>318,476 + 未知用量</td><td>恢复题通过，但额外重读四份日志；修复题重复调查后到达360秒总时限，末请求超时。</td></tr>
+<tr><td><b>native</b></td><td>能力不支持</td><td>未执行</td><td>0 请求</td><td>该中转未声明 server_compaction 与 input-token-count 必要能力；两题均0模型请求。</td></tr></tbody></table></div><p>“严格通过”要求读取/压缩/恢复协议、允许改动范围、独立测试和执行完成同时成立。API中断后未完成业务验收，记为未验证；布尔检查未满足不等于测试已执行并失败。<code>raw</code> 的修复代码虽然正确，仍因没有完成闭环而不计完整通过。</p><p>本批已知用量合计 <b>1,114,490 tokens，另有2次响应的用量未知</b>。各策略整批总量包含不同完成程度，不能据此宣称更省钱。四种本地策略的恢复题均有完整用量和模型身份；与 current 的成本配对各仅1个，不足以推断普遍收益。两组并行运行，也不据此比较延迟优劣。</p><p>实际请求中，current 使用快照，masking 发生观察遮蔽，adaptive 发生遮蔽/移出，raw 没有主动策略干预；raw修复题的硬裁剪尝试未能使输入低于限制。指标是请求中的暴露次数和规划估算，不是实际计费节省。</p><ul><li><a href="evidence/2026-10-03-context-policies/pressure-final-openai/combined/report.html">合并矩阵报告</a> · <a href="evidence/2026-10-03-context-policies/pressure-final-openai/combined/rows.csv">逐题 CSV</a> · <a href="evidence/2026-10-03-context-policies/pressure-final-openai/combined/trial-summary.json">结果摘要 JSON</a></li><li><a href="evidence/2026-10-03-context-policies/pressure-final-openai/independent-review.json">独立逐题审查</a> · <a href="evidence/2026-10-03-context-policies/pressure-final-openai/independent-index-review.json">adaptive 索引与重复调查审查</a></li><li><a href="evidence/2026-10-03-context-policies/pressure-final-openai/combined/source-input-hashes.json">原始证据未改动的哈希检查</a> · <a href="evidence/2026-10-03-context-policies/pressure-final-tests-v3/report-classification-diff.patch">native 报告分类修复差异</a></li></ul><p class="small muted">合并报告仅规范两条 native 的预检分类，保留原始组内 JSON、工具收据与 trace；不改其它8题评分。源码中的运行时、题集与实际执行一致，最终测试另包含报告分类修复。前两批调试实验及其失败/中断用量保留：<a href="evidence/2026-10-03-context-policies/pressure-openai/context-20261003-143933-d97842/diagnostic-summary.json">可选参数兼容诊断</a>、<a href="evidence/2026-10-03-context-policies/pressure-openai-fixed/context-20261003-144729-38b4f1/diagnostic-summary.json">重复调查诊断</a>；两批已知用量合计283,157 tokens且总用量不完整，与最终批次不可作单因素因果对照。</p></section>
+<h2 id="validation">最终验收证据</h2>
+<section><p id="test-result"><b>最终版本：1493 项测试通过，27 个子测试通过，0 失败或跳过。</b>包括独立临时 PostgreSQL 的恢复、事务和中断回归。真实实跑快照的 617 个文件中，614 个与最终测试快照逐项一致；仅压力验收器、试跑脚本及其测试因 native 报告分类修复而不同。实跑清单中的运行时与题集保持不变，完整差异与指纹保留。</p><ul id="evidence-links"><li><a href="evidence/2026-10-03-context-policies/pressure-final-tests-v3/full-suite.log">最终全量测试日志</a> · <a href="evidence/2026-10-03-context-policies/pressure-final-tests-v3/full-suite.xml">JUnit 结果</a> · <a href="evidence/2026-10-03-context-policies/pressure-final-tests-v3/verification-summary.json">独立核对结果</a></li><li><a href="evidence/2026-10-03-context-policies/pressure-final-tests-v3/live-source-comparison.json">实跑与测试源码比较</a> · <a href="evidence/2026-10-03-context-policies/pressure-final-tests-v3/cleanup-recheck.json">数据库清理复核</a> · <a href="evidence/2026-10-03-context-policies/delivery.json">交付状态</a></li><li><a href="evidence/2026-10-03-context-policies/pressure-report-fixed-scripted/context-20261003-152231-9a2068/report.html">最终压力夹具离线矩阵</a>：四种本地策略 8/8 严格验收通过，native 两项标为能力不支持。</li><li><a href="evidence/2026-10-03-context-policies/offline-final/context-20261003-133400-f8c785/report.html">历史短任务离线矩阵</a>：96/96，仅作早期接线证据。</li></ul><p class="small muted">全套测试数包含工作区已有和同期其他改动，不代表本轮新增数。最终测试源码指纹：<code>4c4e8163b91ee0ce52efb41133cbfcdcc96037243fda42a84b34deeea0ec993f</code>。本轮测试在隔离快照和临时数据库中完成，清理已复核。</p></section>
+<div class="pending"><b>历史 OpenAI 短任务烟测：通过。</b><p>使用用户批准的 <code>sub.umapis.com / gpt-5.6-sol</code> 中转，策略固定 <code>current</code>，禁止跨提供商回退。在复制的 <code>coding-git-diff-008</code> 夹具中，仅将 <code>src/version.py</code> 的版本号从 <code>0.1.0</code> 改为 <code>0.2.0</code>。4 次模型调用、8 次工具调用全部成功，用量完整记录为 25,729 tokens。执行状态 completed、独立 grader 通过；子 Agent 另行核对精确 diff，无额外修改、暂存变更或未跟踪文件。</p><p><a href="evidence/2026-10-03-context-policies/openai-live/smoke-summary.json">真实试跑结果</a> · <a href="evidence/2026-10-03-context-policies/openai-live/verified.diff">实际代码差异</a> · <a href="evidence/2026-10-03-context-policies/openai-live/independent-review.json">独立审查</a> · <a href="evidence/2026-10-03-context-policies/openai-live/coding_pilot.py">已执行脚本</a></p><p>本次证明 OpenAI 配置与真实编码链路可用；单个短任务不足以证明任何上下文策略提升。默认策略仍为 current。此前 OpenCode Go 的 403 是另一提供商的订阅权限问题，其 <a href="evidence/2026-10-03-context-policies/api-key-check/result.json">预检证据</a> 保留。</p></div>
+<h2 id="limits">现在需要什么决策</h2>
+<p><b>默认保持 current。</b> masking 在这次两题对照中完整通过，可作为扩大评测的优先候选；adaptive 的原样恢复链路已跑通，但仍会重复调查，保留实验性。native 需在路由明确提供所需能力后才有可比较结果。恢复题已有一组同模型、同任务且用量完整的配对；样本仍不足以判断生产质量或成本优势，因此本轮不升级默认策略。</p>
+<p>自适应选择是启发式实现，没有训练新的压缩模型。完整的 RLM 递归推理执行器、跨任务自动经验学习不在本轮实现中；现有冷证据检索是其可复用基础。它们应在这套评测上独立增加策略和基准，避免把未验证研究结果直接装进默认生产路径。</p>
+<p class="small muted">设计参考：<a href="https://developers.openai.com/api/docs/guides/compaction">OpenAI 原生 compaction 接口</a> · <a href="https://www.langchain.com/blog/autonomous-context-compression">主动上下文压缩</a> · <a href="https://arxiv.org/html/2508.21433v3">Observation masking 对照研究</a> · <a href="https://arxiv.org/html/2606.31564v1">自适应上下文选择研究</a>。论文与产品文档为方法来源，不是本仓库效果证明。</p>
+</html>

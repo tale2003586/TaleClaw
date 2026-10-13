@@ -216,7 +216,7 @@ def _events(path: Path) -> list[dict]:
 class RunTraceTests(unittest.TestCase):
     def test_trace_store_subscribers_receive_top_session_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            trace_store = TraceStore(Path(tmp) / ".runs")
+            trace_store = TraceStore(Path(tmp) / ".runs", capture_content=True)
             run_state = RunState.create(session_id="web:local:default")
             received = []
             failing_calls = []
@@ -289,7 +289,7 @@ class RunTraceTests(unittest.TestCase):
 
     def test_trace_metrics_include_loop_guard_regression_counters(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            trace_store = TraceStore(Path(tmp) / ".runs")
+            trace_store = TraceStore(Path(tmp) / ".runs", capture_content=True)
             run_state = RunState.create(session_id="web:test")
             trace_store.start_run(run_state)
             trace_store.append_event(run_state, "tool.call.completed", {
@@ -329,7 +329,7 @@ class RunTraceTests(unittest.TestCase):
 
     def test_trace_metrics_include_context_compression_and_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            trace_store = TraceStore(Path(tmp) / ".runs")
+            trace_store = TraceStore(Path(tmp) / ".runs", capture_content=True)
             run_state = RunState.create(session_id="web:test")
             trace_store.start_run(run_state)
             trace_store.append_event(
@@ -398,7 +398,7 @@ class RunTraceTests(unittest.TestCase):
 
     def test_trace_metrics_include_coding_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            trace_store = TraceStore(Path(tmp) / ".runs")
+            trace_store = TraceStore(Path(tmp) / ".runs", capture_content=True)
             run_state = RunState.create(session_id="task:coding")
             trace_store.start_run(run_state)
             trace_store.append_event(
@@ -647,7 +647,7 @@ class RunTraceTests(unittest.TestCase):
 
     def test_agent_loop_writes_run_state_trace_and_report_for_tool_turn(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            trace_store = TraceStore(Path(tmp) / ".runs")
+            trace_store = TraceStore(Path(tmp) / ".runs", capture_content=True)
             session = Session(id="web:default", active_agent="bot")
             sessions = RecordingSessions(session)
             provider = ScriptedProvider([
@@ -739,7 +739,7 @@ class RunTraceTests(unittest.TestCase):
             )
             runner.factory = TaskSessionFactory(sessions, root=root / ".coding_applications")
             runner.conclusion_extractor = Extractor()
-            trace_store = TraceStore(root / ".runs")
+            trace_store = TraceStore(root / ".runs", capture_content=True)
             parent = Session(
                 id="web:default",
                 active_agent="coding",
@@ -782,7 +782,13 @@ class RunTraceTests(unittest.TestCase):
 
             self.assertIn("coding done", reply)
             self.assertEqual(run_state.run_id, stored.metadata["parent_run_id"])
-            self.assertEqual("completed", state["metadata"]["coding_application"]["status"])
+            task_report = state["metadata"]["coding_application"]
+            self.assertEqual("completed", task_report["execution_status"])
+            self.assertEqual("awaiting_verification", task_report["status"])
+            self.assertEqual("active", task_report["task_status"])
+            self.assertEqual("not_run", task_report["verification"]["outcome"])
+            self.assertEqual("active", stored.metadata["task_status"])
+            self.assertEqual("not_run", stored.metadata["verification"]["outcome"])
             self.assertIn("coding_application_started", event_names)
             self.assertIn("coding_application_completed", event_names)
             self.assertIn("workspace.snapshot.captured", event_names)
@@ -792,7 +798,7 @@ class RunTraceTests(unittest.TestCase):
 
     def test_trace_records_context_sanitizer_drops(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            trace_store = TraceStore(Path(tmp) / ".runs")
+            trace_store = TraceStore(Path(tmp) / ".runs", capture_content=True)
             session = Session(id="web:default", active_agent="bot")
             session.messages.append({"role": "assistant", "content": None})
             sessions = RecordingSessions(session)
@@ -831,7 +837,7 @@ class RunTraceTests(unittest.TestCase):
 
     def test_context_sanitizer_converts_incomplete_tool_call_group(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            trace_store = TraceStore(Path(tmp) / ".runs")
+            trace_store = TraceStore(Path(tmp) / ".runs", capture_content=True)
             session = Session(id="web:default", active_agent="bot")
             session.messages.append({
                 "role": "assistant",
@@ -877,7 +883,7 @@ class RunTraceTests(unittest.TestCase):
 
     def test_context_sanitizer_converts_interrupted_tool_call_group(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            trace_store = TraceStore(Path(tmp) / ".runs")
+            trace_store = TraceStore(Path(tmp) / ".runs", capture_content=True)
             session = Session(id="web:default", active_agent="bot")
             session.add_message("user", "old")
             session.messages.append({
@@ -930,7 +936,7 @@ class RunTraceTests(unittest.TestCase):
 
     def test_markdown_report_records_failed_run_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            trace_store = TraceStore(Path(tmp) / ".runs")
+            trace_store = TraceStore(Path(tmp) / ".runs", capture_content=True)
             run_state = RunState.create(
                 session_id="web:default",
                 channel="web",
@@ -983,7 +989,7 @@ class RunTraceTests(unittest.TestCase):
 
     def test_trace_store_does_not_write_markdown_report_without_plugin(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            trace_store = TraceStore(Path(tmp) / ".runs")
+            trace_store = TraceStore(Path(tmp) / ".runs", capture_content=True)
             run_state = RunState.create(session_id="web:default")
             trace_store.start_run(run_state)
             run_state.finish_success("done")
@@ -1047,7 +1053,7 @@ class RunTraceTests(unittest.TestCase):
             )
             runner.factory = TaskSessionFactory(sessions, root=root / ".coding_applications")
             runner.conclusion_extractor = Extractor()
-            trace_store = TraceStore(root / ".runs")
+            trace_store = TraceStore(root / ".runs", capture_content=True)
             parent = Session(
                 id="web:default",
                 active_agent="coding",

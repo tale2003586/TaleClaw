@@ -1,11 +1,6 @@
-import json
 import time
-from collections import deque
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable
-
-from config import WORKDIR
 
 
 @dataclass
@@ -45,17 +40,62 @@ class ToolExecutionResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     pre_hook_trace: list[HookTraceItem] = field(default_factory=list)
     post_hook_trace: list[HookTraceItem] = field(default_factory=list)
+    exit_code: int | None = None
+    effect_state: str = "unknown"
+
+    def __post_init__(self) -> None:
+        self.sync_metadata()
+
+    def sync_metadata(self) -> None:
+        # Keep older trace/context consumers on the same execution facts.
+        self.metadata.update({
+            "status": self.status,
+            "exit_code": self.exit_code,
+            "effect_state": self.effect_state,
+            "error_type": self.error_type,
+            "error_message": self.error_message,
+        })
 
 
 class ToolHandlerOutput(str):
-    """String-compatible handler output carrying runtime-only metadata."""
+    """Legacy string view with explicit host-produced execution facts.
 
-    metadata: dict[str, Any]
+    A successful handler return says nothing about task verification. Unknown
+    effects stay unknown, including for shell exit zero.
+    """
 
-    def __new__(cls, output: str, *, metadata: dict[str, Any] | None = None):
+    def __new__(
+        cls, output: str, *, metadata: dict[str, Any] | None = None,
+        status: str = "success", error_type: str | None = None,
+        error_message: str | None = None, exit_code: int | None = None,
+        effect_state: str = "unknown",
+    ):
+        if status not in {"success", "error", "denied", "timeout", "cancelled", "unknown"}:
+            raise ValueError(f"Invalid tool status: {status}")
+        if effect_state not in {"not_started", "no_effect", "applied", "partial", "unknown"}:
+            raise ValueError(f"Invalid effect state: {effect_state}")
         instance = super().__new__(cls, str(output))
+        instance.status = status
+        instance.error_type = error_type
+        instance.error_message = error_message
+        instance.exit_code = exit_code
+        instance.effect_state = effect_state
         instance.metadata = dict(metadata or {})
+        instance.metadata.update({
+            "status": status, "error_type": error_type,
+            "error_message": error_message, "exit_code": exit_code,
+            "effect_state": effect_state,
+        })
         return instance
+
+
+def tool_error(message: str, *, error_type: str = "ToolError",
+               status: str = "error", effect_state: str = "unknown",
+               exit_code: int | None = None) -> ToolHandlerOutput:
+    return ToolHandlerOutput(
+        message, status=status, error_type=error_type, error_message=message,
+        effect_state=effect_state, exit_code=exit_code,
+    )
 
 
 class ToolHook:
@@ -84,6 +124,13 @@ class ToolExecutor:
 
     def execute(self, request: ToolExecutionRequest, invoker: Callable[[str, dict], str]) -> ToolExecutionResult:
         started = time.perf_counter()
+        if not isinstance(request.arguments, dict):
+            return ToolExecutionResult(
+                status="error", output="Error: Tool arguments must be an object",
+                final_arguments={}, error_type="InvalidToolArguments",
+                error_message="Tool arguments must be an object", effect_state="not_started",
+                duration_ms=_elapsed_ms(started),
+            )
         arguments = dict(request.arguments)
         pre_traces = []
 
@@ -114,6 +161,7 @@ class ToolExecutor:
                     duration_ms=_elapsed_ms(started),
                     error_type="ToolDenied",
                     error_message=outcome.deny_reason,
+                    effect_state="not_started",
                     pre_hook_trace=pre_traces,
                 )
                 self._run_after_hooks(request, result)
@@ -127,7 +175,9 @@ class ToolExecutor:
                 ))
                 result = ToolExecutionResult(
                     status="success",
-                    output=outcome.updated_output,
+                    output=str(outcome.updated_output),
+                    metadata=dict(getattr(outcome.updated_output, "metadata", {}) or {}),
+                    effect_state="no_effect",
                     final_arguments=arguments,
                     duration_ms=_elapsed_ms(started),
                     pre_hook_trace=pre_traces,
@@ -141,20 +191,37 @@ class ToolExecutor:
                 decision="allow",
             ))
 
+        invoked = False
         try:
+            from runtime.execution.budget import current_budget
+
+            budget = current_budget()
+            if budget is not None:
+                budget.claim("tool")
+            invoked = True
             handler_output = invoker(request.tool_name, arguments)
             output = str(handler_output)
             result = ToolExecutionResult(
-                status="success",
+                status=getattr(handler_output, "status", "success"),
                 output=output,
+                error_type=getattr(handler_output, "error_type", None),
+                error_message=getattr(handler_output, "error_message", None),
+                exit_code=getattr(handler_output, "exit_code", None),
+                effect_state=getattr(handler_output, "effect_state", "unknown"),
                 final_arguments=arguments,
                 duration_ms=_elapsed_ms(started),
                 metadata=dict(getattr(handler_output, "metadata", {}) or {}),
                 pre_hook_trace=pre_traces,
             )
         except Exception as e:
+            from runtime.execution.budget import ExecutionBudgetExceeded, ExecutionCancelled
+
+            status = "cancelled" if isinstance(e, ExecutionCancelled) else (
+                "timeout" if isinstance(e, ExecutionBudgetExceeded) else "error"
+            )
             result = ToolExecutionResult(
-                status="error",
+                status=status,
+                effect_state="unknown" if invoked else "not_started",
                 output=f"Tool error: {e}",
                 final_arguments=arguments,
                 duration_ms=_elapsed_ms(started),
@@ -190,6 +257,7 @@ class ToolExecutor:
                         result.output = outcome.deny_reason
                         result.error_type = "ToolDenied"
                         result.error_message = outcome.deny_reason
+                        result.sync_metadata()
                         result.post_hook_trace.append(HookTraceItem(
                             hook_name=hook.name,
                             matched=True,
@@ -210,6 +278,7 @@ class ToolExecutor:
                     reason=str(e),
                 ))
 
+        result.sync_metadata()
 
 def _elapsed_ms(started: float) -> float:
     return round((time.perf_counter() - started) * 1000, 3)

@@ -5,7 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from runtime.sessions import SessionManager, SessionStore
-from web.server import AgentService, RequestHandler, _web_storage_id
+from web.server import RequestHandler, _web_storage_id
+from web.agent_service import AgentService, RunConflictError
 from tests.postgres_utils import temporary_postgres_schema
 
 
@@ -64,7 +65,7 @@ class WebSessionDeletionTests(unittest.TestCase):
         responses = []
         handler._send_json = lambda payload, status=HTTPStatus.OK: responses.append((payload, status))
 
-        with patch("web.server.read_sessions", return_value=[{"id": "web:local:remaining"}]):
+        with patch("web.server.read_sessions_page", return_value={"sessions": [{"id": "web:local:remaining"}], "has_more": False}):
             handler._handle_session_delete()
 
         self.assertEqual(["web:local:default"], calls)
@@ -98,108 +99,22 @@ class WebSessionDeletionTests(unittest.TestCase):
 
         self.assertEqual(["chat", "delete"], routed)
 
-    def test_running_agent_service_deletes_through_session_manager(self) -> None:
+    def test_inactive_agent_service_deletes_through_short_lived_store(self) -> None:
+        import tempfile
+        from pathlib import Path
         deleted = []
-        manager = SimpleNamespace(delete=lambda session_id: deleted.append(session_id) or True)
-        service = AgentService()
-        service._runtime = SimpleNamespace(
-            coordinator=SimpleNamespace(sessions=manager)
-        )
-
-        async def run_delete():
-            service._session_locks = {}
-            return await service._delete_session_async("web:default")
-
-        self.assertTrue(asyncio.run(run_delete()))
-        self.assertEqual(["web:default"], deleted)
+        with tempfile.TemporaryDirectory() as root:
+            service = AgentService(root=Path(root), session_deleter=lambda value: deleted.append(value) or True)
+            try:
+                self.assertTrue(service.delete_session("web:local:default"))
+                self.assertEqual(["web:local:default"], deleted)
+            finally:
+                service.stop()
 
 
-class AgentServiceLockingTests(unittest.TestCase):
-    def test_different_web_sessions_do_not_share_a_turn_lock(self) -> None:
-        service = AgentService()
-
-        class Runtime:
-            def __init__(self) -> None:
-                self.active = 0
-                self.max_active = 0
-
-            async def run_message(self, *, content, channel, chat_id, metadata, on_text):
-                self.active += 1
-                self.max_active = max(self.max_active, self.active)
-                await asyncio.sleep(0.01)
-                await service._handle_outbound(
-                    SimpleNamespace(chat_id=chat_id, content=f"reply:{chat_id}")
-                )
-                self.active -= 1
-
-        runtime = Runtime()
-        service._runtime = runtime
-        service._session_locks = {}
-
-        async def run_two():
-            service._loop = asyncio.get_running_loop()
-            return await asyncio.gather(
-                service._ask_async(
-                    session_id="a",
-                    content="hello a",
-                    user_id="local",
-                    user_role="admin",
-                ),
-                service._ask_async(
-                    session_id="b",
-                    content="hello b",
-                    user_id="local",
-                    user_role="admin",
-                ),
-            )
-
-        replies = asyncio.run(run_two())
-
-        self.assertEqual(["reply:local:a", "reply:local:b"], replies)
-        self.assertEqual(2, runtime.max_active)
-
-    def test_same_web_session_is_still_serialized(self) -> None:
-        service = AgentService()
-
-        class Runtime:
-            def __init__(self) -> None:
-                self.active = 0
-                self.max_active = 0
-
-            async def run_message(self, *, content, channel, chat_id, metadata, on_text):
-                self.active += 1
-                self.max_active = max(self.max_active, self.active)
-                await asyncio.sleep(0.01)
-                await service._handle_outbound(
-                    SimpleNamespace(chat_id=chat_id, content=f"reply:{content}")
-                )
-                self.active -= 1
-
-        runtime = Runtime()
-        service._runtime = runtime
-        service._session_locks = {}
-
-        async def run_two():
-            service._loop = asyncio.get_running_loop()
-            return await asyncio.gather(
-                service._ask_async(
-                    session_id="same",
-                    content="first",
-                    user_id="local",
-                    user_role="admin",
-                ),
-                service._ask_async(
-                    session_id="same",
-                    content="second",
-                    user_id="local",
-                    user_role="admin",
-                ),
-            )
-
-        replies = asyncio.run(run_two())
-
-        self.assertEqual(["reply:first", "reply:second"], replies)
-        self.assertEqual(1, runtime.max_active)
+# Actual same-session exclusion and cross-session process concurrency are
+# exercised with spawned workers in test_background_agent_service.py. There is
+# no retained async-runtime executor solely for private-method compatibility.
 
 
 if __name__ == "__main__":

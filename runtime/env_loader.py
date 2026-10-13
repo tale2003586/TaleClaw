@@ -5,6 +5,8 @@ from pathlib import Path
 
 
 def load_dotenv_file(path: str | Path = ".env", *, override: bool = False) -> None:
+    if os.getenv("PYTHON_DOTENV_DISABLED", "").lower() in {"1", "true", "yes"}:
+        return
     env_path = Path(path)
     if not env_path.exists():
         return

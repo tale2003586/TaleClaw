@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Bot, CheckCircle2, CircleDot, Timer, Wrench, XCircle } from "lucide-react";
-import type { ActivityItem, ActivitySnapshot } from "../../hooks/useChatStream";
+import type { ActivityItem, ActivitySnapshot } from "../../hooks/useChatRuns";
 
 type ActivityStatus = ActivitySnapshot["status"] | "running";
 

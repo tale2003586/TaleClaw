@@ -66,6 +66,9 @@ class InMemoryMemoryRepository:
         owner: OwnerKey,
         kind: MemoryKind,
         normalized: str,
+        *,
+        status: MemoryStatus | None = None,
+        now: datetime | None = None,
     ) -> MemoryItem | None:
         matches = [
             item for item in self.items.values()
@@ -73,8 +76,13 @@ class InMemoryMemoryRepository:
             and item.kind is MemoryKind(kind)
             and item.normalized_content == normalized
             and item.status in {MemoryStatus.CANDIDATE, MemoryStatus.ACTIVE}
+            and (status is None or item.status is MemoryStatus(status))
+            and (now is None or (
+                item.valid_from <= now
+                and (item.valid_until is None or item.valid_until > now)
+            ))
         ]
-        return max(matches, key=lambda item: item.updated_at, default=None)
+        return max(matches, key=lambda item: (item.updated_at, item.id), default=None)
 
     def transition(self, command: MemoryTransition) -> MemoryItem:
         with self._lock:

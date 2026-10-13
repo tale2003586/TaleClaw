@@ -148,7 +148,8 @@ def test_direct_coding_call_records_current_request_in_an_empty_parent(tmp_path)
     )
 
     task = _task_session(sessions)
-    assert TASK_STATE_METADATA_KEY not in task.metadata
+    assert TASK_STATE_METADATA_KEY in task.metadata
+    assert task.metadata["verification"]["outcome"] == "not_run"
     original_request_ref = task.metadata["original_request_ref"]
     request_event = _resolve_event_ref(parent, original_request_ref)
 
@@ -208,7 +209,8 @@ def test_direct_coding_call_does_not_reuse_prior_request_or_artifact_refs(tmp_pa
     )
 
     task = _task_session(sessions)
-    assert TASK_STATE_METADATA_KEY not in task.metadata
+    assert TASK_STATE_METADATA_KEY in task.metadata
+    assert task.metadata["verification"]["outcome"] == "not_run"
     original_request_ref = task.metadata["original_request_ref"]
     request_event = _resolve_event_ref(parent, original_request_ref)
 

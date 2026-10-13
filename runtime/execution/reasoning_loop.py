@@ -17,6 +17,7 @@ from runtime.execution.message_sanitizer import (
     sanitize_context_messages,
 )
 from runtime.execution.model_invocation import invoke_model, supports_streaming
+from runtime.execution.budget import current_budget, ExecutionCancelled, ExecutionBudgetExceeded, ExecutionEffectUncertain
 from config import (
     DYNAMIC_PROMPT_BUDGET_ENABLED,
     PROMPT_COMPACTION_TARGET_RATIO,
@@ -125,6 +126,9 @@ class ReasoningLoop:
         tool_calls_used = 0
 
         while True:
+            budget = current_budget()
+            if budget is not None:
+                budget.check()
             if self._cancel_requested(cancel_requested):
                 self._trace(trace_store, run_state, "user_cancel_requested", {
                     "session_id": session.id,
@@ -348,6 +352,7 @@ class ReasoningLoop:
                     ),
                     metadata={
                         "kind": "runtime_retry",
+                        "origin": "runtime",
                         "reason": StopReason.NON_RETRYABLE_FAILURE.value,
                     },
                 )
@@ -570,7 +575,7 @@ class ReasoningLoop:
             if execution.manual_compact:
                 self._trace(trace_store, run_state, "manual_compact_requested", {
                     "step": reasoning_steps,
-                    "handled_by": "context_budget",
+                    "handled_by": "next_safe_context_boundary",
                 })
 
     def _reasoning_step(
@@ -599,6 +604,9 @@ class ReasoningLoop:
                 run_context=getattr(self, "run_context", None),
             )
         )
+        from runtime.context.policies import resolve_context_policy
+        selected_policy = resolve_context_policy(session, provider, model)
+        native_policy_enabled = selected_policy.name == "native"
         context_messages, dropped_messages = sanitize_context_messages(context.messages)
         context_summary = _context_summary(context_messages, provider=provider)
         if dropped_messages:
@@ -625,7 +633,7 @@ class ReasoningLoop:
         system_messages = [
             message
             for message in context_messages
-            if str(message.get("role") or "") == "system"
+            if str(message.get("role") or "") in ({"system", "developer"} if native_policy_enabled else {"system"})
         ]
         dynamic_budget = calculate_dynamic_prompt_budget(
             provider=provider,
@@ -642,8 +650,11 @@ class ReasoningLoop:
             hard_input_ratio=PROMPT_HARD_INPUT_RATIO,
         )
         safe_limit = min(safe_limit, dynamic_budget.hard_prompt_limit)
-        estimated_tokens = estimate_tokens(context_messages, provider=provider)
-        if estimated_tokens > safe_limit:
+        # Native windows are counted exactly by the provider adapter, including
+        # opaque items. This local guard only checks refreshed instructions.
+        guard_messages = system_messages if native_policy_enabled else context_messages
+        estimated_tokens = estimate_tokens(guard_messages, provider=provider)
+        if not native_policy_enabled and estimated_tokens > safe_limit:
             before_message_count = len(context_messages)
             before_tokens = estimated_tokens
             context_messages = reduce_prompt_to_hard_limit(
@@ -671,7 +682,7 @@ class ReasoningLoop:
             )
         try:
             guard_usage = enforce_hard_token_guard(
-                context_messages,
+                system_messages if native_policy_enabled else context_messages,
                 budget=dynamic_budget,
                 provider=provider,
             )
@@ -692,18 +703,26 @@ class ReasoningLoop:
                 parent_span_id=_step_span_id(run_state, reasoning_step),
             )
             raise
+        from runtime.trace.context_intervention import request_context_intervention
         context_summary = {
             **context_summary,
+            "context_intervention": request_context_intervention(session, context_messages, selected_policy.name),
             "actual_prompt_tokens": guard_usage.actual_prompt_tokens,
+            "guard_scope": "native_instructions_then_exact_provider_count" if native_policy_enabled else "full_local_prompt",
+            "context_policy": selected_policy.name,
             "dynamic_content_tokens": guard_usage.dynamic_content_tokens,
             "hard_prompt_limit_tokens": guard_usage.hard_prompt_limit,
             "dynamic_budget": dynamic_budget.to_dict(),
             "dynamic_assembly_enabled": dynamic_assembly_enabled,
         }
+        from runtime.context.artifact_access import update_artifact_prompt_visibility
+
+        if not native_policy_enabled and session is not None and isinstance(getattr(session, "metadata", None), dict):
+            update_artifact_prompt_visibility(session.metadata, context_messages)
         request_max_tokens = output_tokens_for_call(
             provider,
             requested_output_tokens=self.max_tokens,
-            input_tokens=context_summary["estimated_tokens"],
+            input_tokens=estimated_tokens if native_policy_enabled else context_summary["estimated_tokens"],
         )
         if request_max_tokens != self.max_tokens:
             self._trace(
@@ -786,18 +805,21 @@ class ReasoningLoop:
             setattr(emit_text, "on_thinking", on_thinking)
 
         try:
-            response = invoke_model(
-                provider,
-                model=model,
-                messages=context_messages,
-                tools=tools,
-                max_tokens=request_max_tokens,
-                on_text=emit_text if on_text is not None else None,
-                thinking_enabled=bool(
+            invoke_kwargs = {
+                "model": model, "messages": context_messages, "tools": tools,
+                "max_tokens": request_max_tokens,
+                "on_text": emit_text if on_text is not None else None,
+                "thinking_enabled": bool(
                     getattr(getattr(self, "run_context", None), "state", None)
                     and getattr(self.run_context.state, "thinking_enabled", False)
                 ) or bool(getattr(agent_spec, "thinking_enabled", False)),
-            )
+            }
+            if native_policy_enabled:
+                from runtime.context.native_policy import invoke_native_policy
+                response = invoke_native_policy(session=session, provider=provider,
+                    hard_limit=safe_limit, policy=selected_policy, **invoke_kwargs)
+            else:
+                response = invoke_model(provider, **invoke_kwargs)
         except Exception as exc:
             route_attempts = getattr(exc, "attempts", None)
             if route_attempts:
@@ -872,7 +894,9 @@ class ReasoningLoop:
                 for call in response.tool_calls
             ],
             "usage": _usage_payload(getattr(response, "usage", None)),
-            "provider_metadata": getattr(response, "provider_metadata", {}) or {},
+            "provider_metadata": _provider_metadata_for_trace(response),
+            "context_policy": selected_policy.name,
+            "context_policy_resolution": dict(session.metadata.get("context_policy_resolution") or {}),
         }
         execution_state = getattr(getattr(self, "run_context", None), "state", None)
         if execution_state is not None:
@@ -1008,7 +1032,28 @@ class ReasoningLoop:
         tool_calls = list(response.tool_calls or [])
         summary = ToolExecutionSummary()
 
+        stop_error = None
         for call in tool_calls:
+            if stop_error is None:
+                try:
+                    budget = current_budget()
+                    if budget is not None:
+                        budget.check()
+                    if self._cancel_requested(getattr(run_context, "cancel_requested", None)):
+                        raise ExecutionCancelled("Execution cancelled before tool invocation.")
+                except (ExecutionCancelled, ExecutionBudgetExceeded, ExecutionEffectUncertain) as exc:
+                    stop_error = exc
+            if stop_error is not None:
+                # Close every pending call without starting any further side effects.
+                status = "cancelled" if isinstance(stop_error, ExecutionCancelled) else "timeout"
+                output = str(stop_error)
+                session.messages.append({"role": "tool", "tool_call_id": call.id,
+                                         "content": output, "status": status,
+                                         "metadata": {"effect_state": "not_started"}})
+                summary.tool_results.append({"name": call.name, "output": output,
+                                             "status": status, "final_arguments": call.arguments,
+                                             "effect_state": "not_started"})
+                continue
             span_id = _tool_span_id(run_state, reasoning_step, call.id)
             parent_span_id = _step_span_id(run_state, reasoning_step)
             self._trace(
@@ -1026,9 +1071,11 @@ class ReasoningLoop:
                 parent_span_id=parent_span_id,
             )
             if call.name == "compact":
-                summary.manual_compact = True
+                from runtime.context.policies import request_compaction
+                request = request_compaction(session, focus=str(call.arguments.get("focus") or ""))
+                summary.manual_compact = bool(request["accepted"])
                 started = time.perf_counter()
-                output = "Manual compact requested."
+                output = json.dumps(request, ensure_ascii=False)
                 if run_state is not None:
                     run_state.record_tool(call.name)
                     if trace_store is not None:
@@ -1120,6 +1167,12 @@ class ReasoningLoop:
                             run_context=run_context,
                         ),
                     )
+                from tools.command import completed_diagnostic_failure
+                diagnostic_failure = call.name == "bash" and completed_diagnostic_failure(result)
+                if result.status == "cancelled":
+                    stop_error = ExecutionCancelled(result.error_message or "Tool execution cancelled.")
+                elif result.status in {"timeout", "unknown"} or (result.status == "error" and getattr(result, "effect_state", "unknown") in {"unknown", "partial"} and not diagnostic_failure):
+                    stop_error = ExecutionEffectUncertain(result.error_message or "Tool effects require inspection before retry.")
                 output = self._with_tool_call_notice(
                     session,
                     call.name,
@@ -1133,6 +1186,8 @@ class ReasoningLoop:
                     "name": call.name,
                     "output": output,
                     "status": result.status,
+                    "exit_code": getattr(result, "exit_code", None),
+                    "effect_state": getattr(result, "effect_state", "unknown"),
                     "final_arguments": result.final_arguments,
                 })
                 if run_state is not None:
@@ -1144,6 +1199,8 @@ class ReasoningLoop:
                     "tool_name": call.name,
                     "status": result.status,
                     "duration_ms": result.duration_ms,
+                    "exit_code": getattr(result, "exit_code", None),
+                    "effect_state": getattr(result, "effect_state", "unknown"),
                     "execution_error": execution_error,
                     "final_arguments_preview": event_preview(result.final_arguments),
                     "output_preview": event_preview(output),
@@ -1163,7 +1220,7 @@ class ReasoningLoop:
                     run_state,
                     (
                         TOOL_CALL_FAILED
-                        if result.status == "error"
+                        if result.status in {"error", "timeout", "cancelled", "denied"}
                         else TOOL_CALL_COMPLETED
                     ),
                     tool_payload,
@@ -1201,6 +1258,8 @@ class ReasoningLoop:
                         item.__dict__ for item in result.post_hook_trace
                     ],
                 })
+        if stop_error is not None:
+            raise stop_error
         return summary
 
     def _tool_execution_error(
@@ -1247,7 +1306,7 @@ class ReasoningLoop:
         try:
             return bool(cancel_requested())
         except Exception:
-            return False
+            return True
 
     def _maybe_inject_finishing_reminder(
         self,
@@ -1511,9 +1570,10 @@ def _usage_payload(usage) -> dict:
         return {}
     if isinstance(usage, dict):
         return {
-            "input_tokens": usage.get("input_tokens") or usage.get("prompt_tokens"),
-            "output_tokens": usage.get("output_tokens") or usage.get("completion_tokens"),
+            "input_tokens": usage.get("input_tokens") if usage.get("input_tokens") is not None else usage.get("prompt_tokens"),
+            "output_tokens": usage.get("output_tokens") if usage.get("output_tokens") is not None else usage.get("completion_tokens"),
             "total_tokens": usage.get("total_tokens"),
+            "cached_input_tokens": usage.get("cached_input_tokens"),
         }
     try:
         return asdict(usage)
@@ -1522,6 +1582,7 @@ def _usage_payload(usage) -> dict:
             "input_tokens": getattr(usage, "input_tokens", None),
             "output_tokens": getattr(usage, "output_tokens", None),
             "total_tokens": getattr(usage, "total_tokens", None),
+            "cached_input_tokens": getattr(usage, "cached_input_tokens", None),
         }
 
 
@@ -1758,3 +1819,20 @@ def _int_metadata(session, key: str, default: int) -> int:
         return int((getattr(session, "metadata", {}) or {}).get(key, default))
     except (TypeError, ValueError):
         return int(default)
+
+
+def _provider_metadata_for_trace(response) -> dict:
+    """Native canonical windows belong to durable session state, not traces."""
+    metadata = dict(getattr(response, "provider_metadata", {}) or {})
+    native = metadata.get("native_context")
+    if isinstance(native, dict):
+        summary = {key: native[key] for key in (
+            "mode", "model", "response_id", "input_tokens_counted", "opaque_state",
+        ) if key in native}
+        summary["output_item_count"] = len(native.get("output_items") or [])
+        summary["compaction_item_count"] = sum(
+            isinstance(item, dict) and item.get("type") == "compaction"
+            for item in native.get("output_items") or []
+        )
+        metadata["native_context"] = summary
+    return metadata

@@ -124,7 +124,7 @@ def test_full_coding_task_lifecycle_is_offline_and_persists_all_artifacts(
         session_id=parent.id,
         mode="coding",
     )
-    trace = TraceStore(tmp_path / "runs")
+    trace = TraceStore(tmp_path / "runs", capture_content=True)
     trace.start_run(run_state)
 
     reply = runner.run_coding_task(
@@ -142,13 +142,14 @@ def test_full_coding_task_lifecycle_is_offline_and_persists_all_artifacts(
     task = run_state.metadata["coding_application"]
     coding_application = sessions.get_or_create(task["coding_application_id"])
     task_root = runner.factory.root / task["task_id"]
-    assert coding_application.metadata["status"] == "completed"
+    assert coding_application.metadata["status"] == "awaiting_verification"
+    assert coding_application.metadata["verification"]["outcome"] == "not_run"
     assert coding_application.id in sessions.saved_ids
     assert (task_root / "TASK_LOG.md").exists()
     conclusions = json.loads((task_root / "CONCLUSIONS.json").read_text(encoding="utf-8"))
-    assert conclusions["llm_candidates"][0]["content"].startswith(
-        "Phase 0 coding lifecycle"
-    )
+    assert conclusions["llm_candidates"] == []
+    assert conclusions["extraction_error"] == "skipped: memory disabled"
+    assert len(provider.calls) == 1
     assert conclusions["promoted"] == []
     assert not (task_root / "memory").exists()
     diff = json.loads(

@@ -7,7 +7,9 @@ from typing import Any, Callable, Mapping
 
 from openai import OpenAI
 
-from models.provider import LLMResponse, OpenAICompatibleProvider
+from models.provider import LLMResponse, ModelProtocolError, OpenAICompatibleProvider
+from runtime.context.dynamic_budget import PromptBudgetExceeded
+from runtime.execution.budget import ExecutionBudgetExceeded, ExecutionCancelled, current_budget
 
 
 DEFAULT_PROVIDER_SETTINGS = {
@@ -134,7 +136,10 @@ class ModelPool:
         return self.route_profile_names(purpose)[0]
 
     def profile_for(self, purpose: str = "chat") -> ModelProfile:
-        return self.route_profiles_for_call(purpose)[0]
+        available = self.route_profiles_for_call(purpose)
+        if not available:
+            raise ModelRouteError(purpose=purpose, attempts=[], message="All configured model profiles are cooling down.")
+        return available[0]
 
     def profile_named(self, profile_name: str) -> ModelProfile:
         return self._require_profile(_normalize_profile_name(profile_name))
@@ -148,6 +153,8 @@ class ModelPool:
             client_kwargs: dict[str, Any] = {
                 "api_key": profile.api_key,
                 "base_url": profile.base_url,
+                "max_retries": 0,
+                "timeout": 60.0,
             }
             if profile.user_agent:
                 client_kwargs["default_headers"] = {
@@ -192,7 +199,7 @@ class ModelPool:
     def route_profiles_for_call(self, purpose: str = "chat") -> list[ModelProfile]:
         chain = self.route_profiles(purpose)
         available = [profile for profile in chain if self.profile_available(profile.name)]
-        return available or chain
+        return available
 
     def route_profile_names(self, purpose: str = "chat") -> list[str]:
         names = self._route_chain_for(purpose)
@@ -292,6 +299,8 @@ class ModelPool:
                 tool_choice="none",
                 max_tokens=max_tokens,
             )
+        except (ExecutionCancelled, ExecutionBudgetExceeded, PromptBudgetExceeded, ModelProtocolError):
+            raise
         except Exception as exc:
             self.mark_profile_failure(profile.name, exc, force_disable=True)
             return {
@@ -410,7 +419,7 @@ class RoutedModelProvider:
     def _call_with_fallbacks(self, *, stream: bool, **kwargs) -> LLMResponse:
         chain = self.pool.route_profiles_for_call(self.purpose)
         if not chain:
-            raise RuntimeError(f"No model route configured for purpose '{self.purpose}'.")
+            raise ModelRouteError(purpose=self.purpose, attempts=[], message="All configured model profiles are cooling down.")
 
         errors: list[str] = []
         attempts: list[dict[str, Any]] = []
@@ -418,6 +427,8 @@ class RoutedModelProvider:
         configured_primary_name = self.pool.route_profile_names(self.purpose)[0]
 
         for profile in chain:
+            if current_budget() is not None:
+                current_budget().check()
             provider = self.pool.provider_for_profile(profile.name)
             call_kwargs = dict(kwargs)
             selected_model = (
@@ -458,7 +469,12 @@ class RoutedModelProvider:
                     "attempts": attempts,
                 }
                 return response
+            except (ExecutionCancelled, ExecutionBudgetExceeded, PromptBudgetExceeded, ModelProtocolError):
+                raise
             except Exception as exc:
+                status_code = getattr(exc, "status_code", None)
+                if status_code is not None and status_code not in {408, 409, 429} and status_code < 500:
+                    raise
                 self.pool.mark_profile_failure(profile.name, exc)
                 if stream and emitted:
                     raise

@@ -7,6 +7,8 @@ import json
 from typing import Any, Iterable
 import copy
 
+from runtime.context.events import is_real_user_message
+
 from runtime.token_estimator import (
     context_window_tokens,
     estimate_tokens,
@@ -168,8 +170,16 @@ def select_complete_groups(
 ) -> list[dict[str, Any]]:
     """Select a newest-first tail without splitting message/tool groups."""
 
-    if not groups or max_tokens <= 0:
-        return []
+    selected = _select_group_indexes(
+        groups, max_tokens=max_tokens, provider=provider,
+        required_group_indexes=required_group_indexes,
+    )
+    return _flatten_selected(groups, selected)
+
+
+def _select_group_indexes(
+    groups, *, max_tokens, provider=None, required_group_indexes=(),
+) -> set[int]:
     required = {index for index in required_group_indexes if 0 <= index < len(groups)}
     selected = set(required)
     for index in range(len(groups) - 1, -1, -1):
@@ -177,7 +187,7 @@ def select_complete_groups(
         rendered = _flatten_selected(groups, candidate)
         if estimate_tokens(rendered, provider=provider) <= max_tokens:
             selected = candidate
-    return _flatten_selected(groups, selected)
+    return selected
 
 
 def reduce_prompt_to_hard_limit(
@@ -192,6 +202,10 @@ def reduce_prompt_to_hard_limit(
         return items
     system = [item for item in items if str(item.get("role") or "") == "system"]
     non_system = [item for item in items if str(item.get("role") or "") != "system"]
+    protected_requests = [item for item in non_system if (
+        is_real_user_message(item)
+        and (item.get("metadata") or {}).get("preserve_user_request") is True
+    )]
     state_messages = [item for item in non_system if _message_kind(item) in {
         "task_state_context", "coding_context",
     }]
@@ -199,6 +213,7 @@ def reduce_prompt_to_hard_limit(
     conversation = [
         item for item in non_system
         if item not in state_messages and item not in evidence_messages
+        and item not in protected_requests
     ]
     groups = _message_groups(conversation)
     required: set[int] = set()
@@ -207,20 +222,24 @@ def reduce_prompt_to_hard_limit(
         required.add(latest_instruction)
     required.update(index for index, group in enumerate(groups) if not _group_is_closed(group))
 
-    fixed = [*system, *state_messages]
+    fixed = [*system, *state_messages, *protected_requests]
     fixed_tokens = estimate_tokens(fixed, provider=provider)
-    selected = select_complete_groups(
+    selected_indexes = _select_group_indexes(
         groups,
         max_tokens=max(0, max_tokens - fixed_tokens),
         provider=provider,
         required_group_indexes=required,
     )
-    candidate = [*fixed, *selected]
+    # Select exact occurrences; equal repeated messages may belong to different turns.
+    kept_ids = {id(item) for item in fixed}
+    kept_ids.update(id(item) for index in selected_indexes for item in groups[index])
+    candidate = [item for item in items if id(item) in kept_ids]
     # Retrieved evidence is lowest recency priority and is included only whole.
     for evidence in evidence_messages:
-        proposed = [*candidate, evidence]
+        proposed = [item for item in items if id(item) in kept_ids or item is evidence]
         if estimate_tokens(proposed, provider=provider) <= max_tokens:
             candidate = proposed
+            kept_ids.add(id(evidence))
     return candidate
 
 
@@ -260,7 +279,9 @@ def _message_groups(messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]
     groups: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     for message in messages:
-        if str(message.get("role") or "") == "user" and current:
+        # Host wrappers belong to the real request they qualify; splitting them
+        # could retain a bare "continue" while dropping its only task handoff.
+        if is_real_user_message(message) and current:
             groups.append(current)
             current = [message]
         else:
@@ -273,7 +294,7 @@ def _message_groups(messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]
 def _latest_instruction_group(groups: list[list[dict[str, Any]]]) -> int | None:
     for index in range(len(groups) - 1, -1, -1):
         for message in groups[index]:
-            if str(message.get("role") or "") != "user":
+            if not is_real_user_message(message):
                 continue
             if _message_kind(message) not in {"retrieved_evidence_context", "task_state_context"}:
                 return index

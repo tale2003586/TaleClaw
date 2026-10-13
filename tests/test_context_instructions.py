@@ -223,7 +223,7 @@ class ContextInstructionTests(unittest.TestCase):
 
             report = context.report.to_dict()
             sections = report["sections"]
-            self.assertEqual("please keep this exact current request", context.messages[-1]["content"])
+            self.assertEqual("please keep this exact current request", context.messages[-2]["content"])
             self.assertEqual(
                 len("please keep this exact current request"),
                 sections["current_request"]["rendered_chars"],
@@ -243,10 +243,10 @@ class ContextInstructionTests(unittest.TestCase):
                 {item["section"] for item in report["reductions"]},
             )
             self.assertIn("...[truncated]", context.messages[0]["content"])
-            self.assertIn("...[truncated]", context.messages[-2]["content"])
+            self.assertIn("...[truncated]", context.messages[-1]["content"])
             self.assertTrue(report["metadata"]["section_budget_enabled"])
 
-    def test_context_frame_is_inserted_before_current_request(self) -> None:
+    def test_context_frame_follows_current_request_without_reclassifying_it(self) -> None:
         session = Session(id="web:test")
         session.add_message("user", "old request")
         session.add_message("assistant", "old answer")
@@ -263,8 +263,8 @@ class ContextInstructionTests(unittest.TestCase):
             ),
         )
 
-        self.assertIn("<memory>", context.messages[-2]["content"])
-        self.assertEqual("this is the actual current request", context.messages[-1]["content"])
+        self.assertIn("<memory>", context.messages[-1]["content"])
+        self.assertEqual("this is the actual current request", context.messages[-2]["content"])
 
     def test_conversation_history_budget_summarizes_middle_and_preserves_request(self) -> None:
         session = Session(id="web:test")
@@ -418,7 +418,7 @@ class ContextInstructionTests(unittest.TestCase):
                 active_turn_start_index=active_turn_start,
             )
 
-        active_messages = context.messages[-3:]
+        active_messages = [m for m in context.messages if m.get("metadata", {}).get("kind") != "retrieved_evidence_context"][-3:]
         self.assertEqual(["user", "assistant", "tool"], [m["role"] for m in active_messages])
         self.assertEqual("fix the current bug", active_messages[0]["content"])
         self.assertEqual("call_current", active_messages[1]["tool_calls"][0]["id"])
@@ -588,7 +588,6 @@ class ContextInstructionTests(unittest.TestCase):
             context_providers=DEFAULT_CONTEXT_PROVIDERS,
             retrieval_service=ContextRetrievalService(
                 history_vector_index=FakeVectorIndex(),
-                history_scope_resolver=lambda session: "user:alice",
             ),
         ).build(
             session=session,
@@ -598,9 +597,9 @@ class ContextInstructionTests(unittest.TestCase):
             ),
         )
 
-        self.assertIn("<episodic_history", context.messages[-2]["content"])
-        self.assertIn("tool_result[call_1]", context.messages[-2]["content"])
-        self.assertEqual("解释 trace 字段", context.messages[-1]["content"])
+        self.assertIn("<episodic_history", context.messages[-1]["content"])
+        self.assertIn("tool_result[call_1]", context.messages[-1]["content"])
+        self.assertEqual("解释 trace 字段", context.messages[-2]["content"])
         retrieved = context.report.to_dict()["sections"]["episodic_history"]
         self.assertEqual(1, retrieved["metadata"]["hit_count"])
         self.assertEqual("session_turn", retrieved["metadata"]["hits"][0]["source_type"])

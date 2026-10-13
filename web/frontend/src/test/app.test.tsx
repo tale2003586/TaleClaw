@@ -11,6 +11,7 @@ describe("App", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
       if (path === "/api/health") return json({ ok: true, workspace: "/app", coding_workspace: "/work", runtime: "ready", user: { id: "admin", role: "admin" }, default_model_profile: "plain", thinking_supported: true, models: [{ profile: "plain", provider: "relay", model: "plain-model", supports_thinking: false }, { profile: "reasoning", provider: "relay", model: "reasoning-model", supports_thinking: true }] });
+      if (path === "/api/skills") return json({ skills: [], revision: "test-catalog" });
       if (path.startsWith("/api/sessions")) return json({ sessions: [], has_more: false });
       if (path.includes("before=10")) return json({ session: { chat_id: "default", channel: "web", messages: [{ seq: 1, role: "assistant", content: "更早的历史消息" }], message_page: { has_more: false, next_before: null } } });
       if (path.startsWith("/api/session")) return json({ session: { chat_id: "default", channel: "web", title: "默认会话", active_agent: "hybrid", messages: [{ seq: 10, role: "user", content: longQuestion }, { seq: 11, role: "assistant", content: "处理完成" }, { seq: 12, role: "tool", name: "security_search", content: "{\n  \"score\": 0.67,\n  \"source\": \"advisory.json\"\n}" }], message_page: { has_more: true, next_before: 10 } } });
@@ -24,7 +25,7 @@ describe("App", () => {
     expect(await screen.findByRole("button", { name: /日志/ })).toBeInTheDocument();
     expect(screen.getByText("taleclaw")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Runs/ })).toBeInTheDocument();
-    expect(await screen.findByText("默认会话")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "默认会话" })).toBeInTheDocument();
     expect(await screen.findByText("处理完成")).toBeInTheDocument();
     const modelPicker = screen.getByRole("combobox", { name: "选择模型" });
     const thinkingButton = screen.getByRole("button", { name: "深度思考" });
@@ -50,6 +51,7 @@ describe("App", () => {
     expect(localStorage.getItem("taleclawTheme")).toBe("dark");
     await user.click(screen.getByRole("menuitem", { name: /设置/ }));
     expect(await screen.findByRole("heading", { name: "设置" })).toBeInTheDocument();
+    expect(await screen.findByText("暂无技能")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "保存工作区" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "折叠侧栏" }));
     expect(screen.getByRole("button", { name: "展开侧栏" })).toBeInTheDocument();

@@ -38,6 +38,7 @@ from agents.subagent.orchestration_state import (
     rejection_response,
     rejection_trace_payload,
 )
+from tools.executor import ToolHandlerOutput, tool_error
 from runtime.workspace import safe_workspace_path, workspace_root_for_session
 from applications.coding.orchestration.protocols import PROTOCOLS
 from skill_runtime import SKILL_LOADER
@@ -130,12 +131,24 @@ TOOL_RESULT_CACHE_KEY = "_tool_result_cache"
 TOOL_CACHE_STEP_KEY = "_tool_result_cache_step"
 
 
-def _format_tool_error(exc: Exception) -> str:
-    return f"Error: {type(exc).__name__}: {exc}"
+def _format_tool_error(exc: Exception) -> ToolHandlerOutput:
+    return tool_error(f"Error: {type(exc).__name__}: {exc}", error_type=type(exc).__name__)
 
 
 def safe_path(p: str, *, session=None) -> Path:
     return safe_workspace_path(p, session=session)
+
+
+def _workspace_file_type_error(path: Path) -> ToolHandlerOutput | None:
+    # Opening a FIFO can block indefinitely before command cancellation or a
+    # deadline can be checked. File tools only operate on regular files;
+    # missing paths remain valid for write_file's create behavior.
+    if path.exists() and not path.is_file():
+        return tool_error(
+            f"Error: Path is not a regular file: {path}",
+            error_type="UnsupportedFileType", effect_state="not_started",
+        )
+    return None
 
 
 def run_list_files(
@@ -429,6 +442,8 @@ def run_grep(
 def run_read(path: str, limit: int = None, offset: int = 0, *, _session=None) -> str:
     try:
         target = safe_path(path, session=_session)
+        if (file_type_error := _workspace_file_type_error(target)) is not None:
+            return file_type_error
         root = workspace_root_for_session(_session).resolve()
         normalized_path = target.relative_to(root).as_posix()
         offset = _nonnegative_int(offset, default=0)
@@ -444,7 +459,8 @@ def run_read(path: str, limit: int = None, offset: int = 0, *, _session=None) ->
         cached = _tool_cache_get(_session, cache_key)
         if cached is not None:
             return cached
-        text = target.read_text(encoding="utf-8")
+        raw = target.read_bytes()
+        text = raw.decode("utf-8")
         lines = text.splitlines()
         if _should_guard_subagent_large_read(_session, lines, offset=offset, limit=limit):
             output = _format_large_file_outline_notice(
@@ -460,6 +476,12 @@ def run_read(path: str, limit: int = None, offset: int = 0, *, _session=None) ->
                 limit=limit,
                 max_chars=MAX_WORKSPACE_READ_CHARS,
             )
+        from hashlib import sha256
+        output = ToolHandlerOutput(output, metadata={"file_observations": [{
+            "path": normalized_path,
+            "sha256": sha256(raw).hexdigest(),
+            "workspace_root": str(root),
+        }]}, effect_state="no_effect")
         _tool_cache_set(_session, cache_key, output)
         return output
     except Exception as e:
@@ -481,6 +503,7 @@ def run_read_files(files, output_format: str = "text", *, _session=None) -> str:
             return cached
 
         results = []
+        observations = []
         for item in items:
             path = item["path"]
             offset = _nonnegative_int(item.get("offset"), default=0)
@@ -488,6 +511,7 @@ def run_read_files(files, output_format: str = "text", *, _session=None) -> str:
             if limit is None:
                 limit = DEFAULT_BATCH_READ_LIMIT
             content = run_read(path, limit=limit, offset=offset, _session=_session)
+            observations.extend(getattr(content, "metadata", {}).get("file_observations", []))
             results.append({
                 "path": path,
                 "offset": offset,
@@ -496,7 +520,10 @@ def run_read_files(files, output_format: str = "text", *, _session=None) -> str:
             })
 
         if output_format == "json":
-            output = json.dumps({"results": results}, ensure_ascii=False, indent=2)
+            output = ToolHandlerOutput(
+                json.dumps({"results": results}, ensure_ascii=False, indent=2),
+                metadata={"file_observations": observations}, effect_state="no_effect",
+            )
             _tool_cache_set(_session, cache_key, output)
             return output
 
@@ -507,6 +534,7 @@ def run_read_files(files, output_format: str = "text", *, _session=None) -> str:
             )
         ]
         truncated = False
+        visible_observations = []
         for index, result in enumerate(results, 1):
             path = result["path"]
             offset = result["offset"]
@@ -522,6 +550,8 @@ def run_read_files(files, output_format: str = "text", *, _session=None) -> str:
                 remaining = max(0, MAX_BATCH_READ_CHARS - len(current) - 300)
                 if remaining > 0:
                     parts.append(section[:remaining].rstrip())
+                    if remaining > len(section) - len(content):
+                        visible_observations.extend(getattr(content, "metadata", {}).get("file_observations", []))
                 parts.append(
                     "\n[read_files] batch output truncated. Re-read remaining files "
                     "or narrower windows with read_file/read_files offset+limit."
@@ -529,10 +559,12 @@ def run_read_files(files, output_format: str = "text", *, _session=None) -> str:
                 truncated = True
                 break
             parts.append(section)
+            visible_observations.extend(getattr(content, "metadata", {}).get("file_observations", []))
 
         output = "\n".join(parts)
         if truncated:
             output = output[:MAX_BATCH_READ_CHARS]
+        output = ToolHandlerOutput(output, metadata={"file_observations": visible_observations}, effect_state="no_effect")
         _tool_cache_set(_session, cache_key, output)
         return output
     except Exception as e:
@@ -705,22 +737,26 @@ def run_code_outline(
 def run_write(path: str, content: str, *, _session=None) -> str:
     try:
         fp = safe_path(path, session=_session)
+        if (file_type_error := _workspace_file_type_error(fp)) is not None:
+            return file_type_error
         fp.parent.mkdir(parents=True, exist_ok=True)
         fp.write_text(content)
         _clear_tool_result_cache(_session)
-        return f"Wrote {len(content)} bytes to {path}"
+        return ToolHandlerOutput(f"Wrote {len(content)} bytes to {path}", effect_state="applied")
     except Exception as e:
         return _format_tool_error(e)
     
 def run_edit(path: str, old_text: str, new_text: str, *, _session=None) -> str:
     try:
         fp = safe_path(path, session=_session)
+        if (file_type_error := _workspace_file_type_error(fp)) is not None:
+            return file_type_error
         content = fp.read_text()
         if old_text not in content:
-            return f"Error: Text not found in {path}"
+            return tool_error(f"Error: Text not found in {path}", error_type="EditTargetNotFound", effect_state="no_effect")
         fp.write_text(content.replace(old_text, new_text, 1))
         _clear_tool_result_cache(_session)
-        return f"Edited {path}"
+        return ToolHandlerOutput(f"Edited {path}", effect_state="applied")
     except Exception as e:
         return _format_tool_error(e)
 
@@ -1735,6 +1771,12 @@ def _grep_files(root: Path, target: Path, *, recursive: bool) -> list[Path]:
     iterator = target.rglob("*") if recursive else target.iterdir()
     files = []
     for item in sorted(iterator, key=lambda path: path.relative_to(root).as_posix()):
+        try:
+            if not item.resolve().is_relative_to(root):
+                continue
+        except (OSError, RuntimeError):
+            # Skip broken/unresolvable links just like unreadable files.
+            continue
         if not item.is_file():
             continue
         rel_parts = item.relative_to(root).parts
@@ -1788,7 +1830,27 @@ def _tool_cache_get(session, cache_key: str) -> str | None:
     step = cached.get("step")
     if not output:
         return None
-    return f"[tool-cache] already read at step {step}; unchanged.\n{output}"
+    result_metadata = cached.get("result_metadata")
+    result_metadata = result_metadata if isinstance(result_metadata, dict) else {}
+    observations = result_metadata.get("file_observations") or []
+    try:
+        tool_name = json.loads(cache_key).get("tool")
+        if tool_name in {"read_file", "read_files"} and not observations:
+            return None  # Old cache entries have no trustworthy file version.
+        from hashlib import sha256
+        for observation in observations:
+            target = safe_path(observation["path"], session=session)
+            root = workspace_root_for_session(session).resolve()
+            if (str(root) != observation["workspace_root"]
+                    or _workspace_file_type_error(target) is not None
+                    or sha256(target.read_bytes()).hexdigest() != observation["sha256"]):
+                return None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return ToolHandlerOutput(
+        f"[tool-cache] already read at step {step}; unchanged.\n{output}",
+        metadata=result_metadata, effect_state="no_effect",
+    )
 
 
 def _tool_cache_set(session, cache_key: str, output: str) -> None:
@@ -1803,8 +1865,9 @@ def _tool_cache_set(session, cache_key: str, output: str) -> None:
     step = _nonnegative_int(metadata.get(TOOL_CACHE_STEP_KEY), default=0) + 1
     metadata[TOOL_CACHE_STEP_KEY] = step
     cache[cache_key] = {
-        "output": output,
+        "output": str(output),
         "step": step,
+        "result_metadata": dict(getattr(output, "metadata", {}) or {}),
     }
     metadata[TOOL_RESULT_CACHE_KEY] = cache
 
@@ -2402,18 +2465,27 @@ def run_publish_artifact(
 def run_bash(command: str, *, _session=None) -> str:
     dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
     if any(d in command for d in dangerous):
-        return "Error: Dangerous command blocked"
-    try:
-        workspace = workspace_root_for_session(_session)
-        r = subprocess.run(command, shell=True, cwd=workspace,
-                           capture_output=True, text=True, timeout=120)
-        out = (r.stdout + r.stderr).strip()
-        return out[:50000] if out else "(no output)"
-    except subprocess.TimeoutExpired:
-        return "Error: Timeout (120s)"
-    except (FileNotFoundError, OSError) as e:
-        return _format_tool_error(e)
-    
+        return tool_error("Error: Dangerous command blocked", status="denied",
+                          error_type="ToolDenied", effect_state="not_started")
+    from tools.command import run_command
+    from runtime.execution.budget import current_budget
+
+    budget = current_budget()
+    from applications.coding.evidence_validity import capture_observed_file_versions, verification_file_observation
+    before = capture_observed_file_versions(_session)
+    result = run_command(
+        command, cwd=workspace_root_for_session(_session),
+        managed_binding=(getattr(_session, "metadata", {}) or {}).get("worktree_binding"),
+        cancel_requested=budget.cancel_requested if budget is not None else None,
+        deadline=budget.deadline if budget is not None else None,
+    )
+    after = capture_observed_file_versions(_session, paths=before["files"])
+    result.metadata["verification_dependencies"] = verification_file_observation(before, after)
+    # Shell is allowed to change files, including on nonzero exit or timeout.
+    if result.effect_state != "not_started":
+        _clear_tool_result_cache(_session)
+    return result
+
 
 BASE_HANDLERS = {
     "bash": lambda **kw: run_bash(kw["command"], _session=kw.get("_session")),
@@ -2539,7 +2611,22 @@ TASK_HANDLERS = {
 }
 
 
+def _coding_completion_denial(session, requested_status):
+    metadata = getattr(session, "metadata", {}) or {}
+    if (metadata.get("kind") == "coding_application"
+            and str(requested_status or "").strip().lower() == "completed"):
+        return tool_error(
+            "Error: Coding task completion requires host verification; model tool calls "
+            "cannot mark the task completed, including with a claimed completion_basis.",
+            error_type="HostVerificationRequired", effect_state="not_started",
+        )
+    return None
+
+
 def _update_task_state(**kwargs):
+    denied = _coding_completion_denial(kwargs.get("_session"), kwargs.get("requested_status"))
+    if denied is not None:
+        return denied
     mode = str(kwargs.pop("_mode", "") or "")
     if not mode:
         mode = str(getattr(kwargs.get("_session"), "active_agent", "") or "")
@@ -2588,6 +2675,9 @@ def _update_task_state(**kwargs):
 
 
 def _update_task_state_core(**kwargs):
+    denied = _coding_completion_denial(kwargs.get("_session"), kwargs.get("requested_status"))
+    if denied is not None:
+        return denied
     from runtime.task_state import (
         TaskStateCorePatch,
         apply_task_state_core_patch,
@@ -3051,23 +3141,23 @@ def run_memorize(
         evidence = MemoryEvidence(
             id=str(uuid4()),
             memory_id="pending",
-            source_type=MemorySourceType.EXPLICIT_USER,
+            source_type=MemorySourceType.INFERRED,
             source_ref=f"{context.session_id}:tool:memorize",
             session_id=context.session_id,
             excerpt=str(content or "")[:1000],
         )
-        item = command_service.remember(
+        item = command_service.propose(
             MemoryWriteProposal(
                 content=content,
                 kind=MemoryKind.PREFERENCE,
                 owner_scope=MemoryOwnerScope.USER,
                 owner_id=context.user_id,
-                source_type=MemorySourceType.EXPLICIT_USER,
+                source_type=MemorySourceType.INFERRED,
                 evidence=(evidence,),
                 confidence=1.0,
                 salience=0.8,
-                explicit_user_request=True,
-                metadata={"entrypoint": "memorize_tool"},
+                explicit_user_request=False,
+                metadata={"entrypoint": "memorize_tool", "review_required": True},
             ),
             context,
         )
@@ -3078,7 +3168,7 @@ def run_memorize(
                 pass
         _queue_memory_trace_events(_session, command_service)
         _queue_memory_trace_events(_session, index_synchronizer)
-        return f"Saved semantic memory {item.id} ({item.status.value})."
+        return f"Proposed semantic memory {item.id} ({item.status.value}); explicit human review and confirm are required before retrieval."
     return "Durable memory is not enabled."
 
 
@@ -3228,13 +3318,29 @@ def run_read_artifact_with_metadata(
     max_results: int = 20,
     *,
     artifact_store: ArtifactStore | None = None,
+    session=None,
+    start_seq: int | None = None,
+    end_seq: int | None = None,
 ):
     """Return display text plus structured access metadata."""
-    from runtime.context.artifact_access import normalize_query
+    from runtime.context.artifact_access import normalize_query, evidence_response_digest
     from tools.executor import ToolHandlerOutput
 
-    store = artifact_store or ArtifactStore(CONTEXT_ARTIFACT_ROOT)
     reference = str(artifact_ref or "").strip()
+    if reference.startswith(("event://", "snapshot://", "state://")):
+        from runtime.context.evidence_recovery import read_session_evidence
+
+        output, access = read_session_evidence(
+            reference, session=session, offset=offset, limit=limit, query=query,
+            max_results=max_results, start_seq=start_seq, end_seq=end_seq,
+        )
+        if access:
+            access["normalized_query"] = normalize_query(query) if query is not None else None
+            access["response_sha256"] = evidence_response_digest(output)
+        return ToolHandlerOutput(output, metadata={"artifact_access": access} if access else {})
+    if start_seq is not None or end_seq is not None:
+        raise ValueError("Sequence filters are only supported for event://session searches.")
+    store = artifact_store or ArtifactStore(CONTEXT_ARTIFACT_ROOT)
     try:
         record = store.get_artifact_metadata(reference)
     except ArtifactNotFoundError as exc:
@@ -3253,6 +3359,8 @@ def run_read_artifact_with_metadata(
             "artifact_ref": record.storage_uri,
             "mode": "search",
             "normalized_query": normalize_query(query),
+            "query": str(query),
+            "max_results": max(1, min(int(max_results or 20), 50)),
             "match_count": int(parsed.get("match_count") or 0),
             "size_chars": record.size_chars,
         }
@@ -3274,6 +3382,7 @@ def run_read_artifact_with_metadata(
             "next_offset": header.get("next_offset"),
             "eof": not bool(header.get("truncated")),
         }
+    access["response_sha256"] = evidence_response_digest(output)
     return ToolHandlerOutput(output, metadata={"artifact_access": access})
 
 
@@ -3286,6 +3395,9 @@ def make_artifact_handlers(artifact_store=None):
             kw.get("query"),
             kw.get("max_results", 20),
             artifact_store=artifact_store,
+            session=kw.get("_session"),
+            start_seq=kw.get("start_seq"),
+            end_seq=kw.get("end_seq"),
         ),
     }
 

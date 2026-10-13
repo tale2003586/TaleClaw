@@ -20,13 +20,17 @@ services:
       HISTORY_VECTOR_ENABLED: ${HISTORY_VECTOR_ENABLED:-0}
       SECURITY_RAG_AUTO_CONTEXT_ENABLED: ${SECURITY_RAG_AUTO_CONTEXT_ENABLED:-0}
       SECURITY_RAG_PLUGIN_ENABLED: ${SECURITY_RAG_PLUGIN_ENABLED:-0}
+      MANAGED_WORKTREE_ROOT: ${MANAGED_WORKTREE_ROOT:-/var/lib/taleclaw-worktrees/managed}
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
+      - ./skills:/app/skills
       - ./storage:/app/storage
       - ./memory:/app/memory
       - ./.sessions:/app/.sessions
       - ./.task_sessions:/app/.task_sessions
+      - ./.runs:/app/.runs
+      - ./.worktree_data:/var/lib/taleclaw-worktrees
       - ./.task_sandbox:/app/.task_sandbox
       - ./.tasks:/app/.tasks
       - ./.team:/app/.team
@@ -56,14 +60,18 @@ services:
       HISTORY_VECTOR_ENABLED: ${HISTORY_VECTOR_ENABLED:-0}
       SECURITY_RAG_AUTO_CONTEXT_ENABLED: ${SECURITY_RAG_AUTO_CONTEXT_ENABLED:-0}
       SECURITY_RAG_PLUGIN_ENABLED: ${SECURITY_RAG_PLUGIN_ENABLED:-0}
+      MANAGED_WORKTREE_ROOT: ${MANAGED_WORKTREE_ROOT:-/var/lib/taleclaw-worktrees/managed}
     command: ["python", "telegram_worker.py"]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
+      - ./skills:/app/skills
       - ./storage:/app/storage
       - ./memory:/app/memory
       - ./.sessions:/app/.sessions
       - ./.task_sessions:/app/.task_sessions
+      - ./.runs:/app/.runs
+      - ./.worktree_data:/var/lib/taleclaw-worktrees
       - ./.task_sandbox:/app/.task_sandbox
       - ./.tasks:/app/.tasks
       - ./.team:/app/.team
@@ -94,14 +102,18 @@ services:
       HISTORY_VECTOR_ENABLED: ${HISTORY_VECTOR_ENABLED:-0}
       SECURITY_RAG_AUTO_CONTEXT_ENABLED: ${SECURITY_RAG_AUTO_CONTEXT_ENABLED:-0}
       SECURITY_RAG_PLUGIN_ENABLED: ${SECURITY_RAG_PLUGIN_ENABLED:-0}
+      MANAGED_WORKTREE_ROOT: ${MANAGED_WORKTREE_ROOT:-/var/lib/taleclaw-worktrees/managed}
     command: ["python", "feishu_worker.py"]
     ports:
       - "127.0.0.1:8010:8010"
     volumes:
+      - ./skills:/app/skills
       - ./storage:/app/storage
       - ./memory:/app/memory
       - ./.sessions:/app/.sessions
       - ./.task_sessions:/app/.task_sessions
+      - ./.runs:/app/.runs
+      - ./.worktree_data:/var/lib/taleclaw-worktrees
       - ./.task_sandbox:/app/.task_sandbox
       - ./.tasks:/app/.tasks
       - ./.team:/app/.team

@@ -1,0 +1,2 @@
+# Isolated research dependencies, not Agent runtime dependencies.
+scikit-learn==1.9.0

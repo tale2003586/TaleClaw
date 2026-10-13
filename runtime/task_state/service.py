@@ -44,6 +44,9 @@ class TaskStateRunObserver:
             return
         reason = str(decision.reason)
         if decision.reason is StopReason.COMPLETED:
+            if (getattr(session, "metadata", {}) or {}).get("kind") == "coding_application":
+                execution.stop_decision = replace(decision, task_state_version=state.version)
+                return
             if state.pending_actions or state.blockers or not str(decision.message or "").strip():
                 return
             patch = TaskStateCorePatch(
@@ -238,7 +241,8 @@ def _latest_user_task_id(session: Any) -> str:
     messages = list(getattr(session, "messages", []) or [])
     for index in range(len(messages) - 1, -1, -1):
         message = messages[index]
-        if isinstance(message, Mapping) and str(message.get("role") or "") == "user":
+        from runtime.context.events import is_real_user_message
+        if isinstance(message, Mapping) and is_real_user_message(message):
             return f"{session_id}:message:{index}"
     return session_id
 

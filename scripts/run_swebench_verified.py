@@ -27,6 +27,9 @@ from evaluation.swebench_adapter import (  # noqa: E402
     run_swebench_instance,
 )
 
+from evaluation.outcomes import import_official_verification, patch_digest, token_summary, verification_result, verification_outcome
+from evaluation.provenance import evaluation_manifest
+
 
 DEFAULT_EVAL_ROOT = Path(".evals/swebench_verified")
 DEFAULT_WORKSPACE_ROOT = Path(".evals/swebench_verified_workspaces")
@@ -81,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--official-max-workers", type=int, default=1)
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
+    if args.evaluate and not args.swebench_repo:
+        parser.error("--evaluate requires --swebench-repo")
 
     instance_ids = parse_instance_ids(args.instance_id)
     dataset_for_harness = dataset_name_candidates(args.dataset_name)[0]
@@ -100,6 +105,17 @@ def main(argv: list[str] | None = None) -> int:
         records_path=args.instances_file or None,
     )
     write_json(batch_dir / "selected_instances.json", [instance.__dict__ for instance in instances])
+    args.evaluation_manifest = evaluation_manifest(
+        dataset_path=Path(args.instances_file) if args.instances_file else None,
+        configuration={
+            "dataset_name": args.dataset_name, "dataset_split": args.split,
+            "limit": args.limit, "offset": args.offset, "selected_ids": [item.instance_id for item in instances],
+            "model_name": args.model_name or "route:coding", "model_purpose": "coding",
+            "max_reasoning_steps": args.max_reasoning_steps, "evaluate": args.evaluate,
+            "reuse_workspace": args.reuse_workspace, "clone_retries": args.clone_retries,
+            "git_timeout_seconds": args.git_timeout_seconds, "official_max_workers": args.official_max_workers,
+        }, input_records=[instance.__dict__ for instance in instances],
+    )
 
     if args.dry_run:
         for index, instance in enumerate(instances, start=1):
@@ -141,18 +157,26 @@ def main(argv: list[str] | None = None) -> int:
                 git_timeout_seconds=args.git_timeout_seconds,
             )
             metrics = read_metrics(result.run_dir)
+            submitted_model = prediction_model_name(args.model_name, metrics)
             append_prediction(
                 predictions_path,
                 instance_id=result.instance.instance_id,
-                model_name_or_path=prediction_model_name(args.model_name, metrics),
+                model_name_or_path=submitted_model,
                 model_patch=result.model_patch,
             )
             row = {
                 "instance_id": instance.instance_id,
                 "repo": instance.repo,
                 "base_commit": instance.base_commit,
-                "status": "pass" if result.run_state.status == "completed" else "fail",
+                "status": "not_run",
                 "run_status": result.run_state.status,
+                "execution_status": result.run_state.status,
+                "model_name_or_path": submitted_model,
+                "patch_sha256": patch_digest(result.model_patch),
+                "verification": verification_result(
+                    reason="empty_patch" if not result.model_patch else "not_evaluated",
+                    patch_sha256=patch_digest(result.model_patch),
+                ),
                 "error": "",
                 "duration_ms": round((time.perf_counter() - started) * 1000, 3),
                 "workspace": str(result.workspace),
@@ -169,6 +193,8 @@ def main(argv: list[str] | None = None) -> int:
                 "base_commit": instance.base_commit,
                 "status": "error",
                 "run_status": "failed",
+                "execution_status": "failed",
+                "verification": verification_result(reason="generation_failed"),
                 "error": f"{type(exc).__name__}: {exc}",
                 "duration_ms": round((time.perf_counter() - started) * 1000, 3),
                 "workspace": "",
@@ -193,11 +219,11 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=False,
             ),
         )
-        if args.fail_fast and row["status"] != "pass":
+        if args.fail_fast and row["execution_status"] != "completed":
             break
 
     official_command = []
-    if args.swebench_repo:
+    if args.swebench_repo and any(row.get("patch_bytes", 0) > 0 for row in rows):
         official_command = official_evaluation_command(
             swebench_repo=args.swebench_repo,
             dataset_name=dataset_for_harness,
@@ -218,16 +244,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     write_batch_reports(batch_dir, payload)
 
-    if args.evaluate:
-        if not args.swebench_repo:
-            raise SystemExit("--evaluate requires --swebench-repo")
-        if not official_command:
-            raise SystemExit("No official evaluation command was generated.")
+    if args.evaluate and official_command:
         print("running official SWE-bench evaluation:", " ".join(official_command), flush=True)
-        subprocess.run(official_command, cwd=Path(args.swebench_repo), check=True)
+        try:
+            subprocess.run(official_command, cwd=Path(args.swebench_repo), check=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            payload["official_harness_error"] = f"{type(exc).__name__}: {exc}"
+        import_official_results(
+            rows, report_root=Path(args.swebench_repo) / "logs" / "evaluation" / batch_id,
+        )
+        payload["summary"] = summarize_rows(rows)
+        write_batch_reports(batch_dir, payload)
 
     print(f"wrote SWE-bench Verified batch report: {batch_dir / 'summary.md'}")
-    return 1 if any(row["status"] == "error" for row in rows) else 0
+    return 1 if any(row["status"] == "error" for row in rows) or payload.get("official_harness_error") else 0
 
 
 def build_payload(
@@ -243,7 +273,8 @@ def build_payload(
 ) -> dict[str, Any]:
     summary = summarize_rows(rows)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
+        "manifest": getattr(args, "evaluation_manifest", None),
         "batch_id": batch_id,
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "dry_run": bool(dry_run),
@@ -272,22 +303,43 @@ def build_payload(
     }
 
 
+def import_official_results(rows: list[dict[str, Any]], *, report_root: Path) -> None:
+    for row in rows:
+        if not row.get("patch_bytes") or not row.get("patch_sha256"):
+            continue
+        row["verification"] = import_official_verification(
+            report_root=report_root, instance_id=row["instance_id"],
+            model_name=row["model_name_or_path"], expected_patch_sha256=row["patch_sha256"],
+        )
+        row["status"] = row["verification"]["outcome"]
+
+
 def summarize_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     total = len(rows)
-    passed = sum(1 for row in rows if row.get("status") == "pass")
-    errors = sum(1 for row in rows if row.get("status") == "error")
-    failed = total - passed - errors
-    total_tokens = sum(int((row.get("metrics") or {}).get("total_tokens") or 0) for row in rows)
+    outcomes = [verification_outcome(row) for row in rows]
+    passed = outcomes.count("pass")
+    failed = outcomes.count("fail")
+    errors = sum(row.get("status") == "error" for row in rows)
+    completed = sum(row.get("execution_status", row.get("run_status")) == "completed" for row in rows)
     tool_calls = sum(int((row.get("metrics") or {}).get("tool_calls") or 0) for row in rows)
     model_calls = sum(int((row.get("metrics") or {}).get("model_calls") or 0) for row in rows)
     return {
         "total": total,
+        "execution_completed": completed,
+        "verification_passed": passed,
+        "verification_failed": failed,
+        "verification_not_run": outcomes.count("not_run"),
+        "verification_inconclusive": outcomes.count("inconclusive"),
+        "verified_pass_rate": passed / (passed + failed) if passed + failed else None,
+        "verification_coverage": (passed + failed) / total if total else 0.0,
+        # Compatibility aliases now mean verified delivery, never generation.
         "agent_passed": passed,
         "agent_failed": failed,
         "errors": errors,
         "agent_pass_rate": passed / total if total else 0.0,
-        "patches_written": sum(1 for row in rows if int(row.get("patch_bytes") or 0) > 0),
-        "total_tokens": total_tokens,
+        "agent_pass_rate_semantics": "verified_delivery_per_attempt",
+        "patches_written": sum(int(row.get("patch_bytes") or 0) > 0 for row in rows),
+        **token_summary(rows),
         "tool_calls": tool_calls,
         "model_calls": model_calls,
         "wall_duration_ms": round(sum(float(row.get("duration_ms") or 0) for row in rows), 3),
@@ -312,10 +364,12 @@ def render_markdown(payload: dict[str, Any]) -> str:
         f"- Batch ID: `{payload.get('batch_id', '')}`",
         f"- Dataset: `{dataset.get('resolved_name') or dataset.get('name')}` / `{dataset.get('split')}`",
         f"- Selected: {dataset.get('selected_count', 0)}",
-        f"- Agent passed: {summary.get('agent_passed', 0)}/{summary.get('total', 0)}",
-        f"- Agent pass rate: {summary.get('agent_pass_rate', 0):.2%}",
+        f"- Execution completed: {summary.get('execution_completed', 0)}/{summary.get('total', 0)}",
+        f"- Officially verified pass/fail: {summary.get('verification_passed', 0)}/{summary.get('verification_failed', 0)}",
+        f"- Verification not run/inconclusive: {summary.get('verification_not_run', 0)}/{summary.get('verification_inconclusive', 0)}",
+        f"- Verified delivery per attempt: {summary.get('agent_pass_rate', 0):.2%}",
         f"- Patches written: {summary.get('patches_written', 0)}",
-        f"- Total tokens: {summary.get('total_tokens', 0)}",
+        f"- Total tokens: {summary.get('total_tokens')}",
         f"- Tool calls: {summary.get('tool_calls', 0)}",
         f"- Model calls: {summary.get('model_calls', 0)}",
         f"- Predictions: `{payload.get('predictions_path', '')}`",
@@ -343,7 +397,7 @@ def render_markdown(payload: dict[str, Any]) -> str:
             f"{row.get('repo', '')} | "
             f"{row.get('status', '')} | "
             f"{row.get('patch_bytes', 0)} | "
-            f"{metrics.get('total_tokens', 0)} | "
+            f"{metrics.get('total_tokens')} | "
             f"{metrics.get('tool_calls', 0)} | "
             f"{float(row.get('duration_ms') or 0):.0f}ms | "
             f"{escape_cell(row.get('error', ''))} |"
@@ -396,7 +450,7 @@ def print_task_result(index: int, total: int, row: dict[str, Any], *, quiet: boo
     print(
         f"[{index:02d}/{total:02d}] {marker} {row.get('instance_id', '')} "
         f"patch={row.get('patch_bytes', 0)}B "
-        f"tokens={metrics.get('total_tokens', 0)} "
+        f"tokens={metrics.get('total_tokens')} "
         f"tools={metrics.get('tool_calls', 0)} "
         f"time={float(row.get('duration_ms') or 0):.0f}ms{reason}",
         flush=True,

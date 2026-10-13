@@ -7,15 +7,12 @@ such as nginx/Caddy and restrict direct access to the Python process.
 """
 
 import argparse
-import asyncio
 import base64
-from copy import deepcopy
 import hmac
 import json
 import logging
 import mimetypes
 import os
-import queue
 import signal
 import shutil
 import sys
@@ -30,7 +27,7 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,11 +58,13 @@ from user_scope import (
     normalize_user_role,
     parse_web_session_id,
     storage_root_for_user,
-    web_chat_id,
     web_session_id,
 )
 from web.auth_store import AuthenticatedUser, EnvironmentUser, WebAuthStore
-from web.session_titles import WebSessionTitleService, session_display_title
+from web.agent_service import AgentService
+from web.chat_runs import ChatRunsHttpMixin
+from web.coding_workspaces import CodingWorkspacesHttpMixin
+from web.session_titles import session_display_title
 
 
 logger = logging.getLogger(__name__)
@@ -131,437 +130,6 @@ def _parse_multipart_form(headers, body: bytes) -> tuple[dict[str, list[str]], l
                 payload.decode(charset, errors="replace")
             )
     return fields, files
-
-
-class AgentService:
-    """Owns the async agent runtime behind the synchronous stdlib HTTP server."""
-
-    def __init__(self) -> None:
-        self._thread: threading.Thread | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._runtime = None
-        self._ready = threading.Event()
-        self._start_lock = threading.Lock()
-        self._start_error: BaseException | None = None
-        self._session_locks: dict[str, asyncio.Lock] | None = None
-        self._pending: dict[str, asyncio.Future[str]] = {}
-        self._session_title_service: WebSessionTitleService | None = None
-        self._shutdown_event: asyncio.Event | None = None
-        self._request_tasks: set[asyncio.Task[Any]] = set()
-        self._background_tasks: set[asyncio.Task[Any]] = set()
-        self._session_title_tasks: dict[str, asyncio.Task[Any]] = {}
-        self._stopping = False
-        self._stopped = threading.Event()
-
-    def ensure_started(self) -> None:
-        with self._start_lock:
-            if self._start_error is not None:
-                raise RuntimeError(_friendly_runtime_error(self._start_error)) from self._start_error
-            if self._stopping:
-                raise RuntimeError("Agent runtime is shutting down.")
-            if self._runtime is not None:
-                return
-            if self._thread is None:
-                self._thread = threading.Thread(
-                    target=self._run_loop,
-                    name="agent-web-runtime",
-                    daemon=True,
-                )
-                self._thread.start()
-
-        startup_timeout = _env_int("AGENT_RUNTIME_STARTUP_TIMEOUT_SECONDS", 15)
-        if not self._ready.wait(timeout=startup_timeout):
-            raise RuntimeError(
-                f"Agent runtime did not start within {startup_timeout} seconds."
-            )
-        if self._start_error is not None:
-            raise RuntimeError(_friendly_runtime_error(self._start_error)) from self._start_error
-
-    def ask(
-        self,
-        *,
-        session_id: str,
-        content: str,
-        user_id: str = DEFAULT_USER_ID,
-        user_role: str = DEFAULT_USER_ROLE,
-        workspace_root: str | None = None,
-        display_content: str | None = None,
-        attachments: list[dict[str, Any]] | None = None,
-        thinking_enabled: bool = False,
-        model_profile: str = "",
-        timeout: int = 180,
-    ) -> str:
-        return self.ask_stream(
-            session_id=session_id,
-            content=content,
-            user_id=user_id,
-            user_role=user_role,
-            workspace_root=workspace_root,
-            display_content=display_content,
-            attachments=attachments,
-            thinking_enabled=thinking_enabled,
-            model_profile=model_profile,
-            timeout=timeout,
-        )
-
-    def ask_stream(
-        self,
-        *,
-        session_id: str,
-        content: str,
-        user_id: str = DEFAULT_USER_ID,
-        user_role: str = DEFAULT_USER_ROLE,
-        workspace_root: str | None = None,
-        display_content: str | None = None,
-        attachments: list[dict[str, Any]] | None = None,
-        thinking_enabled: bool = False,
-        model_profile: str = "",
-        on_text: Callable[[str], None] | None = None,
-        timeout: int = 1800,
-    ) -> str:
-        self.ensure_started()
-        if self._loop is None:
-            raise RuntimeError("Agent runtime loop is not available.")
-
-        future = self._submit(
-            self._ask_async(
-                session_id=session_id,
-                content=content,
-                user_id=user_id,
-                user_role=user_role,
-                workspace_root=workspace_root,
-                display_content=display_content,
-                attachments=attachments,
-                thinking_enabled=thinking_enabled,
-                model_profile=model_profile,
-                on_text=on_text,
-                reply_timeout=_env_int("WEB_AGENT_REPLY_TIMEOUT_SECONDS", timeout),
-            )
-        )
-        return future.result(timeout=timeout)
-
-    def delete_session(self, session_id: str, timeout: int = 10) -> bool:
-        if self._thread is None and self._runtime is None:
-            return _delete_stored_session(session_id)
-
-        self.ensure_started()
-        if self._loop is None:
-            raise RuntimeError("Agent runtime loop is not available.")
-        future = self._submit(self._delete_session_async(session_id))
-        return future.result(timeout=timeout)
-
-    def request_cancel(self, storage_session_id: str, timeout: int = 10) -> bool:
-        with self._start_lock:
-            if self._stopping:
-                return False
-        self.ensure_started()
-        if self._runtime is None:
-            raise RuntimeError("Agent runtime is not started.")
-        request_cancel = getattr(self._runtime, "request_cancel", None)
-        if request_cancel is None:
-            return False
-        return bool(request_cancel(storage_session_id))
-
-    def subscribe_session(
-        self,
-        session_key: str,
-        cb: Callable[[dict[str, Any]], None],
-    ) -> Callable[[], None]:
-        self.ensure_started()
-        trace_store = getattr(getattr(self._runtime, "coordinator", None), "trace_store", None)
-        if trace_store is None or not hasattr(trace_store, "subscribe"):
-            return lambda: None
-        return trace_store.subscribe(session_key, cb)
-
-    def stop(self) -> None:
-        with self._start_lock:
-            thread = self._thread
-            if thread is None:
-                return
-            self._stopping = True
-            loop = self._loop
-            shutdown_event = self._shutdown_event
-        if loop is not None and shutdown_event is not None and loop.is_running():
-            loop.call_soon_threadsafe(shutdown_event.set)
-        if thread is not threading.current_thread():
-            timeout = _env_int("AGENT_RUNTIME_SHUTDOWN_TIMEOUT_SECONDS", 30)
-            thread.join(timeout=timeout)
-            if thread.is_alive():
-                raise RuntimeError(
-                    f"Agent runtime did not stop within {timeout} seconds."
-                )
-
-    def _run_loop(self) -> None:
-        try:
-            asyncio.run(self._serve_async())
-        except BaseException as exc:
-            if self._start_error is None:
-                self._start_error = exc
-        finally:
-            self._ready.set()
-            self._stopped.set()
-
-    async def _serve_async(self) -> None:
-        self._loop = asyncio.get_running_loop()
-        self._shutdown_event = asyncio.Event()
-        primary_error: BaseException | None = None
-        try:
-            await self._start_async()
-            self._ready.set()
-            while not self._shutdown_event.is_set():
-                await asyncio.sleep(0.1)
-        except BaseException as exc:
-            primary_error = exc
-            self._start_error = exc
-            raise
-        finally:
-            try:
-                await self._stop_async()
-            except BaseException:
-                if primary_error is None:
-                    raise
-                logger.exception(
-                    "Agent runtime cleanup failed after the primary error: %s",
-                    primary_error,
-                )
-            finally:
-                self._loop = None
-
-    async def _run_owned(self, coroutine):
-        task = asyncio.current_task()
-        if task is None:
-            return await coroutine
-        self._request_tasks.add(task)
-        try:
-            return await coroutine
-        finally:
-            self._request_tasks.discard(task)
-
-    def _submit(self, coroutine):
-        with self._start_lock:
-            loop = self._loop
-            if self._stopping or loop is None or not loop.is_running():
-                coroutine.close()
-                raise RuntimeError("Agent runtime is shutting down.")
-            return asyncio.run_coroutine_threadsafe(
-                self._run_owned(coroutine),
-                loop,
-            )
-
-    async def _start_async(self) -> None:
-        from applications.bootstrap import build_runtime
-
-        self._runtime = build_runtime()
-        self._session_locks = {}
-        self._session_title_service = WebSessionTitleService(
-            runner=self._runtime.services.model_task_runner,
-            timeout_seconds=_env_int("WEB_SESSION_TITLE_TIMEOUT_SECONDS", 8),
-        )
-        self._runtime.bus.subscribe_outbound("web", self._handle_outbound)
-        self._runtime.start()
-
-    async def _stop_async(self) -> None:
-        current = asyncio.current_task()
-        tasks = [task for task in self._request_tasks if task is not current]
-        tasks.extend(
-            task for task in self._background_tasks
-            if task is not current and task not in tasks
-        )
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-
-        runtime = self._runtime
-        self._runtime = None
-        try:
-            if runtime is not None:
-                try:
-                    await runtime.stop()
-                finally:
-                    sessions = getattr(
-                        getattr(runtime, "coordinator", None),
-                        "sessions",
-                        None,
-                    )
-                    if sessions is not None:
-                        sessions.close()
-        finally:
-            self._pending.clear()
-            self._background_tasks.clear()
-            self._session_title_tasks.clear()
-            self._session_locks = None
-            self._session_title_service = None
-
-    async def _handle_outbound(self, message) -> None:
-        reply_future = self._pending.pop(message.chat_id, None)
-        if reply_future is not None and not reply_future.done():
-            reply_future.set_result(message.content)
-
-    async def _ask_async(
-        self,
-        *,
-        session_id: str,
-        content: str,
-        user_id: str,
-        user_role: str,
-        workspace_root: str | None = None,
-        display_content: str | None = None,
-        attachments: list[dict[str, Any]] | None = None,
-        thinking_enabled: bool = False,
-        model_profile: str = "",
-        on_text: Callable[[str], None] | None = None,
-        reply_timeout: int = 180,
-    ) -> str:
-        if self._runtime is None or self._session_locks is None or self._loop is None:
-            raise RuntimeError("Agent runtime is not started.")
-
-        scoped_chat_id = web_chat_id(user_id, session_id)
-        session_key = f"web:{scoped_chat_id}"
-        async with self._lock_for_session(session_key):
-            reply_future: asyncio.Future[str] = self._loop.create_future()
-            self._pending[scoped_chat_id] = reply_future
-            metadata = {
-                "user_id": normalize_user_id(user_id),
-                "user_role": normalize_user_role(user_role),
-            }
-            if workspace_root:
-                metadata["workspace_root"] = str(workspace_root)
-            if display_content:
-                metadata["display_content"] = str(display_content)
-            if attachments:
-                metadata["attachments"] = [dict(item) for item in attachments]
-            metadata["thinking_enabled"] = bool(thinking_enabled)
-            if model_profile:
-                metadata["model_profile"] = str(model_profile)
-            try:
-                run_state = await self._runtime.run_message(
-                    content=content,
-                    channel="web",
-                    chat_id=scoped_chat_id,
-                    metadata=metadata,
-                    on_text=on_text,
-                )
-                reply = await asyncio.wait_for(
-                    reply_future,
-                    timeout=max(1, int(reply_timeout)),
-                )
-                self._schedule_session_title(
-                    session_key,
-                    run_id=str(getattr(run_state, "run_id", "") or ""),
-                )
-                return reply
-            finally:
-                self._pending.pop(scoped_chat_id, None)
-
-    async def _ensure_session_title(
-        self,
-        session_key: str,
-        *,
-        run_id: str = "",
-    ) -> None:
-        if self._runtime is None or self._session_title_service is None:
-            return
-        sessions = getattr(self._runtime.services, "session_manager", None)
-        if sessions is None:
-            return
-        async with self._lock_for_session(session_key):
-            session = sessions.get_or_create(session_key)
-            title_session = deepcopy(session)
-        started = asyncio.get_running_loop().time()
-        logger.info(
-            "session_title.started run_id=%s session_id=%s",
-            run_id,
-            session_key,
-        )
-        try:
-            result = await self._session_title_service.ensure_title(title_session)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception(
-                "session_title.failed run_id=%s session_id=%s",
-                run_id,
-                session_key,
-            )
-            return
-        if result.updated:
-            async with self._lock_for_session(session_key):
-                session = sessions.get_or_create(session_key)
-                if not str((session.metadata or {}).get("title") or "").strip():
-                    session.metadata["title"] = result.title
-                    sessions.save(session)
-        logger.info(
-            "session_title.completed run_id=%s session_id=%s duration_ms=%.3f source=%s updated=%s",
-            run_id,
-            session_key,
-            (asyncio.get_running_loop().time() - started) * 1000,
-            result.source,
-            result.updated,
-        )
-
-    def _schedule_session_title(self, session_key: str, *, run_id: str = "") -> None:
-        if self._stopping or self._loop is None or not self._loop.is_running():
-            return
-        existing = self._session_title_tasks.get(session_key)
-        if existing is not None and not existing.done():
-            return
-        task = self._loop.create_task(
-            self._ensure_session_title(session_key, run_id=run_id),
-            name=f"session-title:{session_key}",
-        )
-        self._background_tasks.add(task)
-        self._session_title_tasks[session_key] = task
-        task.add_done_callback(
-            lambda completed: self._background_task_done(
-                completed,
-                session_key=session_key,
-            )
-        )
-
-    def _background_task_done(
-        self,
-        task: asyncio.Task[Any],
-        *,
-        session_key: str = "",
-    ) -> None:
-        self._background_tasks.discard(task)
-        if session_key and self._session_title_tasks.get(session_key) is task:
-            self._session_title_tasks.pop(session_key, None)
-        if task.cancelled():
-            return
-        try:
-            task.result()
-        except Exception:
-            logger.exception("Agent background task failed: %s", task.get_name())
-
-    async def _delete_session_async(self, session_id: str) -> bool:
-        if self._runtime is None or self._session_locks is None:
-            raise RuntimeError("Agent runtime is not started.")
-
-        async with self._lock_for_session(session_id):
-            title_task = self._session_title_tasks.pop(session_id, None)
-            if title_task is not None and not title_task.done():
-                title_task.cancel()
-                await asyncio.gather(title_task, return_exceptions=True)
-            sessions = getattr(
-                getattr(self._runtime, "coordinator", None),
-                "sessions",
-                None,
-            )
-            if sessions is None:
-                raise RuntimeError("Agent session manager is not available.")
-            return sessions.delete(session_id)
-
-    def _lock_for_session(self, session_key: str) -> asyncio.Lock:
-        if self._session_locks is None:
-            raise RuntimeError("Agent runtime is not started.")
-        lock = self._session_locks.get(session_key)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._session_locks[session_key] = lock
-        return lock
 
 
 def _friendly_runtime_error(exc: BaseException) -> str:
@@ -1430,7 +998,7 @@ def _trace_page(title: str, body: str) -> str:
     )
 
 
-class RequestHandler(BaseHTTPRequestHandler):
+class RequestHandler(ChatRunsHttpMixin, CodingWorkspacesHttpMixin, BaseHTTPRequestHandler):
     agent_service: AgentService
     auth_user: AuthenticatedUser
 
@@ -1460,6 +1028,18 @@ class RequestHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/auth/me":
             self._send_json({"user": self._public_user(self._current_user())})
+            return
+
+        if parsed.path.startswith("/api/coding/"):
+            self._handle_coding_workspaces(parsed)
+            return
+
+        if parsed.path == "/api/chat/runs" or parsed.path.startswith("/api/chat/runs/"):
+            self._handle_chat_runs(parsed)
+            return
+
+        if parsed.path in {"/api/skills", "/api/skills/detail"}:
+            self._handle_skills(parsed, mutation=False)
             return
 
         if parsed.path == "/api/health":
@@ -1587,6 +1167,18 @@ class RequestHandler(BaseHTTPRequestHandler):
         if not self._authorize():
             return
 
+        if parsed.path in {"/api/skills/reload", "/api/skills/update"}:
+            self._handle_skills(parsed, mutation=True)
+            return
+
+        if parsed.path.startswith("/api/coding/"):
+            self._handle_coding_workspaces(parsed, mutation=True)
+            return
+
+        if parsed.path == "/api/chat/runs" or parsed.path.startswith("/api/chat/runs/"):
+            self._handle_chat_runs(parsed, mutation=True)
+            return
+
         if parsed.path == "/api/chat":
             self._handle_chat()
             return
@@ -1631,6 +1223,90 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
 
         self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+
+    def _handle_skills(self, parsed, *, mutation: bool) -> None:
+        """Manage the same catalog consumed by tool_search and load_skill."""
+        if not self._require_admin():
+            return
+        # JSON plus browser origin checks prevent form posts or another origin
+        # from changing this server-wide catalog with ambient credentials.
+        if mutation:
+            media_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if media_type != "application/json":
+                self._send_json({"error": "Content-Type must be application/json."},
+                                status=HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+                return
+            origin = self.headers.get("Origin", "")
+            site = self.headers.get("Sec-Fetch-Site", "")
+            try:
+                origin_url = urlparse(origin)
+                origin_allowed = not origin or (
+                    origin_url.scheme in {"http", "https"}
+                    and origin_url.netloc.lower() == self.headers.get("Host", "").lower()
+                )
+            except ValueError:
+                origin_allowed = False
+            if site == "cross-site" or not origin_allowed:
+                self._send_json({"error": "Skill settings require a same-origin request."},
+                                status=HTTPStatus.FORBIDDEN)
+                return
+
+        from skill_runtime import (
+            SKILL_LOADER, SkillConflictError, SkillNotFoundError, SkillValidationError,
+        )
+
+        try:
+            if not mutation:
+                if parsed.path == "/api/skills":
+                    result = SKILL_LOADER.management_catalog()
+                else:
+                    params = parse_qs(parsed.query)
+                    ids = params.get("id", [])
+                    if len(ids) != 1 or not ids[0]:
+                        raise ValueError("A single skill id is required.")
+                    result = SKILL_LOADER.get_document(ids[0])
+            else:
+                # JSON may encode one UTF-8 character using a six-byte escape.
+                # The loader separately enforces the 256 KiB decoded-file cap.
+                length = int(self.headers.get("Content-Length", "0"))
+                if length < 0 or length > 2 * 1024 * 1024:
+                    raise ValueError("Invalid or oversized skill request body.")
+                payload = self._read_json_body()
+                if not isinstance(payload, dict):
+                    raise ValueError("Request body must be a JSON object.")
+                if parsed.path == "/api/skills/reload":
+                    if payload:
+                        raise ValueError("Reload does not accept settings or paths.")
+                    SKILL_LOADER.refresh(force=True)
+                    result = SKILL_LOADER.management_catalog()
+                else:
+                    if set(payload) - {"id", "revision", "content", "enabled"}:
+                        raise ValueError("Unknown skill update field.")
+                    if not isinstance(payload.get("id"), str) or not payload["id"]:
+                        raise ValueError("A skill id is required.")
+                    if not isinstance(payload.get("revision"), str) or not payload["revision"]:
+                        raise ValueError("The loaded skill revision is required.")
+                    if ("content" in payload) == ("enabled" in payload):
+                        raise ValueError("Provide exactly one of content or enabled.")
+                    if "content" in payload and not isinstance(payload["content"], str):
+                        raise ValueError("Skill content must be a string.")
+                    if "enabled" in payload and not isinstance(payload["enabled"], bool):
+                        raise ValueError("Skill enabled must be a boolean.")
+                    updates = {key: payload[key] for key in ("content", "enabled") if key in payload}
+                    result = SKILL_LOADER.update_document(
+                        payload["id"], payload["revision"], **updates,
+                    )
+            self._send_json(result, headers={"Cache-Control": "no-store"})
+        except SkillConflictError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.CONFLICT)
+        except SkillNotFoundError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+        except (SkillValidationError, ValueError, UnicodeError) as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except OSError:
+            logger.exception("Skill catalog storage failed")
+            self._send_json({"error": "Skill storage is unavailable; check server permissions."},
+                            status=HTTPStatus.SERVICE_UNAVAILABLE)
 
     def _handle_runs_page(self) -> None:
         if not self._require_admin():
@@ -1751,56 +1427,69 @@ class RequestHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
 
     def _handle_chat(self) -> None:
+        """Compatibility wait around the single durable run admission path."""
+        import time
+        from uuid import uuid4
+        from web.agent_service import RunCapacityError, RunConflictError
+
+        run = None
+        if not self._require_json_same_origin():
+            return
         try:
             payload = self._read_json_body()
-            message = str(payload.get("message", "")).strip()
-            session_id = str(payload.get("session_id", "default")).strip() or "default"
-            workspace_root = str(payload.get("workspace_root", "")).strip() or None
-            thinking_enabled = payload.get("thinking_enabled", False)
-            if not isinstance(thinking_enabled, bool):
-                raise ValueError("thinking_enabled must be a boolean")
-            model_profile = _validated_model_profile(payload.get("model_profile", ""))
-            if thinking_enabled and not _thinking_supported(model_profile):
-                raise ValueError("thinking_enabled is unavailable for configured model profiles")
-            user = self._current_user()
-            if not message:
-                self._send_json({"error": "message is required"}, status=HTTPStatus.BAD_REQUEST)
-                return
-
-            ask_kwargs = dict(
-                session_id=session_id,
-                content=message,
-                user_id=user.user_id,
-                user_role=user.role,
-                workspace_root=workspace_root,
-                thinking_enabled=thinking_enabled,
-            )
-            if model_profile:
-                ask_kwargs["model_profile"] = model_profile
-            reply = self.agent_service.ask(**ask_kwargs)
-            self._send_json({
-                "reply": reply,
-                "session_id": session_id,
-                "session": read_session(
-                    session_id,
-                    user_id=user.user_id,
-                    message_limit=40,
-                ),
-            })
-        except ValueError as exc:
-            self._send_json(
-                {"error": str(exc), "error_type": type(exc).__name__},
-                status=HTTPStatus.BAD_REQUEST,
-            )
+            if not isinstance(payload, dict):
+                raise ValueError("A chat request must be an object")
+            payload = dict(payload)
+            payload.setdefault("request_id", uuid4().hex)
+            args = self._chat_run_arguments(payload)
+            run = self.agent_service.submit(**args)
+            user_id = self._current_user().user_id
+            deadline = time.monotonic() + _env_int("WEB_AGENT_REPLY_TIMEOUT_SECONDS", 180)
+            cursor = 0
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    latest = self.agent_service.get_run(run["run_id"], user_id=user_id)
+                    self._send_json({"pending": True, "run_id": run["run_id"],
+                                     "session_id": run["session_id"], "run": latest},
+                                    status=HTTPStatus.ACCEPTED)
+                    return
+                events = self.agent_service.events_after(
+                    run["run_id"], user_id=user_id, after=cursor,
+                    wait_seconds=min(remaining, 1.0),
+                )
+                for event in events:
+                    cursor = int(event["seq"])
+                    if event.get("type") == "error":
+                        self._send_json({"error": event.get("error", "Execution failed"),
+                                         "run_id": run["run_id"], "session_id": run["session_id"],
+                                         "run": self.agent_service.get_run(run["run_id"], user_id=user_id)},
+                                        status=HTTPStatus.SERVICE_UNAVAILABLE)
+                        return
+                    if event.get("type") == "complete":
+                        response = {"reply": event.get("reply", ""), "run_id": run["run_id"],
+                                    "session_id": run["session_id"],
+                                    "run": self.agent_service.get_run(run["run_id"], user_id=user_id)}
+                        try:
+                            response["session"] = read_session(run["session_id"], user_id=user_id, message_limit=40)
+                        except Exception:
+                            logger.exception("Could not read completed legacy chat projection")
+                        self._send_json(response)
+                        return
+        except (RunConflictError, RunCapacityError) as exc:
+            self._send_json({"error": str(exc), "error_type": type(exc).__name__},
+                            status=HTTPStatus.CONFLICT if isinstance(exc, RunConflictError) else HTTPStatus.TOO_MANY_REQUESTS)
+        except (ValueError, TypeError) as exc:
+            self._send_json({"error": str(exc), "error_type": type(exc).__name__}, status=HTTPStatus.BAD_REQUEST)
+        except (BrokenPipeError, ConnectionResetError):
+            # The accepted execution remains owned by its supervisor.
+            return
         except Exception as exc:
             traceback.print_exc()
-            self._send_json(
-                {
-                    "error": _friendly_runtime_error(exc),
-                    "error_type": type(exc).__name__,
-                },
-                status=HTTPStatus.SERVICE_UNAVAILABLE,
-            )
+            error = {"error": _friendly_runtime_error(exc), "error_type": type(exc).__name__}
+            if run is not None:
+                error.update(run_id=run["run_id"], session_id=run["session_id"])
+            self._send_json(error, status=HTTPStatus.SERVICE_UNAVAILABLE)
 
     def _handle_auth_login(self) -> None:
         try:
@@ -1890,163 +1579,55 @@ class RequestHandler(BaseHTTPRequestHandler):
             )
 
     def _handle_chat_stream(self) -> None:
+        """Compatibility subscription: no request-owned executor or parser."""
+        from uuid import uuid4
+        from web.agent_service import RunCapacityError, RunConflictError
+
+        if not self._require_json_same_origin():
+            return
         try:
             payload = self._read_json_body()
-            message = str(payload.get("message", "")).strip()
-            session_id = str(payload.get("session_id", "default")).strip() or "default"
-            workspace_root = str(payload.get("workspace_root", "")).strip() or None
-            thinking_enabled = payload.get("thinking_enabled", False)
-            if not isinstance(thinking_enabled, bool):
-                raise ValueError("thinking_enabled must be a boolean")
-            model_profile = _validated_model_profile(payload.get("model_profile", ""))
-            if thinking_enabled and not _thinking_supported(model_profile):
-                raise ValueError("thinking_enabled is unavailable for configured model profiles")
-            attachment_paths = payload.get("attachments") or []
-            if not isinstance(attachment_paths, list) or not all(isinstance(item, str) for item in attachment_paths):
-                raise ValueError("attachments must be a list of storage paths")
-            if len(attachment_paths) > 5:
-                raise ValueError("A maximum of 5 attachments is supported per message")
-            user = self._current_user()
-            if not message:
-                self._send_json({"error": "message is required"}, status=HTTPStatus.BAD_REQUEST)
-                return
-        except Exception as exc:
-            self._send_json(
-                {"error": str(exc), "error_type": type(exc).__name__},
-                status=HTTPStatus.BAD_REQUEST,
-            )
+            if not isinstance(payload, dict):
+                raise ValueError("A chat request must be an object")
+            payload = dict(payload)
+            payload.setdefault("request_id", uuid4().hex)
+            args = self._chat_run_arguments(payload)
+            run = self.agent_service.submit(**args)
+        except (RunConflictError, RunCapacityError) as exc:
+            self._send_json({"error": str(exc), "error_type": type(exc).__name__},
+                            status=HTTPStatus.CONFLICT if isinstance(exc, RunConflictError) else HTTPStatus.TOO_MANY_REQUESTS)
             return
-
-        events: queue.Queue[dict[str, Any]] = queue.Queue()
-        session_key = web_session_id(user.user_id, session_id)
-
-        def enqueue_trace_event(raw_event: dict[str, Any]) -> None:
-            projected = _stream_event_projection(raw_event)
-            if projected is not None:
-                events.put({"type": "event", **projected})
-
-        def run_agent() -> None:
-            unsubscribe: Callable[[], None] = lambda: None
-            try:
-                agent_content = message
-                display_content = None
-                attachment_payloads = None
-                if attachment_paths:
-                    from web.mineru import (
-                        MinerUClient,
-                        build_attachment_payloads,
-                        display_message,
-                    )
-
-                    events.put({"type": "status", "status": "mineru", "text": "正在使用 MinerU 精准解析附件…"})
-                    paths = []
-                    for relative_path in attachment_paths:
-                        path = _safe_storage_path(relative_path, user_id=user.user_id)
-                        if not path.is_file() or path.is_symlink():
-                            raise ValueError(f"附件不存在或不可读取：{relative_path}")
-                        paths.append(path)
-                    with MinerUClient() as mineru:
-                        parsed = [mineru.parse_file(path) for path in paths]
-                    attachment_payloads = build_attachment_payloads(parsed, paths)
-                    display_content = display_message(message, parsed)
-                    events.put({"type": "status", "status": "agent", "text": "附件解析完成，正在交给 LLM…"})
-                subscribe_session = getattr(self.agent_service, "subscribe_session", None)
-                if callable(subscribe_session):
-                    unsubscribe = subscribe_session(session_key, enqueue_trace_event)
-                def on_text(text: str) -> None:
-                    events.put({"type": "delta", "text": text})
-
-                def on_thinking(text: str) -> None:
-                    events.put({"type": "thinking", "text": text})
-
-                setattr(on_text, "on_thinking", on_thinking)
-
-                def on_assistant_segment(payload: dict[str, Any]) -> None:
-                    events.put({"type": "assistant_segment", **payload})
-
-                def on_assistant_completed(payload: dict[str, Any]) -> None:
-                    events.put({"type": "assistant_completed", **payload})
-
-                setattr(on_text, "on_assistant_segment", on_assistant_segment)
-                setattr(on_text, "on_assistant_completed", on_assistant_completed)
-                ask_kwargs = dict(
-                    session_id=session_id,
-                    content=agent_content,
-                    user_id=user.user_id,
-                    user_role=user.role,
-                    workspace_root=workspace_root,
-                    thinking_enabled=thinking_enabled,
-                    on_text=on_text,
-                )
-                if model_profile:
-                    ask_kwargs["model_profile"] = model_profile
-                if display_content is not None:
-                    ask_kwargs["display_content"] = display_content
-                if attachment_payloads is not None:
-                    ask_kwargs["attachments"] = attachment_payloads
-                reply = self.agent_service.ask_stream(**ask_kwargs)
-                events.put({
-                    "type": "complete",
-                    "reply": reply,
-                    "session_id": session_id,
-                    "session": read_session(
-                        session_id,
-                        user_id=user.user_id,
-                        message_limit=40,
-                    ),
-                })
-            except Exception as exc:
-                traceback.print_exc()
-                events.put({
-                    "type": "error",
-                    "error": _friendly_runtime_error(exc),
-                    "error_type": type(exc).__name__,
-                })
-            finally:
-                unsubscribe()
-
-        worker = threading.Thread(
-            target=run_agent,
-            name=f"agent-web-stream-{session_id}",
-            daemon=True,
-        )
-        worker.start()
-
-        self._send_stream_headers()
-        while True:
-            event = events.get()
-            try:
-                self._send_stream_event(event)
-            except (BrokenPipeError, ConnectionResetError):
-                self.agent_service.request_cancel(session_key)
-                return
-            if event["type"] in {"complete", "error"}:
-                return
+        except (ValueError, TypeError) as exc:
+            self._send_json({"error": str(exc), "error_type": type(exc).__name__}, status=HTTPStatus.BAD_REQUEST)
+            return
+        except Exception as exc:
+            traceback.print_exc()
+            self._send_json({"error": _friendly_runtime_error(exc), "error_type": type(exc).__name__},
+                            status=HTTPStatus.SERVICE_UNAVAILABLE)
+            return
+        self._stream_background_run(run, after=0, user_id=self._current_user().user_id)
 
     def _handle_chat_stop(self) -> None:
+        from web.agent_service import RunNotFoundError
+
+        if not self._require_json_same_origin():
+            return
         try:
             payload = self._read_json_body()
-            user_id = self._current_user().user_id
-            storage_id = _web_storage_id(
-                str(payload.get("session_id", "default")).strip() or "default",
-                user_id,
-            )
-            requested = self.agent_service.request_cancel(storage_id)
-            self._send_json({
-                "requested": requested,
-                "session_id": parse_web_session_id(storage_id)[1],
-            })
-        except ValueError as exc:
+            if (not isinstance(payload, dict) or set(payload) != {"run_id"}
+                    or not isinstance(payload.get("run_id"), str) or not payload["run_id"].strip()):
+                raise ValueError("run_id is required; GET /api/chat/runs to find the exact run before stopping it")
+            run = self.agent_service.cancel_run(payload["run_id"].strip(), user_id=self._current_user().user_id)
+            self._send_json({"requested": run["status"] in {"cancelling", "stopped"},
+                             "run_id": run["run_id"], "session_id": run["session_id"], "run": run})
+        except RunNotFoundError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.NOT_FOUND)
+        except (ValueError, TypeError) as exc:
             self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
         except Exception as exc:
             traceback.print_exc()
-            self._send_json(
-                {
-                    "error": _friendly_runtime_error(exc),
-                    "error_type": type(exc).__name__,
-                },
-                status=HTTPStatus.SERVICE_UNAVAILABLE,
-            )
+            self._send_json({"error": _friendly_runtime_error(exc), "error_type": type(exc).__name__},
+                            status=HTTPStatus.SERVICE_UNAVAILABLE)
 
     def _handle_analyze(self) -> None:
         try:
@@ -2516,7 +2097,10 @@ def main() -> None:
     parser.add_argument("--port", default=8000, type=int)
     args = parser.parse_args()
 
-    agent_service = AgentService()
+    agent_service = AgentService(
+        max_workers=_env_int("WEB_AGENT_MAX_WORKERS", 2),
+        max_pending=_env_int("WEB_AGENT_MAX_PENDING", 32),
+    )
     server = ThreadingHTTPServer((args.host, args.port), build_handler(agent_service))
     server.daemon_threads = True
     url = f"http://{args.host}:{args.port}"

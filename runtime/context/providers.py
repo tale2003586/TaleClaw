@@ -145,6 +145,7 @@ class RetrievalContextProvider:
         current_request: str,
         active_turn_messages: list[dict],
         include_security_knowledge: bool,
+        security_context: dict[str, Any] | None = None,
         trace_store=None,
         run_state=None,
         trace_parent_span_id: str | None = None,
@@ -160,13 +161,24 @@ class RetrievalContextProvider:
                 active_turn_messages=active_turn_messages,
             )
         if include_security_knowledge and service is not None:
-            raw_security, decision, security_hits = service.retrieve_security(
-                current_request=current_request,
-                trace_store=trace_store,
-                run_state=run_state,
-                trace_parent_span_id=trace_parent_span_id,
-                reasoning_step=reasoning_step,
-            )
+            # One automatic observation per run/request. Re-inject it each step;
+            # explicit retrieval tools remain free to obtain fresher evidence.
+            key = (getattr(session, "id", None), current_request, id(service))
+            if security_context is not None and security_context.get("key") == key:
+                raw_security, decision, security_hits = security_context["result"]
+            else:
+                raw_security, decision, security_hits = service.retrieve_security(
+                    current_request=current_request,
+                    trace_store=trace_store,
+                    run_state=run_state,
+                    trace_parent_span_id=trace_parent_span_id,
+                    reasoning_step=reasoning_step,
+                )
+                if security_context is not None:
+                    security_context.clear()
+                    security_context.update(
+                        key=key, result=(raw_security, decision, security_hits),
+                    )
         else:
             raw_security, decision, security_hits = "", None, []
         return RetrievalContext(

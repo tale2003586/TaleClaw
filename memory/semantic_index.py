@@ -33,11 +33,13 @@ class SemanticMemoryIndex(Protocol):
 
 
 class NullSemanticMemoryIndex:
+    """Unavailable index: preserve repository fallback and outbox retry semantics."""
+
     def upsert(self, item: MemoryItem) -> None:
-        return None
+        raise RuntimeError("Semantic memory index is unavailable.")
 
     def delete(self, memory_id: str, version: int | None = None) -> None:
-        return None
+        raise RuntimeError("Semantic memory index is unavailable.")
 
     def search(
         self,
@@ -45,7 +47,7 @@ class NullSemanticMemoryIndex:
         scopes: Sequence[OwnerKey],
         top_k: int,
     ) -> list[IndexedMemoryHit]:
-        return []
+        raise RuntimeError("Semantic memory index is unavailable.")
 
 
 class QdrantSemanticMemoryIndex:

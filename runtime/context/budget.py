@@ -83,18 +83,6 @@ class ContextBudgeter:
                     floor_chars=_env_int("CONTEXT_SEMANTIC_MEMORY_FLOOR", 500),
                     strategy="head_tail",
                 ),
-                "retrieved_history": SectionBudgetRule(
-                    name="retrieved_history",
-                    budget_chars=_env_int_any(
-                        ["CONTEXT_RETRIEVED_HISTORY_BUDGET", "CONTEXT_RETRIEVED_MEMORY_BUDGET"],
-                        2500,
-                    ),
-                    floor_chars=_env_int_any(
-                        ["CONTEXT_RETRIEVED_HISTORY_FLOOR", "CONTEXT_RETRIEVED_MEMORY_FLOOR"],
-                        500,
-                    ),
-                    strategy="head_tail",
-                ),
                 "episodic_history": SectionBudgetRule(
                     name="episodic_history",
                     budget_chars=_env_int("CONTEXT_EPISODIC_HISTORY_BUDGET", 2500),
@@ -253,17 +241,6 @@ def _env_int(name: str, default: int) -> int:
         return int(value)
     except ValueError:
         return int(default)
-
-
-def _env_int_any(names: list[str], default: int) -> int:
-    for name in names:
-        value = os.getenv(name)
-        if value not in (None, ""):
-            try:
-                return int(value)
-            except ValueError:
-                return int(default)
-    return int(default)
 
 
 def _env_list(name: str, default: tuple[str, ...]) -> tuple[str, ...]:

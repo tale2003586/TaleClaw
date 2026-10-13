@@ -25,11 +25,10 @@ class Session:
     updated_at: str = field(default_factory=_now_iso)
     last_compacted: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-    # ``messages`` remains the legacy chat transport.  These three values have
-    # deliberately different lifetimes and must never alias one another.
+    # ``messages`` remains the legacy chat transport; immutable events and
+    # their active view have independent lifetimes. Model prompts live in ContextBundle.
     event_log: list[ContextEvent] = field(default_factory=list)
     active_event_window: list[ContextEvent] = field(default_factory=list, init=False)
-    prompt_messages: list[dict[str, Any]] = field(default_factory=list)
     archive_boundary_seq: int = 0
     checkpoints: list[dict[str, Any]] = field(default_factory=list)
     context_snapshots: list[dict[str, Any]] = field(default_factory=list)
@@ -37,7 +36,6 @@ class Session:
 
     def __post_init__(self) -> None:
         self.messages = [dict(message) for message in self.messages]
-        self.prompt_messages = [dict(message) for message in self.prompt_messages]
         self.event_log = [
             event if isinstance(event, ContextEvent) else ContextEvent.from_dict(event)
             for event in self.event_log
@@ -69,7 +67,6 @@ class Session:
             last_compacted=self.last_compacted,
             metadata=deepcopy(thaw(self.metadata), memo),
             event_log=[event.to_dict() for event in self.event_log],
-            prompt_messages=deepcopy(thaw(self.prompt_messages), memo),
             archive_boundary_seq=self.archive_boundary_seq,
             checkpoints=deepcopy(thaw(self.checkpoints), memo),
             context_snapshots=deepcopy(thaw(self.context_snapshots), memo),
@@ -144,13 +141,6 @@ class Session:
 
     def advance_archive_boundary(self, seq: int) -> int:
         return self.set_archive_boundary(seq)
-
-    def set_prompt_messages(self, messages: list[dict[str, Any]]) -> None:
-        """Set the per-model-call prompt transport without retaining it as history."""
-        self.prompt_messages = [dict(message) for message in messages]
-
-    def clear_prompt_messages(self) -> None:
-        self.prompt_messages.clear()
 
     @property
     def archive_boundary_event_id(self) -> str | None:
@@ -322,6 +312,20 @@ class SessionManager:
             self._sessions[session_id] = session
             self._evict_if_needed()
         return self._sessions[session_id]
+
+    def get_existing(self, session_id: str) -> Session | None:
+        """Load a durable session without creating a missing task identity."""
+        if session_id not in self._sessions and self._store.load_session(session_id) is None:
+            return None
+        return self.get_or_create(session_id)
+
+    def save_branch(self, session: Session) -> None:
+        """Persist a newly rekeyed branch and its recovery state atomically."""
+        self._store.save_branch(session)
+        self._bind_checkpoint_persister(session)
+        self._sessions[session.id] = session
+        self._sessions.move_to_end(session.id)
+        self._evict_if_needed()
 
     def save(self, session: Session) -> None:
         self._bind_checkpoint_persister(session)

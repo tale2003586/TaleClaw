@@ -74,24 +74,13 @@ class SlowRunner:
 
 
 class SubagentRetryTests(unittest.TestCase):
-    def test_internal_error_is_retried_once_and_can_recover(self) -> None:
+    def test_unknown_internal_error_is_not_retried(self) -> None:
         runner = FlakyInternalRunner()
-
-        results = run_parallel_tasks(
-            runner=runner,
-            tasks=[{"prompt": "flaky", "agent_type": "explore"}],
-            timeout_seconds=1,
-        )
-
-        self.assertEqual(2, runner.calls)
-        self.assertTrue(results[0]["success"])
-        self.assertEqual("recovered", results[0]["summary"])
-        self.assertEqual(1, results[0]["retry_count"])
-        self.assertTrue(results[0]["recovered"])
-        self.assertEqual(
-            SubagentFailureReason.INTERNAL_ERROR.value,
-            results[0]["recovered_from_failure_reason"],
-        )
+        results = run_parallel_tasks(runner=runner, tasks=[{"prompt":"flaky", "agent_type":"explore"}], timeout_seconds=1)
+        self.assertEqual(1, runner.calls)
+        self.assertFalse(results[0]["success"])
+        self.assertEqual(SubagentFailureReason.INTERNAL_ERROR.value, results[0]["failure_reason"])
+        self.assertEqual(0, results[0]["retry_count"])
 
     def test_step_limit_is_not_auto_retried(self) -> None:
         runner = StepLimitRunner()
@@ -107,7 +96,7 @@ class SubagentRetryTests(unittest.TestCase):
         self.assertEqual(SubagentFailureReason.STEP_LIMIT.value, results[0]["failure_reason"])
         self.assertNotIn("retry_count", results[0])
 
-    def test_timeout_is_retried_once_and_then_reported(self) -> None:
+    def test_timeout_does_not_start_a_second_worker(self) -> None:
         runner = SlowRunner()
 
         results = run_parallel_tasks(
@@ -116,12 +105,22 @@ class SubagentRetryTests(unittest.TestCase):
             timeout_seconds=0.001,
         )
 
-        self.assertEqual(2, runner.calls)
+        self.assertEqual(1, runner.calls)
         self.assertFalse(results[0]["success"])
         self.assertEqual(SubagentFailureReason.TIMEOUT.value, results[0]["failure_reason"])
-        self.assertEqual(1, results[0]["retry_count"])
+        self.assertEqual(0, results[0]["retry_count"])
         self.assertFalse(results[0]["recovered"])
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_auto_retry_requires_explicit_safe_effect_and_termination():
+    from agents.subagent.retry import should_auto_retry
+    result = {"success": False, "failure_reason": SubagentFailureReason.INTERNAL_ERROR.value,
+              "effect_state": "not_started", "worker_terminated": True}
+    assert should_auto_retry(result)
+    assert not should_auto_retry({**result, "worker_terminated": False})
+    assert not should_auto_retry({**result, "effect_state": "unknown"})
+    assert not should_auto_retry(result, retry_count=1)

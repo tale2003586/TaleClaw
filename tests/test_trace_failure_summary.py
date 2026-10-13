@@ -70,7 +70,7 @@ class TraceFailureSummaryTests(unittest.TestCase):
 
     def test_trace_store_writes_trace_summary_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            trace_store = TraceStore(Path(tmp) / ".runs")
+            trace_store = TraceStore(Path(tmp) / ".runs", capture_content=True)
             run_state = RunState.create(session_id="test:trace", metadata={"benchmark_task_id": "task-1"})
             trace_store.start_run(run_state)
             trace_store.append_event(run_state, "workspace.resolved", {

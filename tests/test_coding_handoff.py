@@ -139,11 +139,12 @@ class CodingSessionHandoffTests(unittest.TestCase):
             parent = Session(id="web:default", active_agent="coding")
             parent.add_message("user", "What is the checkpoint idea?")
             parent.add_message("assistant", "A checkpoint records resumable task state.")
-            parent.add_message("user", "把它接入 coding 任务")
+            request = "把它接入 coding 任务\n" + "background " * 80 + "\nKEEP_TABLE_V2"
+            parent.add_message("user", request)
 
             runner.run_coding_task(
                 parent_session=parent,
-                user_text="把它接入 coding 任务",
+                user_text=request,
                 agent_spec=make_agent_spec("coding", "coding", "coding"),
             )
 
@@ -162,6 +163,24 @@ class CodingSessionHandoffTests(unittest.TestCase):
             self.assertIn("A checkpoint records resumable task state.", first_prompt)
             self.assertIn(CODING_HANDOFF_METADATA_KEY, coding_application.metadata)
             self.assertIn(PENDING_CODING_TASK_SUMMARY_METADATA_KEY, parent.metadata)
+
+            from runtime.context.events import is_real_user_message
+            from applications.coding.context_state import _compact_events, build_coding_context_view
+            from applications.coding.task_state import load_task_state
+            from runtime.context.snapshots import EventCompactor
+            users = [message for message in coding_application.messages if is_real_user_message(message)]
+            self.assertEqual([request], [message["content"] for message in users])
+            state = load_task_state(coding_application)
+            self.assertIsNotNone(_compact_events(
+                coding_application, task_state=state,
+                before_message_index=len(coding_application.messages), event_compactor=EventCompactor(),
+            ))
+            view = build_coding_context_view(
+                coding_application, objective=request, active_turn_start_index=0,
+                static_messages=[], usable_input_tokens=100_000,
+            )
+            self.assertIn("KEEP_TABLE_V2", view.state_message["content"])
+            self.assertEqual(request, view.state.source_requests[0]["content"])
 
     def test_agent_loop_attaches_pending_coding_summary_to_parent_reply(self) -> None:
         class FakeCodingApplication:

@@ -17,6 +17,7 @@ interface RunsContextValue {
 
 const RunsContext = createContext<RunsContextValue | null>(null);
 const LIVE_POLL_INTERVAL_MS = 2000;
+const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "cancelling"]);
 const LIVE_RUN_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export function RunsProvider({ enabled, children }: { enabled: boolean; children: ReactNode }) {
@@ -113,12 +114,12 @@ export function useRuns() {
 }
 
 function isLiveRun(run: RunSummary | undefined) {
-  if (!run || run.status.toLowerCase() !== "running") return false;
+  if (!run || !ACTIVE_RUN_STATUSES.has(run.status.toLowerCase())) return false;
   return isRecentTimestamp(run.startedAt);
 }
 
 function isLiveDetail(detail: RunDetail | null | undefined) {
-  if (!detail || String(detail.runState.status || "").toLowerCase() !== "running") return false;
+  if (!detail || !ACTIVE_RUN_STATUSES.has(String(detail.runState.status || "").toLowerCase())) return false;
   return isRecentTimestamp(String(detail.runState.started_at || ""));
 }
 

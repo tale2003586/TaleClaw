@@ -89,8 +89,6 @@ CONTEXT_ARTIFACT_ROOT = Path(
     os.getenv("CONTEXT_ARTIFACT_ROOT", str(WORKDIR / ".coding_applications" / "artifacts"))
 ).expanduser().resolve()
 
-SKILLS_DIR = WORKDIR / "skills"
-
 TEAM_DIR = WORKDIR / ".team"
 INBOX_DIR = TEAM_DIR / "inbox"
 

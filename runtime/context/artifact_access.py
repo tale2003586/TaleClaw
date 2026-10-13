@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
+import hashlib
 from typing import Any, Literal, Mapping
 
 
 RESOURCE_STATE_METADATA_KEY = "resource_state"
 ARTIFACT_ACCESS_STATE_KEY = "artifact_access"
+ARTIFACT_PROMPT_VISIBILITY_KEY = "artifact_prompt_visibility"
+MAX_ACCESS_SUMMARY_RESOURCES = 20
+MAX_ACCESS_SUMMARY_RANGES = 8
+MAX_ACCESS_SUMMARY_CHARS = 6_000
 
 ArtifactAccessStatus = Literal[
     "not_accessed",
@@ -97,6 +102,7 @@ def save_artifact_access_state(metadata: dict[str, Any], state: ArtifactAccessSt
     if not isinstance(states, dict):
         states = {}
         resources[ARTIFACT_ACCESS_STATE_KEY] = states
+    states.pop(state.artifact_ref, None)
     states[state.artifact_ref] = state.to_dict()
 
 
@@ -129,6 +135,23 @@ def guard_artifact_access(
     reference = canonical_artifact_ref(arguments.get("artifact_ref"))
     state = load_artifact_access_states(metadata).get(reference)
     if state is None:
+        return None
+    visible = _visible_access(metadata)
+    if visible is not None:
+        entry = visible.get(reference) or {}
+        if arguments.get("query") is not None:
+            duplicate = _search_key(arguments) in entry.get("queries", [])
+        else:
+            start = max(0, int(arguments.get("offset") or 0))
+            end = start + max(200, min(int(arguments.get("limit") or 12_000), 50_000))
+            if state.size_chars is not None:
+                end = min(end, state.size_chars)
+            duplicate = end >= start and range_is_covered(entry.get("ranges", []), start, end)
+            if end == start:
+                duplicate = bool(entry.get("eof"))
+        if duplicate:
+            count = _record_repeated_attempt(metadata, state)
+            return _duplicate_message("currently visible evidence", count=count)
         return None
     query = arguments.get("query")
     if query is not None:
@@ -191,6 +214,12 @@ def reduce_artifact_access(
             and range_is_covered(state.covered_ranges, 0, state.size_chars)
         )
         state.access_status = "fully_accessed" if fully_covered else "partially_accessed"
+    if _visible_access(metadata) is not None:
+        # A successful repeated read restores evidence lost from the prompt;
+        # historical coverage alone is not a no-progress signal.
+        access["rehydrated"] = state.no_progress_count > 0
+        state.no_progress_count = 0
+        _add_visible_access(_visible_access(metadata), access)
     state.last_error = None
     access["new_coverage_chars"] = new_coverage
     save_artifact_access_state(metadata, state)
@@ -217,17 +246,32 @@ def artifact_access_summary_message(metadata: Mapping[str, Any] | None) -> dict[
     states = load_artifact_access_states(metadata)
     if not states:
         return None
-    payload = [
-        {
+    visible = _visible_access(metadata or {}) or {}
+    # Access history stays durable. Only its prompt projection is bounded.
+    ordered = list(reversed(list(states.values())))
+    ordered.sort(key=lambda state: state.artifact_ref not in visible)
+    resources = []
+    for state in ordered:
+        candidate = {
             "artifact_ref": state.artifact_ref,
             "access_status": state.access_status,
-            "covered_ranges": [list(item) for item in state.covered_ranges],
+            "covered_ranges": [list(item) for item in state.covered_ranges[-MAX_ACCESS_SUMMARY_RANGES:]],
+            "omitted_ranges": max(0, len(state.covered_ranges) - MAX_ACCESS_SUMMARY_RANGES),
             "eof": state.eof,
             "search_count": len(state.normalized_queries),
             "repeated_read_calls": state.repeated_read_calls,
         }
-        for state in states.values()
-    ]
+        if len(json.dumps([*resources, candidate], ensure_ascii=False, separators=(",", ":"))) > MAX_ACCESS_SUMMARY_CHARS - 500:
+            continue
+        resources.append(candidate)
+        if len(resources) >= MAX_ACCESS_SUMMARY_RESOURCES:
+            break
+    payload = {
+        "coverage_scope": "historical; reread if absent from current prompt",
+        "tracked_resources": len(states),
+        "omitted_resources": len(states) - len(resources),
+        "resources": resources,
+    }
     return {
         "role": "system",
         "content": (
@@ -268,7 +312,7 @@ def canonical_artifact_ref(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    return text if text.startswith("artifact://") else f"artifact://{text}"
+    return text if text.startswith(("artifact://", "event://", "snapshot://", "state://")) else f"artifact://{text}"
 
 
 def normalize_query(value: Any) -> str:
@@ -289,3 +333,63 @@ def _duplicate_message(kind: str, *, count: int) -> str:
         "No new information would be produced by this call. "
         "Continue using the existing artifact evidence or choose a different query."
     )
+
+
+def evidence_response_digest(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def update_artifact_prompt_visibility(
+    metadata: dict[str, Any], messages: list[dict[str, Any]],
+) -> None:
+    """Track full evidence in the actual prompt, independently of read history.
+
+    Metadata survives some truncation paths. Require the response digest to
+    match as well, so a retained header/preview never masquerades as full data.
+    """
+    resources = metadata.setdefault(RESOURCE_STATE_METADATA_KEY, {})
+    if not isinstance(resources, dict):
+        resources = {}
+        metadata[RESOURCE_STATE_METADATA_KEY] = resources
+    visible: dict[str, Any] = {}
+    for message in messages:
+        if message.get("role") != "tool":
+            continue
+        message_metadata = message.get("metadata")
+        access = message_metadata.get("artifact_access") if isinstance(message_metadata, Mapping) else None
+        content = message.get("content")
+        if (isinstance(access, Mapping) and isinstance(content, str)
+                and access.get("response_sha256") == evidence_response_digest(content)):
+            _add_visible_access(visible, access)
+    resources[ARTIFACT_PROMPT_VISIBILITY_KEY] = visible
+
+
+def _visible_access(metadata: Mapping[str, Any]) -> dict[str, Any] | None:
+    resources = metadata.get(RESOURCE_STATE_METADATA_KEY)
+    value = resources.get(ARTIFACT_PROMPT_VISIBILITY_KEY) if isinstance(resources, Mapping) else None
+    return value if isinstance(value, dict) else None
+
+
+def _search_key(arguments: Mapping[str, Any]) -> str:
+    # Artifact search is case insensitive but whitespace is significant.
+    return json.dumps([str(arguments.get("query") or "").casefold(),
+                       max(1, min(int(arguments.get("max_results") or 20), 50))],
+                      ensure_ascii=False)
+
+
+def _add_visible_access(visible: dict[str, Any], access: Mapping[str, Any]) -> None:
+    reference = canonical_artifact_ref(access.get("artifact_ref"))
+    if not reference or reference == "event://session":
+        return
+    entry = visible.setdefault(reference, {"ranges": [], "queries": [], "eof": False})
+    if access.get("mode") == "search":
+        key = _search_key(access)
+        if key not in entry["queries"]:
+            entry["queries"].append(key)
+    else:
+        returned = access.get("returned_range")
+        if isinstance(returned, (tuple, list)) and len(returned) == 2:
+            entry["ranges"] = [list(item) for item in merge_ranges([
+                *entry["ranges"], (int(returned[0]), int(returned[1])),
+            ])]
+        entry["eof"] = bool(entry["eof"] or access.get("eof"))

@@ -109,3 +109,18 @@
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+@media (max-width: 760px) {
+  .skills-layout { grid-template-columns: minmax(0, 1fr); }
+  .skills-list { max-height: 320px; }
+  .skills-toolbar { flex-wrap: wrap; }
+  .skill-editor-actions .button { flex: 1 1 auto; }
+}
+
+@media (max-width: 620px) {
+  .chat-run-summary { gap: 6px; padding-inline: 12px; }
+  .chat-workspace-binding { margin-inline: 12px; }
+  .coding-task-options label { flex-basis: 100px; }
+  .composer .attachment-chip, .composer .submission-retry span { display: inline-flex; }
+  .composer-actions { flex-wrap: wrap; }
+}

@@ -45,7 +45,6 @@ def test_builder_no_longer_implements_retrieval_or_security_trace():
 def test_explicit_retrieval_service_preserves_history_context():
     service = ContextRetrievalService(
         history_vector_index=_HistoryIndex(),
-        history_scope_resolver=lambda session: f"scope:{session.id}",
     )
     builder = ContextBuilder(
         context_providers=DEFAULT_CONTEXT_PROVIDERS,
@@ -59,8 +58,8 @@ def test_explicit_retrieval_service_preserves_history_context():
         agent_spec=SimpleNamespace(instructions="system", tool_mode="bot"),
     )
 
-    assert "<episodic_history" in context.messages[-2]["content"]
-    assert "remembered result" in context.messages[-2]["content"]
+    assert "<episodic_history" in context.messages[-1]["content"]
+    assert "remembered result" in context.messages[-1]["content"]
 
 
 def test_minimal_builder_has_no_retrieval_service():

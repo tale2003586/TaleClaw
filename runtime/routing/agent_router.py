@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any, Callable
 
 from agents.definitions import BOT_AGENT_SPEC
 from agents.definitions import CODING_AGENT_SPEC
@@ -16,6 +17,7 @@ class RouteResult:
     execution: str = "runtime"
     confidence: float = 1.0
     reason: str = ""
+    classifier_decision: dict[str, Any] | None = None
 
 
 class AgentRouter:
@@ -30,7 +32,8 @@ class AgentRouter:
         self.intent_classifier = intent_classifier or IntentClassifier()
         self.execution_planner = execution_planner or ExecutionPlanner()
 
-    def route(self, session, user_text: str) -> RouteResult:
+    def route(self, session, user_text: str, *, on_decision: Callable | None = None) -> RouteResult:
+        decision = None
         candidate = self.intent_classifier.classify(user_text, session)
         plan = self.execution_planner.plan(candidate, session)
 
@@ -41,10 +44,20 @@ class AgentRouter:
             and plan.reason == "No specialized route matched."
             and self._coding_allowed(session)
         ):
-            if (
-                self.hybrid_classifier is not None
-                and self.hybrid_classifier.should_use_coding(user_text)
-            ):
+            accepted = False
+            if self.hybrid_classifier is not None:
+                classify = getattr(self.hybrid_classifier, "classify", None)
+                if callable(classify):
+                    result = classify(user_text)
+                    decision = result.to_dict()
+                    accepted = bool(result.valid and result.label == "coding")
+                    if on_decision is not None:
+                        on_decision(result)
+                else:
+                    accepted = bool(self.hybrid_classifier.should_use_coding(user_text))
+                    decision = {"schema_version": "route_decision.legacy", "label": "coding" if accepted else "bot",
+                                "valid": None, "fallback_reason": "legacy_bool_adapter", "usage_status": "unknown"}
+            if accepted:
                 plan = ExecutionPlan(
                     agent_spec=CODING_AGENT_SPEC,
                     intent="coding",
@@ -61,7 +74,9 @@ class AgentRouter:
                     reason="Coding candidate was not accepted by the hybrid classifier.",
                 )
 
-        return self._record(session, self._route_result(plan))
+        routed = self._route_result(plan)
+        routed.classifier_decision = decision
+        return self._record(session, routed)
 
     def _coding_allowed(self, session) -> bool:
         return self.execution_planner.coding_allowed(session)
@@ -88,5 +103,6 @@ class AgentRouter:
                 "confidence": result.confidence,
                 "reason": result.reason,
                 "switched": result.switched,
+                "classifier_decision": result.classifier_decision,
             }
         return result

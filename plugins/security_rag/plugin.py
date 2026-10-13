@@ -24,6 +24,9 @@ from tools.spec import ToolExposure, ToolRisk
 class SecurityRagPlugin(Plugin):
     name = "security_rag"
 
+    def __init__(self, *, index=None) -> None:
+        self.index = index
+
     def tools(self) -> list[ToolRegistration]:
         return [
             ToolRegistration(
@@ -73,7 +76,7 @@ class SecurityRagPlugin(Plugin):
         _run_state=None,
         _parent_span_id: str | None = None,
     ) -> str:
-        index = build_security_index_from_env()
+        index = self.index if self.index is not None else build_security_index_from_env()
         timer = Timer()
         search_trace = {}
         normalized_top_k = max(1, min(10, int(top_k or 5)))
@@ -110,6 +113,7 @@ class SecurityRagPlugin(Plugin):
                 top_k=normalized_top_k,
                 min_score=normalized_min_score,
                 trace_callback=search_trace.update,
+                use_cache=False,
             )
         except Exception as exc:
             elapsed_ms = timer.ms()

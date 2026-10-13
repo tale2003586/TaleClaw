@@ -101,6 +101,15 @@ class EvidenceRef:
     lines: str = ""
     content_hash: str = ""
     uri: str = ""
+    file_dependencies: dict[str, str] = field(default_factory=dict)
+    workspace_root: str = ""
+    stale: bool = False
+    stale_reason: str = ""
+    verification: bool = False
+    tool_name: str = ""
+    effect_state: str = "unknown"
+    provenance: str = "legacy"
+    task_id: str = ""
 
 
 @dataclass
@@ -111,6 +120,10 @@ class PlanItem:
     evidence_refs: list[str] = field(default_factory=list)
     depends_on: list[str] = field(default_factory=list)
     supersedes: str = ""
+    dependencies: list[str] = field(default_factory=list)
+    task_id: str = ""
+    revalidation_required: bool = False
+    invalidation_reason: str = ""
 
 
 @dataclass
@@ -123,6 +136,10 @@ class CompletedItem:
     covered_scope: list[str] = field(default_factory=list)
     open_questions: list[str] = field(default_factory=list)
     needs_parent_verification: bool = False
+    dependencies: list[str] = field(default_factory=list)
+    task_id: str = ""
+    revalidation_required: bool = False
+    invalidation_reason: str = ""
 
 
 @dataclass
@@ -134,6 +151,10 @@ class Finding:
     supersedes: str = ""
     superseded_by: str = ""
     status: ItemStatus = ItemStatus.COMPLETED
+    dependencies: list[str] = field(default_factory=list)
+    task_id: str = ""
+    revalidation_required: bool = False
+    invalidation_reason: str = ""
 
 
 @dataclass
@@ -144,6 +165,15 @@ class Hypothesis:
     evidence_refs: list[str] = field(default_factory=list)
     status: ItemStatus = ItemStatus.PENDING
     supersedes: str = ""
+    dependencies: list[str] = field(default_factory=list)
+    task_id: str = ""
+    revalidation_required: bool = False
+    invalidation_reason: str = ""
+    lifecycle: str = "open"
+    supporting_evidence_refs: list[str] = field(default_factory=list)
+    refuting_evidence_refs: list[str] = field(default_factory=list)
+    falsifiable_prediction: str = ""
+    next_validation: str = ""
 
 
 @dataclass
@@ -156,6 +186,10 @@ class Decision:
     status: ItemStatus = ItemStatus.COMPLETED
     evidence_refs: list[str] = field(default_factory=list)
     supersedes: str = ""
+    dependencies: list[str] = field(default_factory=list)
+    task_id: str = ""
+    revalidation_required: bool = False
+    invalidation_reason: str = ""
 
     @property
     def summary(self) -> str:
@@ -173,6 +207,10 @@ class Action:
     observed_effects: list[str] = field(default_factory=list)
     blocked_by: list[str] = field(default_factory=list)
     scope_files: list[str] = field(default_factory=list)
+    dependencies: list[str] = field(default_factory=list)
+    task_id: str = ""
+    revalidation_required: bool = False
+    invalidation_reason: str = ""
 
 
 @dataclass
@@ -471,6 +509,18 @@ def save_task_state(session: Any, state: TaskState) -> TaskState:
     if not isinstance(metadata, dict):
         metadata = {}
         session.metadata = metadata
+    bound_task_id = str(metadata.get("task_id") or "")
+    if bound_task_id:
+        if state.task_id and state.task_id != bound_task_id:
+            raise ValueError("TaskState belongs to a different coding task")
+        state.task_id = bound_task_id
+        for evidence in state.evidence_index.values():
+            if not evidence.task_id:
+                evidence.task_id = bound_task_id
+        for item in [*state.findings, *state.hypotheses, *state.decisions,
+                     *state.pending_actions, *state.plan, *state.completed]:
+            if not item.task_id:
+                item.task_id = bound_task_id
     state.updated_at = _now()
     metadata[TASK_STATE_METADATA_KEY] = state.to_dict()
     touch = getattr(session, "touch", None)
@@ -490,6 +540,8 @@ def ensure_task_state(
     existing = load_task_state(session)
     if existing is not None:
         metadata = getattr(session, "metadata", {}) or {}
+        if metadata.get("task_id") and not existing.task_id:
+            save_task_state(session, existing)
         persisted = _payload_dict(metadata.get(TASK_STATE_METADATA_KEY))
         if persisted is not None and persisted.get("schema") != TASK_STATE_SCHEMA:
             save_task_state(session, existing)
@@ -610,7 +662,8 @@ def _latest_real_user_history(session: Any) -> dict[str, Any] | None:
             continue
         metadata = message.get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
-        if str(metadata.get("source") or "").startswith("runtime-generated"):
+        from runtime.context.events import is_real_user_message
+        if not is_real_user_message(message):
             continue
         if not str(message.get("content") or "").strip():
             continue

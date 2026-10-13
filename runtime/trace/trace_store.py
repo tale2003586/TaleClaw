@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 from datetime import datetime
+from dataclasses import replace
 
 from runtime.trace.events import RUN_STARTED, TraceEvent
 from config import WORKDIR
@@ -25,9 +26,11 @@ class TraceStore:
         root: str | Path | None = None,
         *,
         index_enabled: bool | None = None,
+        capture_content: bool = False,
     ) -> None:
         self.root = Path(root) if root is not None else WORKDIR / ".runs"
         self.root.mkdir(parents=True, exist_ok=True)
+        self.capture_content = bool(capture_content)
         self._lock = threading.RLock()
         use_index = trace_index_enabled() if index_enabled is None else index_enabled
         self.index_store = (
@@ -75,7 +78,7 @@ class TraceStore:
             span_id=span_id,
             parent_span_id=parent_span_id,
             step=step,
-            payload=_json_safe(payload or {}),
+            payload=self._trace_payload(payload or {}),
         ).to_dict()
         run_dir = self.run_dir(run_state)
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -88,12 +91,16 @@ class TraceStore:
             )
         self._event_subscribers.dispatch(event, subscribers)
 
+    def _trace_payload(self, payload):
+        value = _json_safe(payload)
+        return value if self.capture_content else _metadata_only(value)
+
     def write_run_state(self, run_state: RunState) -> None:
         if (run_state.metadata or {}).get("trace_only"):
             return
         self._write_json_atomic(
             self.run_dir(run_state) / "run_state.json",
-            run_state.to_dict(),
+            self._trace_payload(run_state.to_dict()),
         )
 
     def write_report(
@@ -103,8 +110,8 @@ class TraceStore:
     ) -> None:
         try:
             payload = {
-                "run_state": run_state.to_dict(),
-                "report": _json_safe(report or {}),
+                "run_state": self._trace_payload(run_state.to_dict()),
+                "report": self._trace_payload(report or {}),
                 "generated_at": now_iso(),
             }
             self._write_json_atomic(self.run_dir(run_state) / "report.json", payload)
@@ -150,7 +157,8 @@ class TraceStore:
     def _index_run(self, run_state: RunState) -> None:
         if self.index_store is None:
             return
-        self.index_store.upsert_run(run_state, run_dir=self.run_dir(run_state))
+        indexed = run_state if self.capture_content else replace(run_state, final_answer=None, error=None, metadata=self._trace_payload(run_state.metadata))
+        self.index_store.upsert_run(indexed, run_dir=self.run_dir(run_state))
 
     def _index_run_from_artifacts(
         self,
@@ -162,10 +170,11 @@ class TraceStore:
         run_dir = self.run_dir(run_state)
         metrics = _read_json(run_dir / "metrics.json")
         summary = _read_json(run_dir / "trace_summary.json")
+        indexed = run_state if self.capture_content else replace(run_state, final_answer=None, error=None, metadata=self._trace_payload(run_state.metadata))
         self.index_store.upsert_run(
-            run_state,
+            indexed,
             run_dir=run_dir,
-            report=report,
+            report=self._trace_payload(report),
             summary=summary,
             metrics=metrics,
         )
@@ -186,9 +195,15 @@ class TraceStore:
             "tool_denials": 0,
             "total_model_duration_ms": 0.0,
             "total_tool_duration_ms": 0.0,
+            "unknown_usage_calls": 0,
             "input_tokens": 0,
             "output_tokens": 0,
             "total_tokens": 0,
+            # Sum only reported cache reads; None means no reported counter.
+            # The subtotal remains partial when unknown_cache_usage_calls > 0.
+            "cached_input_tokens": None,
+            "unknown_cache_usage_calls": 0,
+            "cache_usage_scope": "trace_main_calls",
             "model_retry_count": 0,
             "model_route_attempts": 0,
             "sanitized_messages": 0,
@@ -221,19 +236,38 @@ class TraceStore:
                     metrics["model_calls"] += 1
                     metrics["total_model_duration_ms"] += _float(payload.get("duration_ms"))
                     usage = payload.get("usage") or {}
+                    if not all(isinstance(usage.get(key), int) and not isinstance(usage.get(key), bool) for key in ("input_tokens", "output_tokens", "total_tokens")):
+                        metrics["unknown_usage_calls"] += 1
                     metrics["input_tokens"] += _int(usage.get("input_tokens"))
                     metrics["output_tokens"] += _int(usage.get("output_tokens"))
                     metrics["total_tokens"] += _int(usage.get("total_tokens"))
+                    cached = usage.get("cached_input_tokens")
+                    input_tokens = usage.get("input_tokens")
+                    total_tokens = usage.get("total_tokens")
+                    if (
+                        isinstance(cached, int) and not isinstance(cached, bool) and cached >= 0
+                        and not (isinstance(input_tokens, int) and not isinstance(input_tokens, bool)
+                                 and cached > input_tokens)
+                        and not (isinstance(total_tokens, int) and not isinstance(total_tokens, bool)
+                                 and cached > total_tokens)
+                    ):
+                        metrics["cached_input_tokens"] = (metrics["cached_input_tokens"] or 0) + cached
+                    else:
+                        metrics["unknown_cache_usage_calls"] += 1
                     retry_count = _int(
                         (payload.get("provider_metadata") or {}).get("retry_count")
                     )
                     metrics["model_retry_count"] += retry_count
+                    # Failed fallback attempts have no cache breakdown in this event.
+                    metrics["unknown_cache_usage_calls"] += max(0, retry_count)
                     model = str(payload.get("model") or "").strip()
                     provider = str(payload.get("provider") or "").strip()
                     if model or provider:
                         models.add(f"{provider}:{model}".strip(":"))
                 elif name == "model.call.failed":
                     metrics["model_failures"] += 1
+                    metrics["unknown_usage_calls"] += max(1, len(payload.get("route_attempts") or []))
+                    metrics["unknown_cache_usage_calls"] += max(1, len(payload.get("route_attempts") or []))
                     metrics["total_model_duration_ms"] += _float(payload.get("duration_ms"))
                     metrics["model_route_attempts"] += len(payload.get("route_attempts") or [])
                 elif name == "model.route.attempts":
@@ -264,7 +298,10 @@ class TraceStore:
                             seen_tool_calls.add(fingerprint)
                 elif name == "tool.call.failed":
                     metrics["tool_calls"] += 1
-                    metrics["tool_failures"] += 1
+                    if payload.get("status") == "denied":
+                        metrics["tool_denials"] += 1
+                    else:
+                        metrics["tool_failures"] += 1
                     metrics["total_tool_duration_ms"] += _float(payload.get("duration_ms"))
                     tool_name = str(payload.get("tool_name") or "").strip()
                     if tool_name:
@@ -276,6 +313,26 @@ class TraceStore:
                         else:
                             seen_tool_calls.add(fingerprint)
 
+        # Root counters include auxiliary purposes and every fallback attempt.
+        root_budget = (run_state.metadata or {}).get("execution_budget")
+        if isinstance(root_budget, dict) and _int(root_budget.get("model_attempts")) > 0 and _int(root_budget.get("model_attempts")) >= metrics["model_calls"] + metrics["model_failures"]:
+            metrics["root_model_attempts"] = root_budget.get("model_attempts")
+            metrics["root_tool_attempts"] = root_budget.get("tool_attempts")
+            metrics["total_tokens"] = _int(root_budget.get("known_tokens"))
+            metrics["unknown_usage_calls"] = _int(root_budget.get("unknown_usage_attempts")) + _int(root_budget.get("model_attempts_in_flight"))
+            metrics["model_attempts_in_flight"] = _int(root_budget.get("model_attempts_in_flight"))
+            metrics["usage_scope"] = "root_all_purposes"
+            # Breakdown is only available for main-loop calls, never label it root total.
+            metrics["input_tokens"] = None
+            metrics["output_tokens"] = None
+        else:
+            metrics["usage_scope"] = "trace_main_calls"
+        for key in ("input_tokens", "output_tokens", "total_tokens"):
+            metrics[f"known_{key}"] = metrics[key]
+            if metrics["unknown_usage_calls"]:
+                metrics[key] = None
+        metrics["usage_status"] = ("complete" if not metrics["unknown_usage_calls"]
+            else "partial" if metrics["known_total_tokens"] else "unknown")
         context_metrics = self._context_metrics_for(run_state)
         context_aggregate = context_metrics.get("aggregate") or {}
         metrics["total_model_duration_ms"] = round(metrics["total_model_duration_ms"], 3)
@@ -389,7 +446,7 @@ def event_preview(value: Any, *, limit: int = 500) -> str:
 
 def _tool_call_fingerprint(payload: dict[str, Any]) -> str:
     tool_name = str(payload.get("tool_name") or "").strip()
-    args = str(payload.get("final_arguments_preview") or "").strip()
+    args = str(payload.get("final_arguments_preview_sha256") or payload.get("final_arguments_preview") or "").strip()
     if not tool_name:
         return ""
     return json.dumps(
@@ -485,3 +542,40 @@ def _looks_secret(key: str) -> bool:
             )
         )
     )
+
+
+# Default persistence contains bounded operational metadata, not arbitrary text.
+# Full diagnostic content is explicit opt-in via TraceStore(capture_content=True).
+_TRACE_STRING_FIELDS = frozenset({
+    "event", "event_id", "schema_version", "timestamp", "run_id", "session_id", "request_id",
+    "span_id", "parent_span_id", "task_id", "parent_task_id", "model", "provider", "tool_name", "tool_mode", "status",
+    "execution_status", "task_status", "outcome", "effect_state", "error_type", "stop_reason",
+    "started_at", "finished_at", "generated_at", "active_agent", "agent_name", "agent_type",
+    "route_purpose", "selected_profile", "selected_provider", "selected_model", "profile",
+    "purpose", "usage_status", "phase", "source", "kind", "condition", "decision",
+    "cache_status", "policy", "counter_kind", "budget_kind", "verifier", "patch_sha256",
+    "section", "strategy", "mode", "agent", "channel", "execution_path", "last_tool",
+    "label", "fallback_reason", "prompt_version", "usage_scope",
+})
+
+
+def _metadata_only(value, key=""):
+    if isinstance(value, dict):
+        out = {}
+        for name, item in value.items():
+            if name in {"arguments", "final_arguments", "arguments_preview", "final_arguments_preview"}:
+                # Group equal calls without retaining their argument content.
+                import hashlib
+                out[name + "_sha256"] = hashlib.sha256(json.dumps(item, sort_keys=True, default=str).encode()).hexdigest()
+            elif isinstance(item, str) and name not in _TRACE_STRING_FIELDS:
+                out[name + "_chars"] = len(item)
+            elif name in {"messages", "content", "reply", "prompt", "query", "input_text", "output", "raw_response", "text"}:
+                out[name + "_chars"] = len(str(item))
+            else:
+                out[name] = _metadata_only(item, name)
+        return out
+    if isinstance(value, list):
+        return [_metadata_only(item, key) for item in value]
+    if isinstance(value, str):
+        return value if key in _TRACE_STRING_FIELDS else {"chars": len(value)}
+    return value

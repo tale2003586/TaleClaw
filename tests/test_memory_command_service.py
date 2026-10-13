@@ -97,7 +97,7 @@ def test_propose_never_creates_active() -> None:
     assert events[0][0] == "memory.candidate.created"
 
 
-def test_only_verified_coding_conclusions_can_be_recorded_active() -> None:
+def test_model_verified_coding_conclusions_cannot_be_recorded_active() -> None:
     commands, repository, _ = service()
     evidence = MemoryEvidence(
         id="ev-code",
@@ -120,25 +120,10 @@ def test_only_verified_coding_conclusions_can_be_recorded_active() -> None:
         confidence=0.95,
     )
 
-    item = commands.record_verified_conclusion(coding, context())
-
-    assert item.status is MemoryStatus.ACTIVE
-    assert repository.get(item.id) == item
-    with pytest.raises(ValueError, match="verified evidence"):
-        commands.record_verified_conclusion(
-            MemoryWriteProposal(
-                **{
-                    **coding.__dict__,
-                    "content": "Unverified claim",
-                    "evidence": (
-                        MemoryEvidence(
-                            **{**evidence.__dict__, "id": "ev-unverified", "metadata": {}}
-                        ),
-                    ),
-                }
-            ),
-            context(),
-        )
+    with pytest.raises(ValueError, match="use propose, review, then confirm"):
+        commands.record_verified_conclusion(coding, context())
+    assert repository.items == {}
+    assert repository.outbox == {}
 
 
 def test_exact_duplicate_merges_evidence_without_second_item() -> None:

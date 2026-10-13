@@ -31,6 +31,27 @@ class ContextEventType(str, Enum):
 EVENT_TYPES = frozenset(item.value for item in ContextEventType)
 
 
+def is_real_user_message(message: Mapping[str, Any]) -> bool:
+    """Classify host provenance, never infer a user's identity from content.
+
+    Missing provenance remains compatible with legacy user messages. Explicit
+    runtime/tool provenance wins even when the transport role is ``user``.
+    """
+    if str(message.get("role") or "") != "user":
+        return False
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    origin = str(metadata.get("origin") or message.get("origin") or "").lower()
+    source = str(metadata.get("source") or message.get("source") or "").lower()
+    kind = str(metadata.get("kind") or message.get("kind") or "").lower()
+    return not (
+        (bool(origin) and origin not in {"user", "human"})
+        or source.startswith("runtime-generated")
+        or kind.startswith("runtime_")
+        or kind in {"reflection", "reflection_instruction", "budget_reminder", "finishing_reminder", "agent_loop_guard", "subagent_step_limit_summary_request"}
+    )
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -187,6 +208,7 @@ __all__ = (
     "ContextEvent",
     "ContextEventType",
     "EVENT_TYPES",
+    "is_real_user_message",
     "canonical_json",
     "payload_checksum",
     "stable_event_id",

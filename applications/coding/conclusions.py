@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,6 +14,7 @@ class ConclusionCandidate:
     evidence_file: str = ""
     evidence_location: str = ""
     code_revision: str = ""
+    # Compatibility field only: model claims cannot establish host verification.
     verified: bool = False
     confidence: float = 0.0
     source: str = "llm"
@@ -100,6 +102,7 @@ def _build_prompt(
         "}\n\n"
         "Rules:\n"
         "- Return at most 6 conclusions.\n"
+        "- These are unverified proposals for human review; always leave verified false.\n"
         "- Keep only durable facts useful in future tasks.\n"
         "- Do not include full replies, system prompts, temporary status, or conversational style.\n"
         "- Use an empty conclusions array if no reusable fact exists.\n\n"
@@ -157,6 +160,8 @@ def _parse_candidates(value: Any) -> list[ConclusionCandidate]:
             confidence = float(item.get("confidence", 0.0))
         except (TypeError, ValueError):
             confidence = 0.0
+        if not math.isfinite(confidence):
+            confidence = 0.0
         candidates.append(ConclusionCandidate(
             category=str(item.get("category", "fact")).strip().lower(),
             content=str(item.get("content", "")).strip(),
@@ -166,7 +171,7 @@ def _parse_candidates(value: Any) -> list[ConclusionCandidate]:
             ).strip(),
             evidence_location=str(item.get("evidence_location") or "").strip(),
             code_revision=str(item.get("code_revision") or "").strip(),
-            verified=bool(item.get("verified", False)),
+            verified=False,
             confidence=max(0.0, min(1.0, confidence)),
             source="llm",
         ))

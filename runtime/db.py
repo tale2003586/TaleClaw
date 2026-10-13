@@ -113,6 +113,8 @@ _DOTENV_LOADED = False
 
 
 def _load_dotenv_once() -> None:
+    if os.getenv("PYTHON_DOTENV_DISABLED", "").lower() in {"1", "true", "yes"}:
+        return
     global _DOTENV_LOADED
     if _DOTENV_LOADED:
         return

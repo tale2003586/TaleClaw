@@ -35,10 +35,12 @@ class PromotionResult:
     promoted: list[ConclusionCandidate] = field(default_factory=list)
     skipped: list[ConclusionCandidate] = field(default_factory=list)
     rejected: list[RejectedConclusion] = field(default_factory=list)
+    proposed: list[ConclusionCandidate] = field(default_factory=list)
+    proposal_ids: list[str] = field(default_factory=list)
 
 
 class TaskMemoryPromoter:
-    """Write filtered coding conclusions to semantic memory when enabled."""
+    """Store filtered conclusions as review candidates, never as verified facts."""
 
     def __init__(
         self,
@@ -56,8 +58,9 @@ class TaskMemoryPromoter:
     ) -> PromotionResult:
         result = PromotionResult()
         if self.command_service is None:
+            result.skipped.extend(extracted_conclusions or [])
             return result
-        from memory.commands import MemoryWriteProposal
+        from memory.commands import MemoryContext, MemoryWriteProposal
         from memory.domain import (
             MemoryEvidence,
             MemoryKind,
@@ -71,16 +74,25 @@ class TaskMemoryPromoter:
             if reason:
                 result.rejected.append(RejectedConclusion(candidate=candidate, reason=reason))
                 continue
-            if memory_context is None:
+            if not isinstance(memory_context, MemoryContext):
                 result.rejected.append(RejectedConclusion(
                     candidate=candidate,
                     reason="trusted memory context is required",
                 ))
                 continue
+            if memory_context.task_id and memory_context.task_id != task_id:
+                result.rejected.append(RejectedConclusion(
+                    candidate=candidate, reason="task does not match trusted memory context",
+                ))
+                continue
+            if not (memory_context.project_id or memory_context.workspace_id or memory_context.task_id):
+                result.rejected.append(RejectedConclusion(
+                    candidate=candidate, reason="coding memory scope is missing",
+                ))
+                continue
             owner_scope, owner_id = _coding_owner(memory_context, MemoryOwnerScope)
             evidence_file = candidate.evidence_file or candidate.evidence
             evidence_location = candidate.evidence_location
-            verified = bool(candidate.verified)
             evidence = MemoryEvidence(
                 id=_evidence_id(task_id, candidate),
                 memory_id="pending",
@@ -99,17 +111,13 @@ class TaskMemoryPromoter:
                     "evidence": candidate.evidence,
                     "evidence_file": evidence_file,
                     "evidence_location": evidence_location,
-                    "code_revision": candidate.code_revision or repository_revision,
-                    "verified": verified,
+                    "code_revision": repository_revision,
+                    "claimed_code_revision": candidate.code_revision,
+                    "verified": False,
+                    "verification_basis": "unverified_candidate",
                 },
             )
-            if not verified:
-                result.rejected.append(RejectedConclusion(
-                    candidate=candidate,
-                    reason="coding conclusion is not verified",
-                ))
-                continue
-            self.command_service.record_verified_conclusion(MemoryWriteProposal(
+            item = self.command_service.propose(MemoryWriteProposal(
                 content=candidate.content,
                 kind=_kind_for_category(candidate.category, MemoryKind),
                 owner_scope=owner_scope,
@@ -120,11 +128,14 @@ class TaskMemoryPromoter:
                 salience=0.7,
                 metadata={
                     "entrypoint": "coding_conclusion",
-                    "repository_revision": candidate.code_revision or repository_revision,
-                    "verified": verified,
+                    "repository_revision": repository_revision,
+                    "claimed_code_revision": candidate.code_revision,
+                    "verified": False,
+                    "review_required": True,
                 },
             ), memory_context)
-            result.promoted.append(candidate)
+            result.proposed.append(candidate)
+            result.proposal_ids.append(item.id)
         return result
 
 

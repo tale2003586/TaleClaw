@@ -1,6 +1,5 @@
 SUBTASK_TOOL_WHITELIST = {
     "explore": {
-        "bash",
         "list_files",
         "rg",
         "grep",
@@ -10,6 +9,7 @@ SUBTASK_TOOL_WHITELIST = {
         "read_file",
         "read_files",
         "read_artifact",
+        "retrieve_tool_result",
         "git_status",
         "git_diff",
         "git_log",
@@ -29,6 +29,7 @@ SUBTASK_TOOL_WHITELIST = {
         "read_file",
         "read_files",
         "read_artifact",
+        "retrieve_tool_result",
         "write_file",
         "edit_file",
         "git_status",
@@ -46,7 +47,6 @@ SUBTASK_TOOL_WHITELIST = {
         "recall_memory",
     },
     "plan": {
-        "bash",
         "list_files",
         "rg",
         "grep",
@@ -56,6 +56,7 @@ SUBTASK_TOOL_WHITELIST = {
         "read_file",
         "read_files",
         "read_artifact",
+        "retrieve_tool_result",
         "git_status",
         "git_diff",
         "git_log",

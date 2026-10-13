@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Any
 
+from runtime.context.events import is_real_user_message
+from runtime.execution.budget import execution_scope
 from runtime.execution.agent_runner import AgentRunner
 from runtime.execution.state import RunExecutionState
 from runtime.agent_spec import AgentSpec
@@ -92,7 +94,14 @@ class Runtime:
             raise TypeError("Runtime.run context must be a RunContext.")
         context.state.input_text = user_input
         context.state.messages = context.session.messages
-        self._execute(agent=agent, context=context)
+        with execution_scope(cancel_requested=context.cancel_requested, session_id=context.session.id) as budget:
+            try:
+                self._execute(agent=agent, context=context)
+            finally:
+                snapshot = budget.snapshot()
+                context.state.metadata["execution_budget"] = snapshot
+                if context.run_state is not None:
+                    context.run_state.metadata["execution_budget"] = snapshot
         output = get_last_assistant_text(context.session.messages)
         return RunResult(
             output=str(output or ""),
@@ -175,8 +184,6 @@ class Runtime:
         reserved_output_tokens: int = 0,
     ):
         state = getattr(run_context, "state", None)
-        already_used = state.security_knowledge_used if state is not None else False
-        include_security_knowledge = not already_used
         contributions: list[ContextContribution] = []
         for contributor in run_context.extensions.context_contributors:
             contributions.extend(contributor.contribute(session=session, agent_spec=agent_spec))
@@ -184,7 +191,8 @@ class Runtime:
             "session": session,
             "agent_spec": agent_spec,
             "active_turn_start_index": active_turn_start_index,
-            "include_security_knowledge": include_security_knowledge,
+            "include_security_knowledge": True,
+            "security_context": state.security_context if state is not None else None,
             "contributions": contributions,
             "context_policy": context_policy,
             "trace_store": trace_store,
@@ -197,11 +205,7 @@ class Runtime:
         }
         if context_prefix is not None:
             build_kwargs["prefix"] = context_prefix
-        context = self.agent_runner.context_builder.build(**build_kwargs)
-        if _section_rendered(context, "security_knowledge"):
-            if state is not None:
-                state.security_knowledge_used = True
-        return context
+        return self.agent_runner.context_builder.build(**build_kwargs)
 
     def _after_turn(self, session, *, run_state=None, trace_store=None) -> None:
         queued_memory_events = []
@@ -242,24 +246,10 @@ def message_text(message: dict) -> str:
 def _last_user_message_index(messages: list) -> int | None:
     for index in range(len(messages or []) - 1, -1, -1):
         message = messages[index]
-        if isinstance(message, dict) and message.get("role") == "user":
+        if isinstance(message, dict) and is_real_user_message(message):
             return index
     return None
 
-
-def _section_rendered(context, name: str) -> bool:
-    report = getattr(context, "report", None)
-    if report is None:
-        return False
-    try:
-        sections = report.to_dict().get("sections", {})
-    except AttributeError:
-        return False
-    section = sections.get(name) or {}
-    try:
-        return int(section.get("rendered_chars") or 0) > 0
-    except (TypeError, ValueError):
-        return False
 
 
 @dataclass(frozen=True)

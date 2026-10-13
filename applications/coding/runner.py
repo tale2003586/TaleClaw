@@ -1,5 +1,8 @@
 import subprocess
+from pathlib import Path
+from uuid import uuid4
 from functools import partial
+from copy import deepcopy
 from typing import Any
 
 from runtime.context import (
@@ -22,6 +25,7 @@ from runtime.extensions import RuntimeExtensions
 from runtime.task_state import TaskStateRunObserver
 from applications.coding.handoff import (
     CODING_CONVERSATION_SUMMARY_METADATA_KEY,
+    CodingSessionHandoff,
     CODING_HANDOFF_METADATA_KEY,
     PENDING_CODING_TASK_SUMMARY_METADATA_KEY,
     build_coding_session_handoff,
@@ -34,7 +38,8 @@ from runtime.trace.events import (
 )
 from runtime.trace.trace_store import event_preview
 from runtime.trace.workspace import capture_workspace_snapshot, write_workspace_artifacts
-from runtime.workspace import WorkspaceResolver
+from runtime.workspace import WorkspaceResolver, WorkspaceRef
+from runtime.worktrees import WorktreeService, resolve_commit
 from config import (
     ARTIFACT_OFFLOADING_ENABLED,
     CONTEXT_ARTIFACT_ROOT,
@@ -45,9 +50,16 @@ from config import (
 )
 from runtime.sessions import SessionManager
 from .artifacts import TaskArtifactPaths, TaskArtifactWriter
-from .conclusions import TaskConclusionExtractor
+from .conclusions import TaskConclusionExtractor, ConclusionExtraction
+from runtime.execution.budget import execution_scope, current_budget, ExecutionCancelled, ExecutionBudgetExceeded
+from runtime.workspace_lease import workspace_writer
+from runtime.task_state.service import load_task_state_core
 from .promotion import TaskMemoryPromoter, PromotionResult
 from .session import TaskSessionFactory, TaskSessionRecord
+from .task_lifecycle import (
+    ACTIVE_CODING_TASK_ID, apply_requirements_revision, coding_task_options,
+    resume_task_state, validate_revision_target,
+)
 from .context_contributor import CodingRuntimeContributor
 from user_scope import explicit_user_id_for_session, user_role_for_session
 
@@ -64,8 +76,10 @@ class CodingApplication:
         semantic_memory_command_service=None,
         artifact_store: ArtifactStore | None = None,
         long_content_detector: LongContentDetector | None = None,
+        worktree_service: WorktreeService | None = None,
     ) -> None:
         self.sessions = sessions
+        self.worktree_service = worktree_service or WorktreeService()
         self.base_runtime = base_runtime
         self.semantic_memory_command_service = semantic_memory_command_service
         self.artifact_store = artifact_store or ArtifactStore(CONTEXT_ARTIFACT_ROOT)
@@ -110,63 +124,227 @@ class CodingApplication:
         user_text: str,
         agent_spec: AgentSpec,
         workspace_root=None,
+        task_mode: str = "auto",
+        task_id: str | None = None,
+        workspace_mode: str | None = None,
+        base_ref: str | None = None,
+        requirements_revision: dict[str, Any] | None = None,
+        context_policy: str | dict[str, Any] | None = None,
         cancel_requested=None,
         on_text=None,
         run_state=None,
         trace_store=None,
     ) -> str:
-        task_state_required = _requires_task_state(user_text)
+        options = coding_task_options({
+            "mode": task_mode, "task_id": task_id,
+            "requirements_revision": requirements_revision,
+            "context_policy": context_policy, "workspace_mode": workspace_mode, "base_ref": base_ref,
+        })
+        requested_mode = options["task_mode"]
+        selected_id = options.get("task_id") or parent_session.metadata.get(ACTIVE_CODING_TASK_ID)
+        mode = requested_mode
+        if mode == "auto":
+            mode = "continue" if selected_id else "new"
+        source_record = None
+        if mode in {"continue", "branch"}:
+            if not selected_id:
+                raise ValueError(f"coding_task mode {mode} requires a task_id or active task binding")
+            source_record = self.factory.load(
+                str(selected_id), parent_session_id=parent_session.id,
+                user_id=explicit_user_id_for_session(parent_session),
+            )
+            validate_revision_target(source_record.session, options.get("requirements_revision"))
+        elif options.get("requirements_revision"):
+            raise ValueError("A new task has no existing requirements to revise")
+        binding = None
+        allocated_task_id = "coding-" + uuid4().hex[:8] if mode != "continue" else None
+        existing = source_record.session.metadata.get("worktree_binding") if source_record else None
+        selected_workspace_mode = workspace_mode or ("worktree" if existing else "in_place")
+        if mode == "new" and workspace_mode is None:
+            selected_workspace_mode = parent_session.metadata.get("coding_default_workspace_mode", "in_place")
+            if selected_workspace_mode not in {"worktree", "in_place"}:
+                raise ValueError("Invalid host default workspace mode")
+        if source_record and mode == "continue" and selected_workspace_mode != ("worktree" if existing else "in_place"):
+            raise ValueError("Continue cannot change workspace_mode; create or branch a task")
+        if base_ref is not None and (mode == "continue" or selected_workspace_mode != "worktree"):
+            raise ValueError("base_ref is only supported for a new or branched worktree")
+        if existing:
+            # Re-authorize the original source on every run; registering a
+            # managed checkout never widens the caller's allowed source roots.
+            workspace = self.workspace_resolver.resolve(existing["source_root"])
+            if workspace_root is not None and Path(workspace_root).resolve() not in {
+                    workspace.root, Path(existing["workspace_root"])}:
+                raise ValueError("A continued task must retain its bound workspace")
+        else:
+            workspace = self.workspace_resolver.resolve(
+                workspace_root, session=source_record.session if source_record else parent_session,
+            )
+            if source_record is not None:
+                bound = source_record.session.metadata.get("workspace_root")
+                if bound and str(workspace.root) != str(bound):
+                    raise ValueError("A continued or branched task must retain its bound workspace; use mode=new")
+        if selected_workspace_mode == "worktree":
+            service = self.worktree_service
+            owner = explicit_user_id_for_session(parent_session) or "local"
+            if mode == "continue":
+                binding = service.inspect(existing["worktree_id"], owner_id=owner)
+                if binding["task_id"] != source_record.task_id:
+                    raise ValueError("Task and worktree ownership do not match")
+            else:
+                fork_ref = base_ref
+                if mode == "branch" and fork_ref is None:
+                    if existing:
+                        source_binding = service.inspect(existing["worktree_id"], owner_id=owner)
+                        if source_binding["status"] != "ready":
+                            raise ValueError("Cannot branch an active or quarantined workspace")
+                        fork_ref = source_binding["head_commit"]
+                    else:
+                        fork_ref = resolve_commit(workspace.root)
+                binding = service.create(workspace.root, task_id=allocated_task_id,
+                                         owner_id=owner, base_ref=fork_ref)
+            self.workspace_resolver.bind_session(parent_session, workspace)
+            writer = service.lease(binding)
+        else:
+            writer = workspace_writer(workspace.root)
+        if run_state is not None:
+            run_state.metadata["task_id"] = allocated_task_id or source_record.task_id
+            run_state.metadata["workspace_root"] = binding["workspace_root"] if binding else str(workspace.root)
+            if binding:
+                run_state.metadata["worktree_binding"] = deepcopy(binding)
+            else:
+                run_state.metadata.pop("worktree_binding", None)
+            if trace_store is not None:
+                trace_store.write_run_state(run_state)
+        owns_budget = current_budget() is None
+        with execution_scope(cancel_requested=cancel_requested, session_id=parent_session.id) as budget, writer:
+            try:
+                return self._run_coding_task(
+                    parent_session=parent_session, user_text=user_text, agent_spec=agent_spec,
+                    workspace_root=workspace.root, cancel_requested=cancel_requested,
+                    on_text=on_text, run_state=run_state, trace_store=trace_store,
+                    task_mode=mode, source_record=source_record,
+                    worktree_binding=binding, allocated_task_id=allocated_task_id,
+                    inherit_parent_context=(requested_mode == "auto" and mode == "new"),
+                    requirements_revision=options.get("requirements_revision"),
+                    context_policy=options.get("context_policy"),
+                )
+            finally:
+                if owns_budget:
+                    budget.close()
+                if run_state is not None:
+                    run_state.metadata["execution_budget"] = budget.snapshot()
+                    if trace_store is not None:
+                        trace_store.write_run_state(run_state)
+                        write_metrics = getattr(trace_store, "write_metrics", None)
+                        if callable(write_metrics):
+                            write_metrics(run_state)
+
+    def _run_coding_task(
+        self,
+        *,
+        parent_session,
+        user_text: str,
+        agent_spec: AgentSpec,
+        workspace_root=None,
+        task_mode: str = "new",
+        source_record: TaskSessionRecord | None = None,
+        worktree_binding: dict | None = None,
+        allocated_task_id: str | None = None,
+        inherit_parent_context: bool = True,
+        requirements_revision: dict[str, Any] | None = None,
+        context_policy: str | dict[str, Any] | None = None,
+        cancel_requested=None,
+        on_text=None,
+        run_state=None,
+        trace_store=None,
+    ) -> str:
         externalized = self._externalize_current_request(
             parent_session,
             user_text,
         )
         user_text = externalized["content"]
         request_artifact_refs = externalized["artifact_refs"]
-        task_state_required = task_state_required or bool(request_artifact_refs)
         original_request_ref = externalized["event_ref"]
-        workspace = self.workspace_resolver.resolve(
-            workspace_root,
-            session=parent_session,
-        )
-        self.workspace_resolver.bind_session(parent_session, workspace)
-        session_handoff = build_coding_session_handoff(
-            parent_session,
-            current_user_request=user_text,
+        if worktree_binding:
+            managed_path = Path(worktree_binding["workspace_root"])
+            workspace = WorkspaceRef(managed_path, managed_path.name, managed_path.parent,
+                                     "managed_worktree", worktree_binding["source_root"])
+        else:
+            workspace = self.workspace_resolver.resolve(workspace_root, session=parent_session)
+            self.workspace_resolver.bind_session(parent_session, workspace)
+        session_handoff = (
+            build_coding_session_handoff(parent_session, current_user_request=user_text)
+            if inherit_parent_context else CodingSessionHandoff()
         )
         parent_session.metadata[CODING_CONVERSATION_SUMMARY_METADATA_KEY] = (
             session_handoff.prior_summary
         )
-        record = self.factory.create(
-            parent_session_id=parent_session.id,
-            task_type="coding",
-            user_request=user_text,
-            original_request_ref=original_request_ref,
-            artifact_refs=request_artifact_refs,
-            user_id=explicit_user_id_for_session(parent_session),
-            user_role=user_role_for_session(parent_session),
-        )
+        if task_mode == "continue":
+            assert source_record is not None
+            record = source_record
+        elif task_mode == "branch":
+            assert source_record is not None
+            record = self.factory.branch(source_record, task_id=allocated_task_id,
+                workspace_metadata={**workspace.to_metadata(), "worktree_binding": deepcopy(worktree_binding),
+                                    "workspace_mode": "worktree"} if worktree_binding else
+                                   {**workspace.to_metadata(), "worktree_binding": None,
+                                    "workspace_mode": "in_place", "repo_id": None})
+        else:
+            record = self.factory.create(
+                parent_session_id=parent_session.id,
+                task_type="coding", task_id=allocated_task_id,
+                user_request=user_text,
+                original_request_ref=original_request_ref,
+                artifact_refs=request_artifact_refs,
+                user_id=explicit_user_id_for_session(parent_session),
+                user_role=user_role_for_session(parent_session),
+            )
         self.workspace_resolver.bind_session(record.session, workspace)
-        repository_id, repository_revision = _repository_identity(workspace.root)
+        if worktree_binding:
+            record.session.metadata.update(worktree_binding=deepcopy(worktree_binding), workspace_mode="worktree",
+                                           repo_id=worktree_binding["repo_id"])
+            repository_id, repository_revision = worktree_binding["repo_id"], resolve_commit(workspace.root)
+        else:
+            record.session.metadata["workspace_mode"] = "in_place"
+            record.session.metadata.pop("worktree_binding", None)
+            record.session.metadata.pop("repo_id", None)
+            repository_id, repository_revision = _repository_identity(workspace.root)
         if repository_id:
             record.session.metadata["repository"] = repository_id
         if repository_revision:
             record.session.metadata["code_revision"] = repository_revision
-        record.session.metadata[CODING_HANDOFF_METADATA_KEY] = session_handoff.to_dict()
-        if task_state_required:
-            ensure_task_state(
-                record.session,
-                objective_summary=_request_summary(user_text),
-                original_request_ref=original_request_ref,
-                artifact_refs=[
-                    str(ref.get("storage_uri") or ref.get("artifact_id") or "")
-                    for ref in request_artifact_refs
-                ],
-            )
+        if task_mode == "new":
+            record.session.metadata[CODING_HANDOFF_METADATA_KEY] = session_handoff.to_dict()
+        if context_policy is not None:
+            record.session.metadata["context_policy"] = deepcopy(context_policy)
+            record.session.metadata["context_policy_source"] = "task_override"
+        elif (record.session.metadata.get("context_policy_source") != "task_override"
+              and "context_policy" in parent_session.metadata):
+            record.session.metadata["context_policy"] = deepcopy(parent_session.metadata["context_policy"])
+            record.session.metadata["context_policy_source"] = "parent_default"
+        record.session.metadata.update(
+            user_role=user_role_for_session(parent_session),
+            status="running", last_task_mode=task_mode,
+            latest_request_ref=original_request_ref,
+            task_turn_count=int(record.session.metadata.get("task_turn_count") or 0) + 1,
+        )
+        ensure_task_state(
+            record.session,
+            objective_summary=_request_summary(user_text),
+            original_request_ref=original_request_ref,
+            artifact_refs=[
+                str(ref.get("storage_uri") or ref.get("artifact_id") or "")
+                for ref in request_artifact_refs
+            ],
+        )
+        if task_mode != "new":
+            resume_task_state(record.session)
         if run_state is not None:
             record.session.metadata["parent_run_id"] = run_state.run_id
             self.workspace_resolver.bind_session(record.session, workspace)
             run_state.metadata["coding_application"] = {
                 "task_id": record.task_id,
+                "task_mode": task_mode,
                 "coding_application_id": record.session.id,
                 "status": "running",
             }
@@ -176,6 +354,7 @@ class CodingApplication:
             })
             trace_store.append_event(run_state, "coding_application_started", {
                 "task_id": record.task_id,
+                "task_mode": task_mode,
                 "coding_application_id": record.session.id,
                 "parent_session_id": parent_session.id,
                 "task_type": record.task_type,
@@ -185,7 +364,7 @@ class CodingApplication:
             })
             trace_store.write_run_state(run_state)
         workspace_before = None
-        if trace_store is not None and run_state is not None:
+        if trace_store is not None and run_state is not None and getattr(trace_store, "capture_content", False):
             workspace_before = capture_workspace_snapshot(workspace.root)
             trace_store.append_event(run_state, WORKSPACE_SNAPSHOT_CAPTURED, {
                 "phase": "before",
@@ -193,23 +372,43 @@ class CodingApplication:
                 "file_count": len(workspace_before.files),
                 "skipped_count": len(workspace_before.skipped),
             })
+        # Keep the exact user source separate from host guidance and old handoff.
+        record.session.add_message(
+            "user", user_text,
+            metadata={
+                "kind": "user_correction" if requirements_revision else "coding_user_request",
+                "origin": "user",
+                **({"requirements_revision": deepcopy(requirements_revision)} if requirements_revision else {}),
+                "original_request_ref": original_request_ref,
+                "artifact_refs": request_artifact_refs,
+            },
+        )
+        if requirements_revision:
+            revision_ref = "event://" + record.session.event_log[-1].event_id
+            apply_requirements_revision(record.session, requirements_revision, revision_ref)
         record.session.add_message(
             "user",
-            self._build_task_request(
+            self._build_task_context(
                 parent_session.id,
-                user_text,
                 workspace=workspace,
                 session_handoff=session_handoff,
             ),
             metadata={
                 "kind": "coding_task_request",
                 "source": "runtime-generated-wrapper",
+                "origin": "runtime",
                 "original_request_ref": original_request_ref,
                 "artifact_refs": request_artifact_refs,
             },
         )
 
+        # Persist identity and the new request before any model/tool execution.
+        self.sessions.save(record.session)
+        parent_session.metadata[ACTIVE_CODING_TASK_ID] = record.task_id
+        self.sessions.save(parent_session)
+
         task_runtime = self._build_task_runtime(
+            workspace_root=workspace.root,
             max_reasoning_steps=_task_reasoning_budget(
                 user_text,
                 default_steps=self.base_runtime.max_reasoning_steps,
@@ -234,16 +433,30 @@ class CodingApplication:
 
         reply = get_last_assistant_text(record.session.messages)
         stop_reason = run_result.execution.stop_reason
+        core_state = load_task_state_core(record.session)
+        record.session.metadata["execution_status"] = stop_reason or "unknown"
+        record.session.metadata["task_status"] = str(core_state.status) if core_state else "unknown"
+        record.session.metadata["verification"] = {
+            "outcome": "not_run", "reason": "No independent verifier was invoked for this task."
+        }
         record.session.metadata["status"] = (
-            "stopped" if stop_reason and stop_reason != "completed" else "completed"
+            "awaiting_verification" if stop_reason == "completed" else "stopped"
         )
         record.session.metadata["task_reply"] = reply
 
-        extraction = self.conclusion_extractor.extract(
-            user_request=user_text,
-            task_summary=reply,
-            messages=record.session.messages,
-        )
+        extraction = ConclusionExtraction(error=("skipped: memory disabled" if self.semantic_memory_command_service is None else "skipped: execution not completed"))
+        if stop_reason == "completed" and self.semantic_memory_command_service is not None:
+            try:
+                budget = current_budget()
+                if budget is not None:
+                    budget.check()
+                with execution_scope(session_id=record.session.id):
+                    extraction = self.conclusion_extractor.extract(
+                        user_request=user_text, task_summary=reply,
+                        messages=record.session.messages,
+                    )
+            except (ExecutionCancelled, ExecutionBudgetExceeded) as exc:
+                extraction = ConclusionExtraction(error=f"skipped: {type(exc).__name__}")
         promotion = TaskMemoryPromoter(
             command_service=self.semantic_memory_command_service,
         ).promote(
@@ -315,12 +528,18 @@ class CodingApplication:
             })
         if run_state is not None:
             task_report = {
+                "execution_status": record.session.metadata["execution_status"],
+                "task_status": record.session.metadata["task_status"],
+                "verification": record.session.metadata["verification"],
                 "task_id": record.task_id,
+                "task_mode": task_mode,
                 "coding_application_id": record.session.id,
                 "status": record.session.metadata.get("status", "completed"),
                 "task_log_path": record.session.metadata.get("task_log_path", ""),
                 "conclusions_path": record.session.metadata.get("conclusions_path", ""),
                 "promoted_count": len(promotion.promoted),
+                "proposed_count": len(promotion.proposed),
+                "proposal_ids": list(promotion.proposal_ids),
                 "skipped_count": len(promotion.skipped),
                 "rejected_count": len(promotion.rejected),
             }
@@ -343,12 +562,14 @@ class CodingApplication:
         self,
         *,
         max_reasoning_steps: int | None = None,
+        workspace_root=None,
     ) -> Runtime:
         context_budgeter = ContextBudgeter.from_env()
         context_builder = ContextBuilder(
             budgeter=context_budgeter,
             prompt_assets_service=PromptAssetsService(
                 budgeter=context_budgeter,
+                instruction_root=workspace_root,
             ),
             coding_context_view_builder=partial(
                 build_coding_context_view,
@@ -362,10 +583,9 @@ class CodingApplication:
             execution_policy_factory=standard_execution_policies,
         )
 
-    def _build_task_request(
+    def _build_task_context(
         self,
         parent_session_id: str,
-        user_text: str,
         *,
         workspace,
         session_handoff,
@@ -391,8 +611,7 @@ class CodingApplication:
             "If a subagent reports success=false or truncated=true, state that limitation "
             "and answer from the evidence already available unless one targeted follow-up "
             "read is necessary.\n"
-            "</execution-guidance>\n\n"
-            f"User coding task:\n{user_text}"
+            "</execution-guidance>"
         )
 
     def _externalize_current_request(self, parent_session, user_text: str) -> dict[str, Any]:
@@ -464,6 +683,8 @@ class CodingApplication:
             "",
             reply.strip() or "(no assistant reply)",
         ]
+        if promotion.proposed:
+            lines.extend(["", f"Proposed {len(promotion.proposed)} memory candidate(s), pending human review and confirmation."])
         if promotion.promoted:
             lines.extend([
                 "",

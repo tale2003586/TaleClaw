@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import patch
 
+from runtime.context.dynamic_budget import reduce_prompt_to_hard_limit
 from runtime.token_estimator import (
-    emergency_trim,
     estimate_tokens,
     output_tokens_for_call,
     safe_context_limit,
@@ -79,10 +79,10 @@ class TokenEstimatorTests(unittest.TestCase):
         counter.assert_called_once()
         self.assertEqual(7, estimated)
 
-    def test_emergency_trim_preserves_tool_call_pairing(self) -> None:
+    def test_hard_reducer_keeps_or_drops_complete_tool_transactions(self) -> None:
         messages = [
             {"role": "system", "content": "system"},
-            {"role": "user", "content": "first"},
+            {"role": "user", "content": "first" * 300},
             {"role": "assistant", "content": "first answer"},
             {"role": "user", "content": "second"},
             {
@@ -97,32 +97,23 @@ class TokenEstimatorTests(unittest.TestCase):
             {"role": "tool", "tool_call_id": "call-1", "content": "x" * 500},
             {"role": "user", "content": "latest request"},
         ]
-
-        trimmed = emergency_trim(messages, max_tokens=120)
-
-        self.assertEqual("system", trimmed[0]["content"])
-        tool_call_ids = {
-            call["id"]
-            for message in trimmed
-            for call in (message.get("tool_calls") or [])
-        }
-        tool_result_ids = {
-            message.get("tool_call_id")
-            for message in trimmed
-            if message.get("role") == "tool"
-        }
-        self.assertTrue(tool_result_ids <= tool_call_ids)
-
-    def test_emergency_trim_can_shrink_single_large_message(self) -> None:
         provider = CountingProvider()
-        trimmed = emergency_trim(
-            [{"role": "user", "content": "x" * 500}],
-            max_tokens=100,
-            provider=provider,
-        )
-
-        self.assertLessEqual(estimate_tokens(trimmed, provider=provider), 100)
-        self.assertIn("emergency trimmed", trimmed[0]["content"])
+        for limit, expected_ids in ((120, set()), (600, {"call-1"})):
+            with self.subTest(limit=limit):
+                trimmed = reduce_prompt_to_hard_limit(messages, max_tokens=limit, provider=provider)
+                self.assertEqual("system", trimmed[0]["content"])
+                self.assertEqual("latest request", trimmed[-1]["content"])
+                self.assertLessEqual(estimate_tokens(trimmed, provider=provider), limit)
+                tool_call_ids = {
+                    call["id"]
+                    for message in trimmed
+                    for call in (message.get("tool_calls") or [])
+                }
+                tool_results = [message for message in trimmed if message.get("role") == "tool"]
+                self.assertEqual(expected_ids, tool_call_ids)
+                self.assertEqual(expected_ids, {message["tool_call_id"] for message in tool_results})
+                for result in tool_results:
+                    self.assertEqual("x" * 500, result["content"])
 
 
 if __name__ == "__main__":
