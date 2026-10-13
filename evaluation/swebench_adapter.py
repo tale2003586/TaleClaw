@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
+
+from evaluation.outcomes import finish_generation, import_official_verification, patch_digest, verification_result
+from evaluation.provenance import evaluation_manifest
 
 from applications.coding.runner import CodingApplication
 from agents.definitions import CODING_AGENT_SPEC
@@ -80,6 +85,7 @@ class SweBenchRunResult:
     run_state: RunState
     reply: str
     official_eval_command: list[str] | None = None
+    verification: dict[str, Any] = field(default_factory=verification_result)
 
 
 def load_swebench_instance(
@@ -283,7 +289,14 @@ def run_swebench_instance(
     model_pool = get_model_pool()
     provider = model_pool.routed_provider("coding")
     model = model_name or model_pool.model_for("coding")
-    trace_store = TraceStore(eval_dir / "runs")
+    manifest = evaluation_manifest(configuration={
+        "model_name": model, "model_purpose": "coding", "dataset_name": dataset_name,
+        "max_reasoning_steps": max_reasoning_steps, "instance_id": instance.instance_id,
+        "target_repo": instance.repo, "target_base_commit": instance.base_commit,
+        "evaluate": evaluate, "reuse_workspace": reuse_workspace,
+    }, input_records=instance.__dict__)
+    # Explicit opt-in only for this isolated benchmark workspace.
+    trace_store = TraceStore(eval_dir / "runs", capture_content=True)
     sessions = SessionManager()
     runtime = Runtime(
         tools=build_lead_tool_registry(),
@@ -351,7 +364,7 @@ def run_swebench_instance(
             run_state=run_state,
             trace_store=trace_store,
         )
-        run_state.finish_success(reply)
+        finish_generation(run_state, reply)
     except Exception as exc:
         run_state.fail(exc)
         raise
@@ -363,7 +376,7 @@ def run_swebench_instance(
         })
         sessions.close()
 
-    model_patch = git_diff(workspace)
+    model_patch = git_diff(workspace, base_revision=instance.base_commit)
     predictions_path = eval_dir / "predictions.jsonl"
     write_prediction(
         predictions_path,
@@ -380,26 +393,46 @@ def run_swebench_instance(
             run_id=eval_id,
             instance_id=instance.instance_id,
         )
-    (eval_dir / "result.json").write_text(
-        json.dumps({
-            "instance_id": instance.instance_id,
-            "repo": instance.repo,
-            "base_commit": instance.base_commit,
-            "workspace": str(workspace),
-            "run_id": run_state.run_id,
-            "run_dir": str(trace_store.run_dir(run_state)),
-            "predictions_path": str(predictions_path),
-            "patch_bytes": len(model_patch.encode("utf-8")),
-            "official_eval_command": official_command or [],
-            "run_status": run_state.status,
-        }, indent=2, ensure_ascii=False, default=str) + "\n",
-        encoding="utf-8",
+    verification = verification_result(
+        reason="empty_patch" if not model_patch else "not_evaluated",
+        patch_sha256=patch_digest(model_patch),
     )
+    result_payload = {
+        "manifest": manifest,
+        "instance_id": instance.instance_id,
+        "repo": instance.repo,
+        "base_commit": instance.base_commit,
+        "workspace": str(workspace),
+        "run_id": run_state.run_id,
+        "run_dir": str(trace_store.run_dir(run_state)),
+        "predictions_path": str(predictions_path),
+        "patch_bytes": len(model_patch.encode("utf-8")),
+        "official_eval_command": official_command or [],
+        "run_status": run_state.status,
+        "execution_status": run_state.status,
+        "verification": verification,
+    }
+    def _write_result() -> None:
+        (eval_dir / "result.json").write_text(
+            json.dumps(result_payload, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8",
+        )
+    _write_result()
     _emit(progress, "prediction_written", {"predictions_path": str(predictions_path)})
 
     if evaluate and official_command is not None:
         _emit(progress, "official_eval_started", {"command": official_command})
-        subprocess.run(official_command, cwd=Path(swebench_repo), check=True)
+        try:
+            subprocess.run(official_command, cwd=Path(swebench_repo), check=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            result_payload["official_harness_error"] = f"{type(exc).__name__}: {exc}"
+        if model_patch:
+            verification = import_official_verification(
+                report_root=Path(swebench_repo) / "logs" / "evaluation" / eval_id,
+                instance_id=instance.instance_id, model_name=model,
+                expected_patch_sha256=patch_digest(model_patch),
+            )
+        result_payload["verification"] = verification
+        _write_result()
         _emit(progress, "official_eval_finished", {"run_id": eval_id})
 
     return SweBenchRunResult(
@@ -412,6 +445,7 @@ def run_swebench_instance(
         run_state=run_state,
         reply=reply,
         official_eval_command=official_command,
+        verification=verification,
     )
 
 
@@ -499,20 +533,40 @@ def repo_clone_url(repo: str) -> str:
 
 def safe_instance_dir(instance_id: str) -> str:
     value = re.sub(r"[^A-Za-z0-9_.-]+", "_", instance_id.strip())
-    if not value:
-        raise ValueError("Empty SWE-bench instance id.")
+    if not value or value in {".", ".."}:
+        raise ValueError("SWE-bench instance id must name a child directory.")
     return value
 
 
-def git_diff(workspace: str | Path) -> str:
-    result = subprocess.run(
-        ["git", "diff", "--binary"],
-        cwd=Path(workspace),
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout
+def git_diff(workspace: str | Path, *, base_revision: str = "HEAD") -> str:
+    """Export final working-tree changes without modifying the caller's index.
+
+    A private index includes staged, unstaged, deleted, and non-ignored new
+    files. Already staged ignored files remain intentional inputs. SWE-bench
+    passes base_commit so commits created by the agent are included as well.
+    """
+    workspace = Path(workspace).resolve()
+    with tempfile.TemporaryDirectory(prefix="swebench-export-") as temporary:
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(temporary) / "index"), "GIT_LITERAL_PATHSPECS": "1"}
+
+        def git(*args: str, input: bytes | None = None, private: bool = True) -> bytes:
+            return subprocess.run(
+                ["git", *args], cwd=workspace, env=env if private else None,
+                input=input, capture_output=True, check=True, timeout=60,
+            ).stdout
+
+        base = git("rev-parse", "--verify", "--end-of-options", f"{base_revision}^{{commit}}")
+        base_sha = base.decode("ascii").strip()
+        # Start from the baseline instead of inheriting skip-worktree flags.
+        git("read-tree", base_sha)
+        git("add", "-A", "--", ".")
+        indexed = git("ls-files", "--cached", "-z", private=False).split(b"\0")
+        existing = [name for name in indexed if name and os.path.lexists(workspace / os.fsdecode(name))]
+        if existing:
+            git("add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul", input=b"\0".join(existing) + b"\0")
+        return git(
+            "diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", base_sha, "--",
+        ).decode("utf-8")
 
 
 def write_prediction(

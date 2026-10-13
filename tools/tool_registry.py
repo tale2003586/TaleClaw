@@ -1,8 +1,10 @@
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Callable, Any
 
+from tools.executor import ToolHandlerOutput, tool_error
 from tools.policy import UNLOCKED_TOOLS_KEY, ToolPolicy
 from tools.spec import ToolExposure, ToolRisk, ToolSpec, ToolStateEffect
 from tools.schema import CORE_TASK_STATE_TOOL, LEAD_TOOLS, SEARCH_TOOLS, TEAMMATE_TOOLS
@@ -104,7 +106,11 @@ BUILTIN_TOOL_DECLARATIONS = (
     _builtin("read_file", risk=_LOW_RISK, exposure=_PRELOADED, session_scoped=True),
     _builtin("read_files", risk=_LOW_RISK, exposure=_PRELOADED, session_scoped=True),
     _builtin("read_artifact", allowed_modes=_ALL_AGENT_MODES, risk=_LOW_RISK,
-             session_scoped=True),
+             session_scoped=True,
+             discovery_summary="Read externalized artifacts or recover archived current-session events, snapshots, and task state.",
+             capabilities=("artifact reading", "context evidence recovery", "archived event search"),
+             aliases=("read_artifact", "recover evidence", "恢复上下文", "读取原始证据"),
+             keywords=("artifact", "event", "snapshot", "state", "task state", "compaction", "archive", "history")),
     _builtin("retrieve_tool_result", allowed_modes=_ALL_AGENT_MODES, risk=_LOW_RISK,
              discovery_summary="Retrieve a previously externalized large tool result.",
              capabilities=("tool result retrieval", "large result access"),
@@ -354,69 +360,69 @@ class ToolRegistry:
         agent_spec=None,
         run_context=None,
     ) -> Any:
+        if not isinstance(args, dict):
+            return tool_error("Error: Tool arguments must be an object",
+                              error_type="InvalidToolArguments", effect_state="not_started")
+        if any(not isinstance(key, str) or key.startswith("_") for key in args):
+            return tool_error("Error: Host runtime parameters cannot be supplied by a tool caller",
+                              error_type="InvalidToolArguments", effect_state="not_started")
         availability_error = self.execution_error_for_turn(
-            name,
-            args=args,
-            session=session,
-            mode=mode,
-            agent_spec=agent_spec,
-            run_context=run_context,
+            name, args=args, session=session, mode=mode,
+            agent_spec=agent_spec, run_context=run_context,
         )
         if availability_error:
-            return availability_error
-
-        if name == "tool_search":
-            return self._tool_search(
-                args.get("query", ""),
-                session=session,
-                mode=mode,
-                agent_spec=agent_spec,
-                run_context=run_context,
-                trace_store=trace_store,
-                run_state=run_state,
-                parent_span_id=parent_span_id,
-            )
-
-        if name == "load_skill":
-            return self._load_skill(
-                str(args.get("name") or ""),
-                mode=mode,
-                agent_spec=agent_spec,
-            )
-
+            return tool_error(availability_error, status="denied",
+                              error_type="ToolDenied", effect_state="not_started")
         tool = self._tools[name]
         try:
-            if (
-                trace_store is not None
-                and run_state is not None
-                and tool.requires_audit
-            ):
-                try:
+            parameters = self._schema_for_mode(tool, mode).get("function", {}).get("parameters", {})
+            _validate_tool_arguments(args, parameters)
+        except (ValueError, TypeError) as exc:
+            return tool_error(f"Error: {exc}", error_type="InvalidToolArguments",
+                              effect_state="not_started")
+
+        from runtime.execution.budget import ExecutionBudgetExceeded, ExecutionCancelled
+        try:
+            if name == "tool_search":
+                output = self._tool_search(
+                    args.get("query", ""), session=session, mode=mode,
+                    agent_spec=agent_spec, run_context=run_context,
+                    trace_store=trace_store, run_state=run_state,
+                    parent_span_id=parent_span_id,
+                )
+            elif name == "load_skill":
+                output = self._load_skill(str(args.get("name") or ""),
+                                          mode=mode, agent_spec=agent_spec)
+            else:
+                if trace_store is not None and run_state is not None and tool.requires_audit:
+                    # An audit write failure must not run an unrecorded effect.
                     trace_store.append_event(
-                        run_state,
-                        "tool.governance.observed",
-                        {
-                            "tool_name": name,
-                            **tool.governance_dict(),
-                        },
+                        run_state, "tool.governance.observed",
+                        {"tool_name": name, **tool.governance_dict()},
                         parent_span_id=parent_span_id,
                     )
-                except Exception:
-                    pass
-            handler_args = dict(args)
-            if tool.session_scoped:
-                handler_args["_session"] = session
-            if "_mode" in tool.runtime_parameters:
-                handler_args["_mode"] = mode
-            if "_trace_store" in tool.runtime_parameters:
-                handler_args["_trace_store"] = trace_store
-            if "_run_state" in tool.runtime_parameters:
-                handler_args["_run_state"] = run_state
-            if "_parent_span_id" in tool.runtime_parameters:
-                handler_args["_parent_span_id"] = parent_span_id
-            return tool.handler(**handler_args)
-        except Exception as e:
-            return f"Error: {e}"
+                handler_args = dict(args)
+                if tool.session_scoped:
+                    handler_args["_session"] = session
+                runtime_values = {
+                    "_mode": mode, "_trace_store": trace_store,
+                    "_run_state": run_state, "_parent_span_id": parent_span_id,
+                }
+                for parameter in tool.runtime_parameters:
+                    if parameter in runtime_values:
+                        handler_args[parameter] = runtime_values[parameter]
+                output = tool.handler(**handler_args)
+            return _with_tool_facts(output, tool)
+        except (ExecutionCancelled, ExecutionBudgetExceeded):
+            # Preserve root cancellation/timeout classification in ToolExecutor.
+            raise
+        except Exception as exc:
+            # Handlers may have performed a partial write before raising.
+            return _with_tool_facts(tool_error(
+                f"Error: {type(exc).__name__}: {exc}",
+                error_type=type(exc).__name__,
+                effect_state="unknown" if tool.side_effect else "no_effect",
+            ), tool)
 
     def execution_error_for_turn(
         self,
@@ -817,3 +823,121 @@ def _has_memory_write_intent(value: str) -> bool:
     return any(term in value for term in (
         "remember", "save", "store", "记住", "保存", "以后记得", "长期保存",
     ))
+
+
+def _with_tool_facts(output: Any, tool: ToolSpec) -> ToolHandlerOutput:
+    metadata = dict(getattr(output, "metadata", {}) or {})
+    metadata["tool_side_effect"] = tool.side_effect
+    if isinstance(output, ToolHandlerOutput):
+        return ToolHandlerOutput(
+            str(output), metadata=metadata, status=output.status,
+            error_type=output.error_type, error_message=output.error_message,
+            exit_code=output.exit_code,
+            effect_state=("no_effect" if not tool.side_effect and output.effect_state == "unknown"
+                          else output.effect_state),
+        )
+    # One compatibility boundary for the legacy Error: protocol. This never
+    # interprets log contents as task verification or inferred command success.
+    if str(output).lstrip().startswith("Error:"):
+        return ToolHandlerOutput(
+            str(output), metadata={**metadata, "result_contract": "legacy_error"},
+            status="error", error_type="LegacyToolError", error_message=str(output),
+            effect_state="unknown" if tool.side_effect else "no_effect",
+        )
+    return ToolHandlerOutput(
+        str(output), metadata={**metadata, "result_contract": "legacy_string"},
+        effect_state="unknown" if tool.side_effect else "no_effect",
+    )
+
+
+_SCHEMA_KEYS = {
+    "type", "properties", "required", "additionalProperties", "items",
+    "enum", "const", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
+    "minItems", "maxItems", "minLength", "maxLength", "pattern",
+    "anyOf", "oneOf", "allOf", "description", "title", "default", "examples",
+}
+
+
+def _validate_tool_arguments(value: Any, schema: dict, path: str = "$", depth: int = 0) -> None:
+    """Validate the declared builtin schema subset without coercing arguments.
+
+    Unsupported constraints fail closed. Host-only keyword arguments never come
+    from model input. Top-level tool parameters are closed unless the schema
+    explicitly opts in to additionalProperties; nested data objects stay open.
+    """
+    if depth > 64:
+        raise ValueError(f"{path}: arguments exceed nesting limit")
+    if schema is True:
+        return
+    if schema is False:
+        raise ValueError(f"{path}: value is not allowed")
+    if not isinstance(schema, dict):
+        raise ValueError(f"{path}: invalid tool schema")
+    unsupported = set(schema) - _SCHEMA_KEYS
+    if unsupported:
+        raise ValueError(f"{path}: unsupported tool schema keywords {sorted(unsupported)}")
+    for keyword in ("allOf", "anyOf", "oneOf"):
+        if keyword in schema:
+            valid = 0
+            for candidate in schema[keyword]:
+                try:
+                    _validate_tool_arguments(value, candidate, path, depth + 1)
+                except (ValueError, TypeError):
+                    continue
+                valid += 1
+            expected = len(schema[keyword]) if keyword == "allOf" else 1
+            if (keyword == "anyOf" and not valid) or (keyword != "anyOf" and valid != expected):
+                raise ValueError(f"{path}: does not match {keyword}")
+    types = schema.get("type")
+    types = [types] if isinstance(types, str) else types
+    checks = {
+        "object": lambda x: isinstance(x, dict),
+        "array": lambda x: isinstance(x, list),
+        "string": lambda x: isinstance(x, str),
+        "integer": lambda x: isinstance(x, int) and not isinstance(x, bool),
+        "number": lambda x: ((isinstance(x, int) and not isinstance(x, bool))
+                             or (isinstance(x, float) and math.isfinite(x))),
+        "boolean": lambda x: isinstance(x, bool), "null": lambda x: x is None,
+    }
+    if types is not None and (not isinstance(types, list) or
+            any(kind not in checks for kind in types) or
+            not any(checks[kind](value) for kind in types)):
+        raise ValueError(f"{path}: expected {types}")
+    if "enum" in schema and not any(type(value) is type(item) and value == item for item in schema["enum"]):
+        raise ValueError(f"{path}: value is not in enum")
+    if "const" in schema and (type(value) is not type(schema["const"]) or value != schema["const"]):
+        raise ValueError(f"{path}: value does not match const")
+    if isinstance(value, dict):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError(f"{path}: object keys must be strings")
+        if depth == 0 and any(key.startswith("_") for key in value):
+            raise ValueError("Host runtime parameters cannot be supplied by a tool caller")
+        properties = schema.get("properties", {})
+        for required in schema.get("required", []):
+            if required not in value:
+                raise ValueError(f"{path}.{required}: required parameter is missing")
+        extra = schema.get("additionalProperties", depth != 0)
+        for key, child in value.items():
+            if key in properties:
+                _validate_tool_arguments(child, properties[key], f"{path}.{key}", depth + 1)
+            elif extra is False:
+                raise ValueError(f"{path}.{key}: undeclared parameter")
+            elif isinstance(extra, dict):
+                _validate_tool_arguments(child, extra, f"{path}.{key}", depth + 1)
+    elif isinstance(value, list):
+        if len(value) < schema.get("minItems", 0) or len(value) > schema.get("maxItems", float("inf")):
+            raise ValueError(f"{path}: array length outside bounds")
+        for index, item in enumerate(value):
+            _validate_tool_arguments(item, schema.get("items", {}), f"{path}[{index}]", depth + 1)
+    elif isinstance(value, str):
+        if len(value) < schema.get("minLength", 0) or len(value) > schema.get("maxLength", float("inf")):
+            raise ValueError(f"{path}: string length outside bounds")
+        if "pattern" in schema and re.search(schema["pattern"], value) is None:
+            raise ValueError(f"{path}: string does not match pattern")
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(f"{path}: number must be finite")
+        if value < schema.get("minimum", -math.inf) or value > schema.get("maximum", math.inf):
+            raise ValueError(f"{path}: number outside bounds")
+        if value <= schema.get("exclusiveMinimum", -math.inf) or value >= schema.get("exclusiveMaximum", math.inf):
+            raise ValueError(f"{path}: number outside exclusive bounds")

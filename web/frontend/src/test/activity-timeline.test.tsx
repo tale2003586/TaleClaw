@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ActivityTimeline } from "../components/chat/ActivityTimeline";
-import type { ActivityItem } from "../hooks/useChatStream";
+import type { ActivityItem } from "../hooks/useChatRuns";
 
 describe("ActivityTimeline", () => {
   it("groups tool start and completion events and keeps the result collapsed", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { getJson, streamNdjson, uploadFormData } from "../api/client";
+import { getJson, subscribeNdjson, uploadFormData } from "../api/client";
 
 describe("api client", () => {
   it("parses JSON and exposes server errors", async () => {
@@ -14,8 +14,21 @@ describe("api client", () => {
     const body = new ReadableStream({ start(controller) { controller.enqueue(encoder.encode('{"type":"delta","text":"a')); controller.enqueue(encoder.encode('"}\n{"type":"complete"}')); controller.close(); } });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 200 })));
     const events: Array<Record<string, unknown>> = [];
-    await streamNdjson("/stream", {}, (event) => events.push(event as Record<string, unknown>));
+    await subscribeNdjson("/stream", (event) => events.push(event as Record<string, unknown>));
     expect(events).toEqual([{ type: "delta", text: "a" }, { type: "complete" }]);
+    vi.unstubAllGlobals();
+  });
+
+  it("cancels only a malformed subscription body and releases its reader", async () => {
+    const cancelled = vi.fn();
+    const body = new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode("not-json\n")); },
+      cancel: cancelled,
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body)));
+    await expect(subscribeNdjson("/events", () => undefined)).rejects.toThrow();
+    expect(cancelled).toHaveBeenCalledTimes(1);
+    expect(body.locked).toBe(false);
     vi.unstubAllGlobals();
   });
 

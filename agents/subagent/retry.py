@@ -14,7 +14,10 @@ def should_auto_retry(result: dict[str, Any], *, retry_count: int = 0) -> bool:
     if bool(result.get("success")):
         return False
     reason = str(result.get("failure_reason") or "")
-    return reason in SUBAGENT_AUTO_RETRY_REASONS
+    return (reason in SUBAGENT_AUTO_RETRY_REASONS
+            and reason != "subagent_timeout"
+            and result.get("effect_state") == "not_started"
+            and result.get("worker_terminated") is True)
 
 
 def annotate_retry_result(

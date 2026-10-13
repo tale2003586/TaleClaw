@@ -1,4 +1,5 @@
 from typing import Callable
+from runtime.execution.budget import execution_scope
 
 from runtime.messaging.user_bus import OutboundMessage, MessageBus
 from config import ARTIFACT_OFFLOADING_ENABLED
@@ -20,6 +21,7 @@ from applications.coding.handoff import (
     PENDING_CODING_TASK_SUMMARY_METADATA_KEY,
 )
 from runtime.sessions import SessionManager
+from applications.coding.task_lifecycle import coding_task_options
 from runtime.cancellation import CancellationRegistry
 
 
@@ -72,25 +74,37 @@ class TurnCoordinator:
         self._begin_cancel_scope(session.id)
         run_state = None
 
-        try:
-            run_state = self._receive(session, inbound)
-            if await self._preprocess(session, inbound, run_state, on_text):
+        with execution_scope(cancel_requested=lambda: self.cancel_requested(session.id), session_id=session.id) as budget:
+            try:
+                run_state = self._receive(session, inbound)
+                if await self._preprocess(session, inbound, run_state, on_text):
+                    return run_state
+                route = self._route(session, inbound, run_state)
+                if route.switched:
+                    await self._handle_switch(session, inbound, route, run_state, on_text)
+                    return run_state
+                self._record(session, inbound, run_state)
+                reply = self._execute(session, inbound, route, run_state, on_text)
+                self._postprocess(session, inbound, reply)
+                await self._deliver(session, inbound, reply, route, run_state, on_text)
                 return run_state
-            route = self._route(session, inbound, run_state)
-            if route.switched:
-                await self._handle_switch(session, inbound, route, run_state, on_text)
-                return run_state
-            self._record(session, inbound, run_state)
-            reply = self._execute(session, inbound, route, run_state, on_text)
-            self._postprocess(session, inbound, reply)
-            await self._deliver(session, inbound, reply, route, run_state, on_text)
-            return run_state
-        except Exception as exc:
-            if run_state is not None:
-                self._fail_run(run_state, session, exc)
-            raise
-        finally:
-            self._end_cancel_scope(session.id)
+            except Exception as exc:
+                if run_state is not None:
+                    self._fail_run(run_state, session, exc)
+                raise
+            finally:
+                budget.close()
+                try:
+                    if run_state is not None:
+                        run_state.metadata["execution_budget"] = budget.snapshot()
+                        if self.trace_store is not None:
+                            self.trace_store.append_event(run_state, "execution.budget.finalized", budget.snapshot())
+                            self.trace_store.write_run_state(run_state)
+                            write_metrics = getattr(self.trace_store, "write_metrics", None)
+                            if callable(write_metrics):
+                                write_metrics(run_state)
+                finally:
+                    self._end_cancel_scope(session.id)
 
     def _externalize_inbound_artifacts(self, inbound) -> list[dict]:
         created = self._externalize_inbound_attachments(inbound)
@@ -207,6 +221,14 @@ class TurnCoordinator:
 
     def _route(self, session, inbound, run_state):
         route = self.router.route(session, inbound.content)
+        classifier_decision = getattr(route, "classifier_decision", None)
+        self._trace(run_state, "routing.gate", {
+            "classifier_invoked": classifier_decision is not None,
+            "mode": session.active_agent,
+            "coding_allowed": (session.metadata or {}).get("user_role", "admin") == "admin",
+        })
+        if classifier_decision is not None:
+            self._trace(run_state, "routing.classified", classifier_decision)
         run_state.set_route(
             mode=session.active_agent,
             execution_path=route.execution,
@@ -275,6 +297,7 @@ class TurnCoordinator:
                 "cancel_requested": cancel_requested,
                 "on_text": on_text,
             }
+            task_kwargs.update(coding_task_options((inbound.metadata or {}).get("coding_task")))
             workspace_root = (inbound.metadata or {}).get("workspace_root")
             if workspace_root:
                 task_kwargs["workspace_root"] = workspace_root
@@ -366,6 +389,9 @@ class TurnCoordinator:
         for key in ("user_id", "user_role"):
             if key in metadata:
                 session.metadata[key] = metadata[key]
+        if (metadata.get("_supervised_run") is True
+                and metadata.get("coding_default_workspace_mode") == "worktree"):
+            session.metadata["coding_default_workspace_mode"] = "worktree"
 
     def _start_run(self, inbound, session) -> RunState:
         metadata = inbound.metadata or {}
@@ -381,6 +407,9 @@ class TurnCoordinator:
                 "sender": inbound.sender,
                 "media_count": len(inbound.media or []),
             },
+            # Only the internal process-worker adapter sets this marker. HTTP
+            # input is allowlisted and never forwards a caller-supplied run_id.
+            run_id=metadata.get("run_id") if metadata.get("_supervised_run") is True else None,
         )
         if self.trace_store is not None:
             self.trace_store.start_run(run_state)

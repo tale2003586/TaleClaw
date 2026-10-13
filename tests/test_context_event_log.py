@@ -30,7 +30,7 @@ class ContextEventLogTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             first.payload["nested"]["value"] = 2  # type: ignore[index]
 
-    def test_legacy_messages_backfill_deterministically_without_aliasing_prompt(self) -> None:
+    def test_legacy_messages_backfill_deterministically(self) -> None:
         messages = [
             {"role": "user", "content": "question"},
             {"role": "assistant", "content": "answer"},
@@ -43,8 +43,6 @@ class ContextEventLogTests(unittest.TestCase):
             [event.event_id for event in second.event_log],
         )
         self.assertEqual([1, 2], [event.seq for event in first.event_log])
-        self.assertEqual([], first.prompt_messages)
-        self.assertIsNot(first.messages, first.prompt_messages)
         self.assertEqual(first.event_log, first.active_event_window)
 
     def test_archive_boundary_keeps_a_tool_transaction_together(self) -> None:

@@ -381,8 +381,16 @@ def validate_state_patch(
     _assign_patch_id(patch)
     if patch.objective is not None:
         raise StateValidationError("TaskState patches cannot change the user objective")
-    if patch.origin == "semantic":
-        if patch.evidence:
+    if patch.origin == "tool":
+        for evidence in patch.evidence:
+            if (evidence.verification or evidence.file_dependencies or evidence.content_hash
+                    or evidence.workspace_root or evidence.tool_name
+                    or evidence.effect_state != "unknown"
+                    or evidence.provenance not in {"legacy", "model_reference"}):
+                raise StateValidationError("model tool updates cannot create host tool verification or observation metadata")
+            evidence.provenance = "model_reference"
+    if patch.origin in {"semantic", "tool"}:
+        if patch.origin == "semantic" and patch.evidence:
             raise StateValidationError("semantic compaction cannot create EvidenceRef values")
         deterministic_fields = [
             patch.files_inspected,
@@ -400,6 +408,62 @@ def validate_state_patch(
             raise StateValidationError(f"illegal phase transition: {state.phase} -> {patch.phase}")
     _validate_patch_ids(state, patch)
     available_evidence = set(state.evidence_index) | {entry.id for entry in patch.evidence}
+    evidence_by_id = {**{entry.id: entry for entry in patch.evidence}, **state.evidence_index}
+    previous_completed = {item.id: item for item in state.completed}
+    for item in patch.completed:
+        if item.supersedes and item.supersedes not in previous_completed:
+            raise StateValidationError("completion supersedes must reference an existing completed item, not a same-patch chain")
+    prospective_completed = {**previous_completed, **{item.id: item for item in patch.completed}}
+    for start in prospective_completed:
+        seen: set[str] = set()
+        cursor = start
+        while cursor in prospective_completed:
+            if cursor in seen:
+                raise StateValidationError("completion supersedes cycle is not allowed")
+            seen.add(cursor)
+            target = prospective_completed[cursor].supersedes
+            if not target or target == cursor:
+                break  # Same-id replacement retains identity; it is not a chain.
+            cursor = target
+    for item in patch.completed:
+        previous = previous_completed.get(item.id) or previous_completed.get(item.supersedes)
+        if previous is None or item.needs_parent_verification:
+            continue
+        needs_recheck = previous.needs_parent_verification or any(
+            ref in state.evidence_index and state.evidence_index[ref].stale
+            for ref in previous.evidence_refs
+        )
+        fresh_support = any(
+            ref in evidence_by_id and not evidence_by_id[ref].stale
+            and ref not in previous.evidence_refs for ref in item.evidence_refs
+        )
+        if needs_recheck and not fresh_support:
+            raise StateValidationError("replacing stale completion requires fresh evidence; retain needs_parent_verification otherwise")
+    completed_items = [*patch.findings, *patch.completed, *patch.decisions]
+    completed_items.extend(item for item in [*patch.plan_items, *patch.pending_actions]
+                           if item.status == ItemStatus.COMPLETED)
+    for existing, additions, transitions in (
+        (state.plan, patch.plan_items, patch.plan_transitions),
+        (state.pending_actions, patch.pending_actions, patch.action_transitions),
+    ):
+        by_id = {item.id: item for item in [*existing, *additions]}
+        completed_items.extend(by_id[transition.id] for transition in transitions
+                               if transition.status == ItemStatus.COMPLETED and transition.id in by_id)
+    if patch.requested_status == TaskStatus.COMPLETED:
+        effective_completed = {item.id: item for item in [*state.completed, *patch.completed]}
+        superseded = {item.supersedes for item in effective_completed.values() if item.supersedes and item.supersedes != item.id}
+        current_completed = [item for key, item in effective_completed.items() if key not in superseded]
+        if any(item.needs_parent_verification for item in current_completed):
+            raise StateValidationError("completed task has stale or unverified completion claims; revalidate first")
+        completed_items.extend(current_completed)
+        stale_basis = [ref for ref in [*state.completion_basis, *patch.completion_basis_add]
+                       if ref in evidence_by_id and evidence_by_id[ref].stale]
+        if stale_basis:
+            raise StateValidationError(f"completed task has stale completion evidence: {stale_basis}")
+    for item in completed_items:
+        stale = [ref for ref in item.evidence_refs if ref in evidence_by_id and evidence_by_id[ref].stale]
+        if stale:
+            raise StateValidationError(f"{type(item).__name__} requires revalidation of stale evidence: {stale}")
     available_findings = {item.id for item in state.findings} | {item.id for item in patch.findings}
     for item in [*patch.findings, *patch.completed, *patch.decisions, *patch.coverage]:
         _validate_evidence_refs(item, available_evidence)
@@ -414,6 +478,8 @@ def validate_state_patch(
     _validate_transitions(state.pending_actions, patch.action_transitions, "action")
     _validate_transitions(state.open_questions, patch.question_transitions, "question")
     _validate_transitions(state.hypotheses, patch.hypothesis_transitions, "hypothesis")
+    from .reasoning_memory import validate_reasoning_patch
+    validate_reasoning_patch(state, patch, StateValidationError)
 
 
 def reduce_task_state(
@@ -455,6 +521,7 @@ def _assign_patch_item_ids(patch: StatePatch) -> None:
 
 def _apply_patch(state: TaskState, patch: StatePatch, *, validate: bool) -> TaskState:
     next_state = deepcopy(state)
+    from .reasoning_memory import reasoning_nodes, propagate_reasoning_invalidations, changed_reasoning_nodes
     if patch.current_focus is not None:
         next_state.current_focus = patch.current_focus or None
     next_state.completion_basis = list(dict.fromkeys([
@@ -490,7 +557,14 @@ def _apply_patch(state: TaskState, patch: StatePatch, *, validate: bool) -> Task
         previous = next_state.evidence_index.get(evidence.id)
         if previous is not None and previous != evidence:
             _record_history(next_state, "evidence", evidence.id, previous, evidence, patch.patch_id)
+        if previous is None:
+            from .evidence_validity import invalidate_after_tool_effect
+            invalidate_after_tool_effect(next_state, evidence, propagate=False)
         next_state.evidence_index[evidence.id] = deepcopy(evidence)
+        next_state.evidence_index[evidence.id].task_id = evidence.task_id or (previous.task_id if previous else state.task_id)
+        if previous is not None and previous.stale:
+            next_state.evidence_index[evidence.id].stale = True
+            next_state.evidence_index[evidence.id].stale_reason = previous.stale_reason
     next_state.artifact_refs = list(dict.fromkeys([*next_state.artifact_refs, *patch.artifact_refs]))
     coverage = next_state.coverage
     coverage.files_inspected = list(dict.fromkeys([*coverage.files_inspected, *patch.files_inspected]))
@@ -502,6 +576,10 @@ def _apply_patch(state: TaskState, patch: StatePatch, *, validate: bool) -> Task
     _apply_transitions(next_state.pending_actions, patch.action_transitions)
     _apply_transitions(next_state.open_questions, patch.question_transitions)
     _apply_transitions(next_state.hypotheses, patch.hypothesis_transitions)
+    for item in reasoning_nodes(next_state).values():
+        if not item.task_id:
+            item.task_id = state.task_id
+    propagate_reasoning_invalidations(next_state, changed_nodes=changed_reasoning_nodes(state, next_state))
     next_state.version += 1
     next_state.updated_at = _now()
     return next_state
@@ -561,7 +639,18 @@ def _validate_patch_ids(state: TaskState, patch: StatePatch) -> None:
             # Existing IDs are accepted only for explicit replacement/superseding.
             if item.id in existing_ids and not getattr(item, "supersedes", ""):
                 existing_item = next(value for value in existing if value.id == item.id)
-                if existing_item != item:
+                same = existing_item == item
+                if category == "evidence":
+                    # Validity is a host-maintained view; replay of the same raw
+                    # observation must not erase a previous invalidation.
+                    left, right = _plain(existing_item), _plain(item)
+                    if not right.get("task_id"):
+                        right["task_id"] = left.get("task_id", "")
+                    for key in ("stale", "stale_reason"):
+                        left.pop(key, None)
+                        right.pop(key, None)
+                    same = left == right
+                if not same:
                     raise StateValidationError(f"duplicate {category} id: {item.id}")
 
 
@@ -675,13 +764,32 @@ def _tool_result_evidence(payload: dict[str, Any], event_id: str) -> EvidenceRef
         or payload.get("content")
         or ""
     )
+    observations = metadata.get("file_observations") or []
+    observations = [item for item in observations if isinstance(item, dict)]
+    stored_ref = payload.get("tool_result_ref") or metadata.get("tool_result_ref") or {}
+    stored_ref = stored_ref if isinstance(stored_ref, dict) else {}
+    verification = _looks_like_test_result(payload)
+    file_dependencies = {str(item["path"]): str(item["sha256"]) for item in observations if item.get("path") and item.get("sha256")}
+    workspace_root = str(next((item.get("workspace_root") for item in observations if item.get("workspace_root")), ""))
+    binding = metadata.get("verification_dependencies")
+    invalid_paths = []
+    if verification and isinstance(binding, dict) and binding.get("scope") == "previously_observed_files":
+        file_dependencies.update(binding.get("file_dependencies") or {})
+        workspace_root = str(binding.get("workspace_root") or workspace_root)
+        invalid_paths = list(binding.get("invalid_paths") or [])
     return EvidenceRef(
-        id=f"evidence:{event_id}", event_id=event_id, kind="tool_result",
+        id=f"evidence:{event_id}", event_id=event_id, kind="tool_result", provenance="host_tool_result",
         summary=content[:500], artifact_ref=artifact_ref,
         tool_result_ref=tool_result_ref,
         path=str(payload.get("path") or _tool_path(payload.get("arguments") or payload.get("final_arguments")) or ""),
-        content_hash=str(payload.get("content_hash") or payload.get("sha256") or metadata.get("sha256") or ""),
+        content_hash=str(payload.get("content_hash") or payload.get("sha256") or metadata.get("sha256") or stored_ref.get("sha256") or ""),
         uri=artifact_ref or tool_result_ref or f"event://{event_id}",
+        file_dependencies=file_dependencies, workspace_root=workspace_root,
+        stale=bool(invalid_paths),
+        stale_reason=("Observed files changed or were unavailable during verification: " + ", ".join(invalid_paths[:4])) if invalid_paths else "",
+        verification=verification,
+        tool_name=_tool_name(payload),
+        effect_state=str(payload.get("effect_state") or metadata.get("effect_state") or "unknown"),
     )
 
 
@@ -744,10 +852,15 @@ def _tool_name(payload: dict[str, Any]) -> str:
 def _looks_like_test_result(payload: dict[str, Any]) -> bool:
     tool_name = _tool_name(payload).lower()
     text = " ".join(str(payload.get(key) or "") for key in ("summary", "content", "output_preview"))
+    arguments = payload.get("arguments") or payload.get("final_arguments") or {}
+    command = str(arguments.get("command") or "").lower() if isinstance(arguments, dict) else ""
+    # This classifies observations for invalidation; it never declares a pass.
+    import re
     return (
         "test" in tool_name
         or "pytest" in text.lower()
         or "tests passed" in text.lower()
+        or bool(re.search(r"\b(pytest|unittest|jest|vitest)\b|\b(npm|pnpm|yarn|cargo|go|make)\s+(run\s+)?test\b", command))
     )
 
 

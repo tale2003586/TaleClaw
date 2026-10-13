@@ -28,7 +28,7 @@ class RunExecutionState:
     recovered_incidents: set[str] = field(default_factory=set)
     corrected_incidents: set[str] = field(default_factory=set)
     cancellation_requested: bool = False
-    security_knowledge_used: bool = False
+    security_context: dict[str, Any] = field(default_factory=dict)
     finishing_reminder_sent: bool = False
     usage: dict[str, int] = field(default_factory=dict)
     stop_decision: StopDecision | None = None
@@ -55,7 +55,7 @@ class RunExecutionState:
         self.recovered_incidents.clear()
         self.corrected_incidents.clear()
         self.cancellation_requested = False
-        self.security_knowledge_used = False
+        self.security_context.clear()
         self.finishing_reminder_sent = False
         self.usage.clear()
         self.stop_decision = None

@@ -63,6 +63,7 @@ def test_config_loads_project_dotenv_before_evaluating_constants(tmp_path: Path)
         encoding="utf-8",
     )
     env = os.environ.copy()
+    env.pop("PYTHON_DOTENV_DISABLED", None)  # This test intentionally loads only its temp fixture .env.
     env.pop("WORKSPACE_ROOTS", None)
     env.pop("DEFAULT_CODING_WORKSPACE", None)
     env["PYTHONPATH"] = str(tmp_path)

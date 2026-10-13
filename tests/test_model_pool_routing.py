@@ -697,6 +697,7 @@ class ResponsesProviderTests(unittest.TestCase):
 
 
 class FakeResponse:
+    status = "completed"
     def __init__(self, *, output, output_text: str | None = None) -> None:
         self.output = output
         if output_text is not None:
@@ -728,6 +729,7 @@ class FakeChatMessage:
 
 
 class FakeChatChoice:
+    finish_reason = "stop"
     def __init__(self, content: str) -> None:
         self.message = FakeChatMessage(content)
 

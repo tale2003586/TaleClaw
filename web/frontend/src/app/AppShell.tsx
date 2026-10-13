@@ -2,9 +2,12 @@ import { lazy, Suspense, useEffect, useRef, useState, type ComponentType, type L
 import { Activity, BarChart3, Bot, Brain, ChevronUp, Folder, Gauge, List, LogOut, Menu, MessageCircle, Moon, PanelLeftClose, PanelLeftOpen, Plus, Settings, Sun, Trash2, UserRound } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { postJson } from "../api/client";
-import { useAppContext, useSessionsContext } from "./contexts";
+import { useAppContext, useSessionsContext, useChatRunsContext } from "./contexts";
 import { useAppView } from "../hooks/useAppView";
 import { useTheme } from "../hooks/useTheme";
+import { chatRunStatusLabel, isActiveChatRun } from "../hooks/useChatRuns";
+import { sessionKey } from "../hooks/useSessions";
+import type { SessionDto } from "../api/types";
 import { RunsProvider } from "../hooks/useRuns";
 import { type AppView } from "./routing";
 import { IconButton, Skeleton } from "../components/ui";
@@ -33,6 +36,14 @@ const accountNavigation: Array<{ view: AppView; label: string; description: stri
 
 export function AppShell() {
   const { user } = useAppContext(); const sessions = useSessionsContext();
+  const chatRuns = useChatRunsContext();
+  const latestRuns = Object.values(chatRuns.views).sort((a, b) => b.run.created_at.localeCompare(a.run.created_at));
+  const runForSession = (id: string) => latestRuns.find((view) => view.run.session_id === id)?.run;
+  const extras: SessionDto[] = [...Object.values(sessions.cache)];
+  for (const { run } of latestRuns) if (!extras.some((session) => sessionKey(session) === run.session_id)) extras.push({ chat_id: run.session_id, channel: "web", title: run.session_id });
+  const known = new Set(sessions.data.map(sessionKey));
+  const visible = [...sessions.visible, ...extras.filter((session) => !known.has(sessionKey(session)) && (!sessions.filter.trim() || `${session.title || ""} ${sessionKey(session)}`.toLowerCase().includes(sessions.filter.trim().toLowerCase())))];
+  const runningCount = latestRuns.filter(({ run }) => isActiveChatRun(run)).length;
   const { view, navigate } = useAppView(user.role);
   const theme = useTheme();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("sidebarCollapsed") === "1");
@@ -64,12 +75,15 @@ export function AppShell() {
           return <button key={item} className={view === item ? "active" : ""} onClick={() => openView(item)} aria-current={view === item ? "page" : undefined}><Icon aria-hidden="true" /><strong>{label}</strong></button>;
         })}</nav>
         <section className="conversation-panel">
-          <header><span>会话</span><IconButton icon={Plus} label="新建会话" size="sm" onClick={() => { sessions.newSession(); openView("chat"); }} /></header>
+          <header><span>会话{runningCount > 0 ? ` · ${runningCount} 个后台任务` : ""}</span><IconButton icon={Plus} label="新建会话" size="sm" onClick={() => { sessions.newSession(); openView("chat"); }} /></header>
           <input value={sessions.filter} onChange={(event) => sessions.setFilter(event.target.value)} placeholder="搜索会话" aria-label="搜索会话" />
-          <div className="conversation-list" onScroll={(event) => { const node = event.currentTarget; if (node.scrollHeight - node.scrollTop - node.clientHeight < 80) void sessions.loadMoreSessions(); }}>{sessions.status === "loading" && <Skeleton lines={3} />}{sessions.visible.map((session) => {
+          <div className="conversation-list" onScroll={(event) => { const node = event.currentTarget; if (node.scrollHeight - node.scrollTop - node.clientHeight < 80) void sessions.loadMoreSessions(); }}>{sessions.status === "loading" && <Skeleton lines={3} />}{visible.map((session) => {
             const id = session.channel === "web" ? String(session.chat_id || "") : String(session.id || "");
-            return <div className={`conversation-item ${sessions.activeId === id ? "active" : ""}`} key={id}><button onClick={() => { void sessions.loadSession(id, session.channel !== "web"); openView("chat"); }}><strong>{session.title || id}</strong><small>{session.active_agent || "hybrid"} · {formatDate(session.updated_at)}</small></button>{session.channel === "web" && <IconButton className="delete-session" icon={Trash2} size="sm" label={`删除 ${id}`} onClick={() => { if (window.confirm(`删除会话 ${id}？`)) void sessions.removeSession(id); }} />}</div>;
-          })}{sessions.hasMore && <button className="conversation-load-more" disabled={sessions.loadingMore} onClick={() => void sessions.loadMoreSessions()}>{sessions.loadingMore ? "加载中…" : "加载更早会话"}</button>}{sessions.status === "success" && sessions.visible.length === 0 && <p className="muted-center">暂无会话</p>}</div>
+            const run = runForSession(id);
+            const activeRun = isActiveChatRun(run) || Boolean(chatRuns.pending[id]);
+            return <div className={`conversation-item ${sessions.activeId === id ? "active" : ""}`} key={id}><button onClick={() => { void sessions.loadSession(id, session.channel !== "web"); openView("chat"); }}><strong>{session.title || id}</strong><small>{run ? <span className={`chat-run-badge ${run.status}`}>{chatRunStatusLabel(run.status)}</span> : session.active_agent || "hybrid"} · {formatDate(session.updated_at)}</small></button>{session.channel === "web" && <IconButton className="delete-session" disabled={activeRun} title={activeRun ? "请先停止运行再删除会话" : undefined} icon={Trash2} size="sm" label={`删除 ${id}`} onClick={() => { if (window.confirm(`删除会话 ${id}？`)) void sessions.removeSession(id); }} />}</div>;
+          })}{sessions.hasMore && <button className="conversation-load-more" disabled={sessions.loadingMore} onClick={() => void sessions.loadMoreSessions()}>{sessions.loadingMore ? "加载中…" : "加载更早会话"}</button>}{sessions.status === "success" && visible.length === 0 && <p className="muted-center">暂无会话</p>}</div>
+          {chatRuns.error && <p className="run-list-error" role="status">后台任务状态暂不可用 <button onClick={() => void chatRuns.reload()}>重试</button></p>}
         </section>
         <footer className="account-footer" ref={accountRef}>
           {accountMenu && <div className="account-menu" role="menu" aria-label="账号与更多功能">

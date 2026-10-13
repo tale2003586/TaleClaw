@@ -7,7 +7,7 @@ from typing import Callable
 from uuid import uuid4
 
 from memory.commands import MemoryContext, MemoryTransition, MemoryWriteProposal
-from memory.conflict_service import ConflictAction, MemoryConflictService
+from memory.conflict_service import ConflictAction, ConflictDecision, MemoryConflictService
 from memory.dedup import normalize_memory_text
 from memory.domain import (
     MemoryEvidence,
@@ -44,8 +44,10 @@ class MemoryCommandService:
         context: MemoryContext,
     ) -> MemoryItem:
         self._authorize(proposal, context)
-        if not proposal.explicit_user_request and proposal.source_type is not MemorySourceType.EXPLICIT_USER:
-            raise ValueError("remember requires an explicit user request.")
+        if proposal.explicit_user_request is not True or proposal.source_type not in {
+            MemorySourceType.EXPLICIT_USER, MemorySourceType.LEGACY_IMPORT,
+        }:
+            raise ValueError("remember requires a trusted explicit user request; coding conclusions must be proposed.")
         return self._create_or_merge(proposal, context, MemoryStatus.ACTIVE)
 
     def propose(
@@ -54,6 +56,15 @@ class MemoryCommandService:
         context: MemoryContext,
     ) -> MemoryItem:
         self._authorize(proposal, context)
+        if proposal.source_type is MemorySourceType.CODING_CONCLUSION:
+            proposal = replace(
+                proposal,
+                metadata={**proposal.metadata, "verified": False, "review_required": True},
+                evidence=tuple(replace(
+                    evidence, metadata={**evidence.metadata, "verified": False,
+                                        "verification_basis": "unverified_candidate"},
+                ) for evidence in proposal.evidence),
+            )
         return self._create_or_merge(proposal, context, MemoryStatus.CANDIDATE)
 
     def record_verified_conclusion(
@@ -62,16 +73,14 @@ class MemoryCommandService:
         context: MemoryContext,
     ) -> MemoryItem:
         self._authorize(proposal, context)
-        if proposal.source_type is not MemorySourceType.CODING_CONCLUSION:
-            raise ValueError("verified conclusion must use CODING_CONCLUSION source.")
-        if not proposal.evidence or not all(
-            bool(evidence.metadata.get("verified")) for evidence in proposal.evidence
-        ):
-            raise ValueError("verified conclusion requires verified evidence.")
-        return self._create_or_merge(proposal, context, MemoryStatus.ACTIVE)
+        # Kept as an explicit failure for older callers. A boolean in model-provided
+        # metadata is not a host verification receipt and cannot activate memory.
+        raise ValueError("Automatic verified conclusion recording is disabled; use propose, review, then confirm.")
 
     def confirm(self, memory_id: str, context: MemoryContext) -> MemoryItem:
         item = self._owned(memory_id, context)
+        if item.valid_until is not None and item.valid_until <= self.clock():
+            raise ValueError("Expired memory cannot be confirmed; submit a new reviewed proposal.")
         updated = self.repository.transition(MemoryTransition(
             memory_id=item.id,
             target_status=MemoryStatus.ACTIVE,
@@ -160,6 +169,7 @@ class MemoryCommandService:
         return updated
 
     def forget(self, query: str, context: MemoryContext) -> list[MemoryItem]:
+        self._require_context(context)
         normalized = normalize_memory_text(query)
         if not normalized:
             return []
@@ -184,9 +194,27 @@ class MemoryCommandService:
         normalized = normalize_memory_text(proposal.content)
         if not normalized:
             raise ValueError("Memory content is empty after normalization.")
-        exact = self.repository.find_exact(proposal.owner, proposal.kind, normalized)
+        # Filter before selecting a match: a newer active/expired record must not
+        # hide a reusable candidate, or receive its unverified evidence.
+        exact = self.repository.find_exact(
+            proposal.owner, proposal.kind, normalized, status=status, now=now,
+        )
         existing = [exact] if exact else self.repository.list_active([proposal.owner], now)
         decision = self.conflict_service.decide(proposal, existing)
+        if status is MemoryStatus.CANDIDATE and not (
+            decision.action is ConflictAction.MERGE_EXACT
+            and decision.existing is not None
+            and decision.existing.status is MemoryStatus.CANDIDATE
+        ):
+            # Review candidates may refer to a conflict, but never supersede or
+            # append unverified evidence to a current fact. Confirmation is explicit.
+            if decision.existing is not None:
+                proposal = replace(proposal, metadata={
+                    **proposal.metadata,
+                    "review_against_memory_id": decision.existing.id,
+                    "review_reason": decision.reason,
+                })
+            decision = ConflictDecision(ConflictAction.CREATE, reason="candidate requires review")
         if decision.action in {ConflictAction.MERGE_EXACT, ConflictAction.MERGE_SEMANTIC}:
             assert decision.existing is not None
             item = self.repository.add_evidence(
@@ -243,6 +271,7 @@ class MemoryCommandService:
         return stored
 
     def _owned(self, memory_id: str, context: MemoryContext) -> MemoryItem:
+        self._require_context(context)
         item = self.repository.get(memory_id)
         if item is None:
             raise MemoryNotFound(memory_id)
@@ -250,7 +279,13 @@ class MemoryCommandService:
             raise ScopeDenied(f"Memory scope is not available in this context: {item.owner}")
         return item
 
+    @staticmethod
+    def _require_context(context: MemoryContext) -> None:
+        if not isinstance(context, MemoryContext):
+            raise ScopeDenied("A trusted MemoryContext is required.")
+
     def _authorize(self, proposal: MemoryWriteProposal, context: MemoryContext) -> None:
+        self._require_context(context)
         if not context.permits(proposal.owner):
             raise ScopeDenied(
                 f"Proposal owner is not available in this context: {proposal.owner}"
@@ -261,7 +296,17 @@ class MemoryCommandService:
         evidence: tuple[MemoryEvidence, ...] | list[MemoryEvidence],
         memory_id: str,
     ) -> tuple[MemoryEvidence, ...]:
-        return tuple(replace(value, memory_id=memory_id) for value in evidence)
+        # Evidence ids are global primary keys in Postgres. The same source may
+        # support a newly reviewed candidate after an earlier item was confirmed.
+        # Bind identity to its memory while keeping source identity for provenance.
+        return tuple(replace(
+            value,
+            id="memory-evidence:" + hashlib.sha256(
+                f"{memory_id}\0{value.id}".encode()
+            ).hexdigest(),
+            memory_id=memory_id,
+            metadata={**value.metadata, "source_evidence_id": value.id},
+        ) for value in evidence)
 
     def _emit(
         self,

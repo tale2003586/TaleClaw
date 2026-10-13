@@ -6,8 +6,22 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from evaluation.outcomes import verification_result
 
-def verify_task(
+
+def verify_task(*, workspace: Path, run_dir: Path, task: Any) -> dict[str, Any]:
+    """A broken grader produces an explicit unknown result, never a model fail."""
+    try:
+        return _verify_task(workspace=workspace, run_dir=run_dir, task=task)
+    except Exception as exc:
+        return {
+            **verification_result("inconclusive", reason="grader_error"),
+            "passed": None, "checks": [], "workspace_diff_summary": {},
+            "error_type": type(exc).__name__, "error": str(exc),
+        }
+
+
+def _verify_task(
     *,
     workspace: Path,
     run_dir: Path,
@@ -37,6 +51,8 @@ def verify_task(
         })
 
     diff = _load_json(run_dir / "workspace_diff.json")
+    if any(expected.get(name) for name in ("modified", "created", "not_modified")):
+        _validate_workspace_diff(diff)
     modified = {
         item.get("path") if isinstance(item, dict) else str(item)
         for item in diff.get("modified", [])
@@ -103,19 +119,29 @@ def verify_task(
         })
 
     run_state = _load_json(run_dir / "run_state.json")
-    checks.append({
-        "name": "run_status_completed",
-        "passed": run_state.get("status") == "completed",
-        "status": run_state.get("status"),
-    })
-
-    passed = all(check["passed"] for check in checks)
+    passed = all(check["passed"] for check in checks) if checks else None
+    outcome = "not_run" if passed is None else "pass" if passed else "fail"
     return {
+        **verification_result(outcome, reason="fixture_checks" if checks else "no_checks"),
         "passed": passed,
         "checks": checks,
         "workspace_diff_summary": diff.get("summary", {}),
         "run_status": run_state.get("status", ""),
     }
+
+
+def _validate_workspace_diff(diff: dict[str, Any]) -> None:
+    """An absent or incomplete artifact cannot prove that no file changed."""
+    if not isinstance(diff, dict):
+        raise ValueError("Workspace diff evidence must be an object.")
+    for name in ("modified", "created", "deleted"):
+        items = diff.get(name)
+        if not isinstance(items, list):
+            raise ValueError(f"Workspace diff evidence requires a {name} list.")
+        for item in items:
+            path = item.get("path") if name == "modified" and isinstance(item, dict) else item
+            if not isinstance(path, str) or not path:
+                raise ValueError(f"Workspace diff {name} evidence contains an invalid path.")
 
 
 def _load_json(path: Path) -> dict[str, Any]:

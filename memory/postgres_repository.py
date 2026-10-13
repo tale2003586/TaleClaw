@@ -218,20 +218,32 @@ class PostgresMemoryRepository:
         owner: OwnerKey,
         kind: MemoryKind,
         normalized: str,
+        *,
+        status: MemoryStatus | None = None,
+        now: datetime | None = None,
     ) -> MemoryItem | None:
+        filters = []
+        params: list[Any] = [owner.scope.value, owner.id, MemoryKind(kind).value, str(normalized)]
+        if status is not None:
+            filters.append("AND status = %s")
+            params.append(MemoryStatus(status).value)
+        if now is not None:
+            filters.append("AND valid_from <= %s AND (valid_until IS NULL OR valid_until > %s)")
+            params.extend((now, now))
         with closing(self._connect()) as conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT * FROM memory_items
                 WHERE owner_scope = %s
                   AND owner_id = %s
                   AND kind = %s
                   AND normalized_content = %s
                   AND status IN ('candidate', 'active')
+                  {' '.join(filters)}
                 ORDER BY updated_at DESC, id DESC
                 LIMIT 1
                 """,
-                (owner.scope.value, owner.id, MemoryKind(kind).value, str(normalized)),
+                params,
             ).fetchone()
         return _item_from_row(row) if row else None
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from typing import Any
+from uuid import uuid4
 
 
 @dataclass
@@ -15,6 +16,8 @@ class TraceEvent:
     parent_span_id: str | None = None
     step: int | None = None
     payload: dict[str, Any] = field(default_factory=dict)
+    schema_version: str = "trace.v2"
+    event_id: str = field(default_factory=lambda: uuid4().hex)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

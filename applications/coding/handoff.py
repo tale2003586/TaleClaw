@@ -5,6 +5,8 @@ import json
 import re
 from typing import Any
 
+from runtime.context.events import is_real_user_message, thaw
+
 
 CODING_HANDOFF_METADATA_KEY = "coding_session_handoff"
 CODING_CONVERSATION_SUMMARY_METADATA_KEY = "coding_conversation_summary"
@@ -40,6 +42,7 @@ class CodingSessionHandoff:
     prior_summary: str = ""
     source_message_count: int = 0
     recent_turn_count: int = DEFAULT_RECENT_TURN_COUNT
+    source_requests: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def has_parent_context(self) -> bool:
@@ -51,6 +54,7 @@ class CodingSessionHandoff:
             "prior_summary": self.prior_summary,
             "source_message_count": self.source_message_count,
             "recent_turn_count": self.recent_turn_count,
+            "source_requests": list(self.source_requests),
         }
 
     def render_prompt_block(self) -> str:
@@ -126,7 +130,32 @@ def build_coding_session_handoff(
         prior_summary=prior_summary,
         source_message_count=len(messages),
         recent_turn_count=keep,
+        source_requests=_historical_source_requests(parent_session, messages),
     )
+
+
+
+def _historical_source_requests(parent_session, messages) -> list[dict[str, Any]]:
+    """Carry exact user sources separately from lossy host/assistant summaries."""
+    events = list(getattr(parent_session, "event_log", []) or [])
+    result = []
+    for index, message in enumerate(messages):
+        if not is_real_user_message(message):
+            continue
+        source_ref = ""
+        for event in events:
+            payload = thaw(event.payload)
+            if payload.get("message") == message:
+                source_ref = f"event://{event.event_id}"
+                break
+        result.append({
+            "source_ref": source_ref,
+            "source_session_id": str(getattr(parent_session, "id", "") or ""),
+            "source_message_index": index,
+            "scope": "historical_user_request",
+            "content": message.get("content", ""),
+        })
+    return result
 
 
 def build_coding_task_summary(
@@ -198,7 +227,7 @@ def _history_messages_before_current_request(
     last = messages[-1]
     if (
         isinstance(last, dict)
-        and last.get("role") == "user"
+        and is_real_user_message(last)
         and _normalize_ws(_message_text(last)) == _normalize_ws(current_user_request)
     ):
         return messages[:-1]
@@ -230,7 +259,7 @@ def _completed_turns(messages: list[dict[str, Any]]) -> list[_RawTurn]:
         if not isinstance(message, dict):
             continue
         role = message.get("role")
-        if role == "user":
+        if role == "user" and is_real_user_message(message):
             flush()
             current_user = (index, message)
             assistant_messages = []

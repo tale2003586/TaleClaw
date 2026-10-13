@@ -25,6 +25,7 @@ Telegram 私聊接入见：[Telegram Gateway 部署说明](../docs/gateways/TELE
 - 文本分析页，AI 回复会和原文一起追加保存到 `storage/records/analysis.txt`
 - `/hybrid`、`/chat`、`/coding` 模式切换
 - 聊天附件先经 MinerU 精准解析，再将解析结果和用户问题一起交给 LLM
+- 设置页的服务端技能管理：管理员查看、启停、编辑 `SKILL.md` 和重新扫描目录
 
 快捷键：
 
@@ -34,6 +35,60 @@ Telegram 私聊接入见：[Telegram Gateway 部署说明](../docs/gateways/TELE
 - `Ctrl/Cmd+1`：切到 Hybrid
 - `Ctrl/Cmd+2`：切到 Chat
 - `Ctrl/Cmd+3`：切到 Coding
+
+### 多会话与独立 Coding 工作区
+
+会话可在后台并行运行，侧栏显示排队、运行与停止状态。切换会话、断开连接、刷新页面不会停止后台任务；停止按钮只作用于显示的 run。默认同时运行 2 个任务，另有 32 个排队名额，同一会话只允许一个活动任务。
+
+Coding 模式支持新建、继续和分叉。新任务默认从源 Git 仓库 HEAD 创建独立 worktree，不包含源目录未提交修改；继续任务沿用已绑定工作区。管理员展开“任务工作区”，可保存任务提交、创建集成候选、输入测试命令验证，再生成独立交付分支。用户主分支由后续审核流程接纳。
+
+完整配置、持久卷、私有依赖环境、接口和故障隔离见[多会话与工作树合同](../docs/architecture/PARALLEL_CODING.md)。`WEB_AGENT_MAX_WORKERS`/`WEB_AGENT_MAX_PENDING` 在重启后生效；技能文档的热更新不需要重启。
+
+### Coding 任务与上下文策略参数
+
+处于 Coding 模式的会话可在 `POST /api/chat` 或流式聊天请求中携带 `coding_task`。例如继续当前任务并使用自适应上下文策略：
+
+```json
+{
+  "session_id": "debug",
+  "message": "继续检查解析器的边界情况",
+  "coding_task": {
+    "mode": "continue",
+    "context_policy": {"name": "adaptive", "recent_groups": 2, "preview_chars": 320}
+  }
+}
+```
+
+`mode` 支持 `auto`、`new`、`continue`、`branch`；`auto` 有当前任务绑定时续接，否则新建。可用 `task_id` 选择属于当前会话和用户的旧任务。`context_policy` 也可直接写字符串，支持 `current`、`raw`、`masking`、`adaptive`、`native`。无效策略或配置返回 400，执行前拒绝。
+
+显式策略保存到该任务，后续续接及分支默认继承；再次传入可切换策略。没有任务覆盖配置时继承父会话默认设置。`native` 需要所选模型提供 Responses 压缩和精确输入计数能力；缺少能力时默认报错，可显式配置 `native_fallback` 为本地策略。
+
+Python 入口同样支持 `run_coding_task(..., task_mode="continue", context_policy="masking")`。
+
+### 技能设置与热更新
+
+设置页的“服务端技能”作用于当前部署的共享技能目录，与主题、Coding 工作区等浏览器偏好分开。管理员可查看包含禁用和无效文件的列表、编辑完整 `SKILL.md`、启用或禁用技能，并重新扫描目录；普通账号不能读写管理 API。显式开启 `WEB_ALLOW_ANONYMOUS=1` 时沿用现有的 `local/admin` 本地模式。
+
+默认目录固定为项目根目录下的 `skills/`，不随服务器启动时的工作目录改变。一个技能对应一个子目录及其中的 `SKILL.md`；从文件系统增加、修改或移除技能后，下一次技能搜索/加载会检查变化，也可以在设置页点击重新加载。页面不会安装依赖或执行技能脚本。
+
+启停状态保存在同一份 `SKILL.md` frontmatter 的 `enabled` 布尔字段中，省略时默认启用。没有第二份浏览器或数据库技能开关。正文与其他 metadata 仍在原文件中；技能声明的 `requires_tools` 不会授予 Agent 原本没有的工具权限。
+
+保存和启停都携带读取时的文件版本。文件已被另一位编辑者修改时返回冲突，前端保留草稿，需重新读取后合并。版本校验不提供与任意外部编辑器同时写入的跨进程事务；无效 YAML、重复技能名称和超限文档不会替换当前有效文件。外部加入的坏文件会在列表中显示诊断，并停止被运行时发现或加载，不会让整个目录失效。单个技能文件上限为 256 KiB。
+
+更改对后续技能搜索和 `load_skill` 调用生效，无需重启 Agent 服务。已经载入现有会话的技能文本不会从历史中自动删除；若需要完整采用新流程，应新建会话。热更新范围是技能文档，不包含 Python 插件代码、模型客户端或 `.env` 运行参数。
+
+Compose 的 Web、Telegram 与 Feishu 应用均挂载 `./skills:/app/skills`，因此技能编辑在容器重建后保留，并由各进程在后续读取时发现。已有部署需先按更新后的 Compose 重建应用容器以建立该挂载；后续技能文档修改无需重建。共享目录的文件权限仍需允许服务账号写入。
+
+管理 API 使用现有登录态，均要求管理员：
+
+| 请求 | 用途 |
+|---|---|
+| `GET /api/skills` | 已安装技能、启停状态、文件诊断和目录版本 |
+| `GET /api/skills/detail?id=…` | 技能原文和文件版本 |
+| `POST /api/skills/reload`，正文 `{}` | 强制重新扫描 |
+| `POST /api/skills/update` | `{id, revision, content}` 保存原文，或 `{id, revision, enabled}` 启停 |
+
+写请求需要 `application/json`，浏览器跨来源写入被拒绝。版本冲突返回 409，非法输入返回 400，不存在返回 404；磁盘不可写等存储错误返回 503。管理接口复用运行时的同一个 SkillLoader，不会为了打开设置页启动模型或数据库运行时。
 
 ## 1. 本地先跑通
 
@@ -293,6 +348,7 @@ curl -u agent:你的密码 http://127.0.0.1:8000/api/runtime-health
 `docker-compose.yml` 已挂载这些目录：
 
 ```text
+./skills          共享技能文档与启停设置
 ./storage         文件区和分析记录
 ./memory          长期记忆 Markdown
 ./.task_sessions 任务会话

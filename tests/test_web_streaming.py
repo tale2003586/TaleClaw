@@ -14,13 +14,13 @@ from web.server import (
 )
 
 
-def _chunk(*, content=None, reasoning_content=None, tool_calls=None):
+def _chunk(*, content=None, reasoning_content=None, tool_calls=None, finish_reason=None):
     delta = SimpleNamespace(
         content=content,
         reasoning_content=reasoning_content,
         tool_calls=tool_calls or [],
     )
-    return SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+    return SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=finish_reason)])
 
 
 def _tool_delta(index, *, call_id=None, name=None, arguments=None):
@@ -34,6 +34,7 @@ class StreamingProviderTests(unittest.TestCase):
             _chunk(reasoning_content="先分析问题。"),
             _chunk(reasoning_content="再组织答案。"),
             _chunk(content="最终回答"),
+            _chunk(finish_reason="stop"),
         ]
         client = SimpleNamespace(
             chat=SimpleNamespace(
@@ -66,6 +67,7 @@ class StreamingProviderTests(unittest.TestCase):
             _chunk(tool_calls=[
                 _tool_delta(0, name="file", arguments='th":"README.md"}'),
             ]),
+            _chunk(finish_reason="tool_calls"),
         ]
 
         class Completions:
@@ -108,6 +110,7 @@ class StreamingProviderTests(unittest.TestCase):
             arguments='{"path":"README.md"}',
         )
         final_response = SimpleNamespace(
+            status="completed",
             output_text="正在处理",
             output=[tool_item],
             usage=SimpleNamespace(input_tokens=12, output_tokens=4, total_tokens=16),
@@ -178,6 +181,12 @@ class StreamingProviderTests(unittest.TestCase):
                 name="read_file",
                 arguments='{"path":"README.md"}',
             ),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                status="completed", output=[SimpleNamespace(
+                    type="function_call", call_id="call_1", name="read_file",
+                    arguments='{"path":"README.md"}',
+                )], output_text="",
+            )),
         ]
         client = SimpleNamespace(
             responses=SimpleNamespace(create=lambda **kwargs: events),
@@ -250,142 +259,87 @@ class StreamingHttpTests(unittest.TestCase):
 
     def test_chat_stream_endpoint_returns_delta_and_complete_events(self) -> None:
         class AgentService:
-            def subscribe_session(self, session_key, cb):
-                self.session_key = session_key
-                cb({
-                    "event": "tool.call.started",
-                    "run_id": "run_123",
-                    "step": 1,
-                    "span_id": "run_123:tool:1:call_1",
-                    "payload": {
-                        "tool_name": "read_file",
-                        "arguments_preview": '{"path":"README.md"}',
-                    },
-                })
-                self.unsubscribed = False
+            def submit(self, **kwargs):
+                self.request = (kwargs["session_id"], kwargs["content"])
+                self.user = (kwargs["user_id"], kwargs["user_role"])
+                self.workspace_root = kwargs.get("workspace_root")
+                self.thinking_enabled = kwargs["thinking_enabled"]
+                return self.get_run("run_123", user_id="local")
 
-                def unsub():
-                    self.unsubscribed = True
+            def get_run(self, run_id, *, user_id):
+                return {"run_id": "run_123", "session_id": "default", "status": "completed", "last_seq": 6}
 
-                return unsub
-
-            def ask_stream(
-                self,
-                *,
-                session_id,
-                content,
-                user_id,
-                user_role,
-                workspace_root=None,
-                thinking_enabled=False,
-                on_text,
-            ):
-                self.request = (session_id, content)
-                self.user = (user_id, user_role)
-                self.workspace_root = workspace_root
-                self.thinking_enabled = thinking_enabled
-                on_text("你")
-                on_text("好")
-                on_text.on_assistant_segment({
-                    "step": 1,
-                    "has_content": True,
-                    "final": True,
-                })
-                on_text.on_assistant_completed({
-                    "step": 1,
-                    "reason": "assistant_final_message",
-                })
-                return "你好"
+            def events_after(self, run_id, *, user_id, after=0, wait_seconds=0):
+                payloads = [
+                    {"type": "event", "data": {"event": "tool.call.started", "run_id": "run_123", "step": 1,
+                        "span_id": "run_123:tool:1:call_1", "payload": {"tool_name": "read_file", "arguments_preview": '{"path":"README.md"}'}}},
+                    {"type": "delta", "text": "你"},
+                    {"type": "delta", "text": "好"},
+                    {"type": "assistant_segment", "data": {"step": 1, "has_content": True, "final": True}},
+                    {"type": "assistant_completed", "data": {"step": 1, "reason": "assistant_final_message"}},
+                    {"type": "complete", "reply": "你好"},
+                ]
+                return [{**item, "seq": index, "run_id": run_id, "session_id": "default"}
+                        for index, item in enumerate(payloads, 1) if index > after]
 
         agent_service = AgentService()
         handler = object.__new__(RequestHandler)
         handler.agent_service = agent_service
-        handler._read_json_body = lambda: {
-            "session_id": "default",
-            "message": "hello",
-            "workspace_root": "/tmp/project",
-        }
+        handler.headers = {"Content-Type": "application/json", "Host": "localhost:8000"}
+        handler._read_json_body = lambda: {"session_id": "default", "message": "hello", "workspace_root": "/tmp/project"}
         handler._send_stream_headers = lambda: None
         events = []
         handler._send_stream_event = events.append
-
-        with patch(
-            "web.server.read_session",
-            return_value={"messages": [], "title": "首轮主题"},
+        with (
+            patch("web.server.read_session", return_value={"messages": [], "title": "首轮主题"}),
+            patch("runtime.workspace.WorkspaceResolver", return_value=SimpleNamespace(resolve=lambda value: SimpleNamespace(root=Path("/tmp/project")))),
         ):
             handler._handle_chat_stream()
-
         self.assertEqual(("default", "hello"), agent_service.request)
         self.assertEqual(("local", "admin"), agent_service.user)
         self.assertEqual("/tmp/project", agent_service.workspace_root)
         self.assertFalse(agent_service.thinking_enabled)
-        self.assertEqual("web:local:default", agent_service.session_key)
-        self.assertTrue(agent_service.unsubscribed)
-        self.assertEqual(
-            [
-                "event",
-                "delta",
-                "delta",
-                "assistant_segment",
-                "assistant_completed",
-                "complete",
-            ],
-            [event["type"] for event in events],
-        )
+        self.assertEqual(["event", "delta", "delta", "assistant_segment", "assistant_completed", "complete"],
+                         [event["type"] for event in events])
+        self.assertEqual(list(range(1, 7)), [event["seq"] for event in events])
+        self.assertTrue(all(event["run_id"] == "run_123" for event in events))
         self.assertEqual("tool.call.started", events[0]["event"])
         self.assertEqual("read_file", events[0]["tool"])
         self.assertEqual('{"path":"README.md"}', events[0]["args"])
         self.assertEqual("你好", events[-1]["reply"])
         self.assertEqual("首轮主题", events[-1]["session"]["title"])
 
-    def test_chat_attachment_is_parsed_before_combined_message_reaches_agent(self) -> None:
-        from web.mineru import MinerUResult
-
+    def test_chat_attachment_paths_are_dispatched_for_background_parsing(self) -> None:
         class AgentService:
-            def ask_stream(self, **kwargs):
+            def submit(self, **kwargs):
                 self.request = kwargs
-                kwargs["on_text"]("完成")
-                return "完成"
-
-        class FakeMinerU:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return None
-
-            def parse_file(self, path):
-                self.path = path
-                return MinerUResult(path.name, "# 解析正文", "batch-1", "https://example.test/result.zip")
+                return self.get_run("run_attachment", user_id="alice")
+            def get_run(self, run_id, *, user_id):
+                return {"run_id": run_id, "session_id": "default", "status": "completed", "last_seq": 2}
+            def events_after(self, run_id, *, user_id, after=0, wait_seconds=0):
+                return [{"type": "delta", "text": "完成", "seq": 1, "run_id": run_id, "session_id": "default"},
+                        {"type": "complete", "reply": "完成", "seq": 2, "run_id": run_id, "session_id": "default"}]
 
         agent_service = AgentService()
         handler = object.__new__(RequestHandler)
         handler.agent_service = agent_service
+        handler.headers = {"Content-Type": "application/json", "Host": "localhost:8000"}
         handler._current_user = lambda: SimpleNamespace(user_id="alice", role="user")
-        handler._read_json_body = lambda: {
-            "session_id": "default",
-            "message": "总结这份报告",
-            "attachments": ["chat-attachments/report.pdf"],
-        }
+        handler._read_json_body = lambda: {"session_id": "default", "message": "总结这份报告", "attachments": ["chat-attachments/report.pdf"]}
         handler._send_stream_headers = lambda: None
         events = []
         handler._send_stream_event = events.append
-
         with (
             patch("web.server._safe_storage_path", return_value=Path(__file__)),
-            patch("web.mineru.MinerUClient", FakeMinerU),
+            patch("web.mineru.MinerUClient", side_effect=AssertionError("HTTP must not parse attachments")),
             patch("web.server.read_session", return_value={"messages": [], "title": "报告"}),
         ):
             handler._handle_chat_stream()
-
         self.assertEqual("总结这份报告", agent_service.request["content"])
-        self.assertNotIn("# 解析正文", agent_service.request["content"])
-        self.assertEqual(
-            "# 解析正文",
-            agent_service.request["attachments"][0]["content"],
-        )
-        self.assertEqual("总结这份报告\n\n附件：test_web_streaming.py", agent_service.request["display_content"])
-        self.assertEqual(["status", "status", "delta", "complete"], [event["type"] for event in events])
+        self.assertEqual(["chat-attachments/report.pdf"], agent_service.request["attachment_paths"])
+        self.assertNotIn("attachments", agent_service.request)
+        self.assertNotIn("display_content", agent_service.request)
+        self.assertEqual(["delta", "complete"], [event["type"] for event in events])
 
     def test_stream_event_projection_is_whitelisted_and_small(self) -> None:
         projected = _stream_event_projection({

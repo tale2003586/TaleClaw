@@ -12,6 +12,8 @@ from uuid import uuid4
 
 from applications.coding.runner import CodingApplication
 from evaluation.metrics import failure_category, summarize_rows
+from evaluation.provenance import evaluation_manifest
+from evaluation.outcomes import finish_generation, verification_result
 from evaluation.session_manager import EvaluationSessionManager
 from evaluation.task_schema import BenchmarkTask, load_benchmark
 from evaluation.verifiers import verify_task
@@ -85,6 +87,8 @@ class CodingBenchmarkHarness:
         max_reasoning_steps: int | None = None,
         progress: Callable[[dict[str, Any]], None] | None = None,
         plugin_manager: PluginManager | None = None,
+        context_policy: str | dict = "current",
+        execution_budget_limits: dict | None = None,
     ) -> None:
         self.benchmark_path = Path(benchmark_path)
         self.repo_root = self.benchmark_path.resolve().parent.parent
@@ -103,91 +107,131 @@ class CodingBenchmarkHarness:
         )
         self.progress = progress
         self.plugin_manager = plugin_manager
+        from runtime.context.policies import context_policy as parse_policy
+        from types import SimpleNamespace
+        from dataclasses import asdict
+        self.context_policy = asdict(parse_policy(SimpleNamespace(metadata={"context_policy": context_policy})))
+        self.execution_budget_limits = dict(execution_budget_limits or {})
+        permitted = {"max_model_attempts", "max_tool_attempts", "max_known_tokens", "max_seconds"}
+        if set(self.execution_budget_limits) - permitted or any(type(v) is not int or v < 1 for v in self.execution_budget_limits.values()):
+            raise ValueError("Execution budget limits must be positive integers with known keys")
 
     def run(self) -> dict[str, Any]:
         cleanup_expired_sandboxes()
-        eval_id = "eval_" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:6]
-        eval_dir = self.eval_root / eval_id
-        owns_workspace_root = self.workspace_root is None
-        workspaces_root = Path(
-            tempfile.mkdtemp(prefix="coding-benchmark-")
-            if owns_workspace_root
-            else self.workspace_root
-        )
-        workspaces_root.mkdir(parents=True, exist_ok=True)
-        eval_dir.mkdir(parents=True, exist_ok=True)
-
         tasks = load_benchmark(self.benchmark_path)
         if self.task_id:
             tasks = [task for task in tasks if task.id == self.task_id]
             if not tasks:
                 raise ValueError(f"Unknown benchmark task id: {self.task_id}")
-        self._emit("eval_started", {
-            "eval_id": eval_id,
-            "task_count": len(tasks),
-            "runner_mode": self.runner_mode,
-            "workspace_root": str(workspaces_root),
-        })
-        rows = []
-        for index, task in enumerate(tasks, start=1):
-            self._emit("task_started", {
-                "index": index,
-                "total": len(tasks),
-                "id": task.id,
-                "category": task.category,
-            })
-            started = time.perf_counter()
-            row = self.run_task(task, eval_dir=eval_dir, workspaces_root=workspaces_root)
-            row["duration_ms"] = round((time.perf_counter() - started) * 1000, 3)
-            rows.append(row)
-            self._emit("task_finished", {
-                "index": index,
-                "total": len(tasks),
-                "id": task.id,
-                "category": task.category,
-                "status": row["status"],
-                "failure_reason": row.get("failure_reason", ""),
-                "duration_ms": row["duration_ms"],
-                "reasoning_steps": row.get("reasoning_steps", 0),
-                "tool_calls": row.get("tool_calls", 0),
-            })
-        payload = {
-            "schema_version": 1,
-            "eval_id": eval_id,
-            "captured_at": datetime.now(timezone.utc).isoformat(),
-            "runner": {
-                "mode": self.runner_mode,
-                **self._runner_metadata(),
-            },
-            "benchmark": {
-                "source": str(self.benchmark_path),
-                "task_count": len(tasks),
-                "task_id": self.task_id or "",
-                "no_step_budget": self.no_step_budget,
+        eval_id = "eval_" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + uuid4().hex[:6]
+        eval_dir = self.eval_root / eval_id
+        owns_workspace_root = self.workspace_root is None
+        workspaces_root = Path(
+            tempfile.mkdtemp(prefix="coding-benchmark-")
+            if owns_workspace_root else self.workspace_root
+        )
+        workspaces_root.mkdir(parents=True, exist_ok=True)
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        runner_metadata = self._runner_metadata()
+        manifest = evaluation_manifest(
+            dataset_path=self.benchmark_path, configuration={
+                "runner_mode": self.runner_mode, "model_purpose": "coding",
+                "model_name": runner_metadata.get("model"),
                 "max_reasoning_steps": self.max_reasoning_steps,
+                "no_step_budget": self.no_step_budget, "selected_ids": [task.id for task in tasks],
+                "context_policy": self.context_policy, "execution_budget_limits": self.execution_budget_limits,
             },
+        )
+        rows = []
+        payload = {
+            "schema_version": 2, "status": "running", "manifest": manifest, "manifest_after": None,
+            "eval_id": eval_id, "captured_at": datetime.now(timezone.utc).isoformat(),
+            "runner": {"mode": self.runner_mode, **runner_metadata},
+            "benchmark": {"source": str(self.benchmark_path), "task_count": len(tasks),
+                "task_id": self.task_id or "", "no_step_budget": self.no_step_budget,
+                "max_reasoning_steps": self.max_reasoning_steps},
+            "expected_task_ids": [task.id for task in tasks],
             "workspace_root": str(workspaces_root),
             "workspace_retained": self.keep_workspace or not owns_workspace_root,
-            "summary": summarize_rows(rows),
             "rows": rows,
         }
-        (eval_dir / "summary.json").write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False, default=str) + "\n",
-            encoding="utf-8",
-        )
-        (eval_dir / "rows.json").write_text(
-            json.dumps(rows, indent=2, ensure_ascii=False, default=str) + "\n",
-            encoding="utf-8",
-        )
-        self._plugin_manager().after_eval(eval_dir=eval_dir, payload=payload)
-        self._emit("eval_finished", {
-            "eval_id": eval_id,
-            "summary": payload["summary"],
-            "eval_dir": str(eval_dir),
-        })
-        if owns_workspace_root and not self.keep_workspace:
-            shutil.rmtree(workspaces_root, ignore_errors=True)
-        return payload
+        # Matrix callers can recover this ledger even when run() must re-raise
+        # KeyboardInterrupt; the same snapshot is durably written after each row.
+        self.latest_result = payload
+        self.ledger_path = eval_dir / "summary.json"
+        active_task_id = None
+        try:
+            self._write_ledger(eval_dir, payload)
+            self._emit("eval_started", {"eval_id": eval_id, "task_count": len(tasks),
+                "runner_mode": self.runner_mode, "workspace_root": str(workspaces_root)})
+            for index, task in enumerate(tasks, start=1):
+                active_task_id = task.id
+                self._emit("task_started", {"index": index, "total": len(tasks),
+                    "id": task.id, "category": task.category})
+                started = time.perf_counter()
+                try:
+                    row = self.run_task(task, eval_dir=eval_dir, workspaces_root=workspaces_root)
+                except Exception as exc:
+                    row = {"id": task.id, "category": task.category, "runner_mode": self.runner_mode,
+                        "status": "error", "passed": None, "execution_status": "unknown", "run_status": "unknown",
+                        "verification": verification_result("inconclusive", reason="evaluation_error", error_type=type(exc).__name__),
+                        "failure_category": "evaluation_error", "failure_reason": str(exc),
+                        "error": f"{type(exc).__name__}: {exc}"}
+                row["duration_ms"] = round((time.perf_counter() - started) * 1000, 3)
+                rows.append(row)
+                active_task_id = None
+                # Persist before callbacks: stdout/progress must never be the
+                # sole surviving copy of a completed task result.
+                self._write_ledger(eval_dir, payload)
+                self._emit("task_finished", {"index": index, "total": len(tasks), "id": task.id,
+                    "category": task.category, "status": row["status"],
+                    "failure_reason": row.get("failure_reason", ""), "duration_ms": row["duration_ms"],
+                    "reasoning_steps": row.get("reasoning_steps", 0), "tool_calls": row.get("tool_calls", 0)})
+            payload["status"] = "completed"
+            payload["manifest_after"] = evaluation_manifest(dataset_path=self.benchmark_path, configuration=manifest["configuration"])
+            self._write_ledger(eval_dir, payload)
+            self._plugin_manager().after_eval(eval_dir=eval_dir, payload=payload)
+            self._emit("eval_finished", {"eval_id": eval_id, "summary": payload["summary"], "eval_dir": str(eval_dir)})
+            return payload
+        except BaseException as exc:
+            interrupted = not isinstance(exc, Exception)
+            payload.update(status="interrupted" if interrupted else "error", error_type=type(exc).__name__, error=str(exc))
+            recorded = {row["id"] for row in rows}
+            for task in tasks:
+                if task.id in recorded:
+                    continue
+                in_flight = task.id == active_task_id
+                rows.append({"id": task.id, "category": task.category, "runner_mode": self.runner_mode,
+                    "status": "interrupted" if in_flight else "not_run", "passed": None,
+                    "execution_status": "interrupted" if in_flight else "not_run",
+                    "run_status": "interrupted" if in_flight else "not_run",
+                    "verification": verification_result("inconclusive", reason=(
+                        "evaluation_interrupted" if in_flight else "not_run_after_interruption") if interrupted else "harness_error",
+                        error_type=type(exc).__name__), "failure_category": "evaluation_interrupted" if interrupted else "evaluation_error"})
+            # Interrupted temporary workspaces retain their diagnostic state,
+            # matching the former exception path and avoiding a cleanup race.
+            payload["workspace_retained"] = True
+            raise
+        finally:
+            if payload["manifest_after"] is None:
+                try:
+                    payload["manifest_after"] = evaluation_manifest(dataset_path=self.benchmark_path, configuration=manifest["configuration"])
+                except Exception as fingerprint_error:
+                    # Unknown provenance excludes comparisons; it must not
+                    # erase completed rows or mask the original interruption.
+                    payload["manifest_after_error"] = f"{type(fingerprint_error).__name__}: {fingerprint_error}"
+            self._write_ledger(eval_dir, payload)
+            if payload["status"] == "completed" and owns_workspace_root and not self.keep_workspace:
+                shutil.rmtree(workspaces_root, ignore_errors=True)
+
+    def _write_ledger(self, eval_dir: Path, payload: dict) -> None:
+        payload["summary"] = summarize_rows(payload["rows"])
+        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        for name, value in (("rows.json", payload["rows"]), ("summary.json", payload)):
+            target = eval_dir / name
+            temporary = target.with_suffix(target.suffix + ".tmp")
+            temporary.write_text(json.dumps(value, indent=2, ensure_ascii=False, default=str) + "\n", encoding="utf-8")
+            temporary.replace(target)
 
     def _plugin_manager(self) -> PluginManager:
         if self.plugin_manager is None:
@@ -202,8 +246,12 @@ class CodingBenchmarkHarness:
         workspace = self._fresh_workspace(task, workspaces_root)
         _init_git_repo(workspace)
         scripted = self.runner_mode == "scripted"
-        trace_store = TraceStore(eval_dir / "runs", index_enabled=not scripted)
-        sessions = EvaluationSessionManager() if scripted else SessionManager()
+        # This runner owns an isolated fixture workspace; the verifier needs
+        # its detailed diff evidence. Production trace defaults remain private.
+        # Benchmarks own fixture state for both model modes. A real-model trial
+        # must not create/delete rows in the user's production session database.
+        trace_store = TraceStore(eval_dir / "runs", index_enabled=False, capture_content=True)
+        sessions = EvaluationSessionManager()
         provider, model = self._provider_for_task(task)
         effective_step_budget = self._effective_step_budget(task)
         runtime = Runtime(
@@ -219,6 +267,7 @@ class CodingBenchmarkHarness:
                 ToolLoopGuardHook(),
                 ToolResultStoreHook(),
                 ToolTraceHook(),
+                *self._extra_tool_hooks(workspace),
             ]),
             context_builder=ContextBuilder(
                 coding_context_view_builder=build_coding_context_view,
@@ -242,6 +291,7 @@ class CodingBenchmarkHarness:
                 "user_role": "admin",
                 "eval_id": eval_dir.name,
                 "benchmark_task_id": task.id,
+                "context_policy": self.context_policy,
             },
         )
         run_state = RunState.create(
@@ -256,22 +306,36 @@ class CodingBenchmarkHarness:
         )
         trace_store.start_run(run_state)
 
+        from runtime.execution.budget import ExecutionBudget, execution_scope
+        limits = dict(self.execution_budget_limits)
+        max_seconds = limits.pop("max_seconds", 900)
+        budget = ExecutionBudget(deadline=time.monotonic() + max_seconds, **limits)
         error = ""
+        error_type = ""
+        policy_observation = {}
         reply = ""
         try:
-            reply = runner.run_coding_task(
-                parent_session=parent,
-                user_text=task.prompt,
-                agent_spec=CODING_AGENT_SPEC,
-                workspace_root=str(workspace),
-                run_state=run_state,
-                trace_store=trace_store,
-            )
-            run_state.finish_success(reply)
+            with execution_scope(budget=budget):
+                reply = runner.run_coding_task(
+                    parent_session=parent,
+                    user_text=task.prompt,
+                    agent_spec=CODING_AGENT_SPEC,
+                    workspace_root=str(workspace),
+                    run_state=run_state,
+                    trace_store=trace_store,
+                )
+            finish_generation(run_state, reply)
         except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
+            error_type = type(exc).__name__
+            error = f"{error_type}: {exc}"
             run_state.fail(exc)
         finally:
+            from applications.coding.task_lifecycle import ACTIVE_CODING_TASK_ID
+            task_session = sessions.get_existing("task:" + parent.metadata.get(ACTIVE_CODING_TASK_ID, ""))
+            if task_session is not None:
+                policy_observation = {"resolution": task_session.metadata.get("context_policy_resolution"),
+                                      "last_plan": task_session.metadata.get("context_policy_audit"),
+                                      "compaction_request": task_session.metadata.get("context_compaction_request")}
             trace_store.write_run_state(run_state)
             trace_store.write_report(run_state, {
                 "benchmark_task_id": task.id,
@@ -287,9 +351,14 @@ class CodingBenchmarkHarness:
             if self.no_step_budget
             else run_state.reasoning_steps <= effective_step_budget
         )
-        verifier_passed = bool(verifier["passed"])
-        workspace_diff_passed = _checks_passed(verifier, {"modified", "created", "not_modified"})
-        trace_passed = _checks_passed(verifier, {"trace_event_exists", "tool_called", "tool_denied"})
+        verifier_passed = verifier["passed"]
+        verification = verification_result(
+            verifier["outcome"], reason=verifier["reason"], verifier_id="fixture.v1",
+            run_id=run_state.run_id, error_type=verifier.get("error_type"),
+        )
+        valid = verifier["outcome"] in {"pass", "fail"}
+        workspace_diff_passed = _checks_passed(verifier, {"modified", "created", "not_modified"}) if valid else None
+        trace_passed = _checks_passed(verifier, {"trace_event_exists", "tool_called", "tool_denied"}) if valid else None
         row = {
             "id": task.id,
             "category": task.category,
@@ -314,18 +383,24 @@ class CodingBenchmarkHarness:
             "workspace_diff_passed": workspace_diff_passed,
             "trace_passed": trace_passed,
             "run_status": run_state.status,
+            "execution_status": run_state.status,
+            "verification": verification,
             "final_answer": run_state.final_answer or reply,
             "error": error,
             "verifier": verifier,
+            "context_policy": self.context_policy,
+            "execution_budget": budget.snapshot(),
+            "error_type": error_type,
+            "policy_observation": policy_observation,
+            "actual_model_calls": _actual_model_calls(run_dir),
+            "context_intervention": _context_intervention_evidence(run_dir),
+            "tool_access_proxies": _tool_access_proxies(run_dir),
         }
-        row["passed"] = (
-            row["run_status"] == "completed"
-            and within_budget
-            and verifier_passed
-            and workspace_diff_passed
-            and trace_passed
-        )
-        row["status"] = "pass" if row["passed"] else "fail"
+        # A safety task may correctly stop while its behavioral checks pass.
+        # Execution health and budget compliance remain separate observations;
+        # neither a normal return nor a stop can replace the verifier result.
+        row["passed"] = bool(verifier_passed) if valid else None
+        row["status"] = ("pass" if row["passed"] else "fail") if valid else verifier["outcome"]
         row["failure_category"] = "" if row["passed"] else failure_category(row)
         row["failure_reason"] = "" if row["passed"] else diagnose_failure(row)
         trace_store.write_report(run_state, {
@@ -334,6 +409,8 @@ class CodingBenchmarkHarness:
             "workspace_root": str(workspace),
             "status": row["status"],
             "passed": row["passed"],
+            "execution_status": run_state.status,
+            "verification": verification,
             "failure_category": row["failure_category"],
             "failure_reason": row["failure_reason"],
             "verifier": verifier,
@@ -342,6 +419,10 @@ class CodingBenchmarkHarness:
             "trace_passed": trace_passed,
         })
         return row
+
+    def _extra_tool_hooks(self, workspace: Path) -> list:
+        """Optional isolated benchmark observers; ordinary runners add none."""
+        return []
 
     def _fresh_workspace(self, task: BenchmarkTask, workspaces_root: Path) -> Path:
         source = (self.repo_root / task.fixture_repo).resolve()
@@ -417,6 +498,8 @@ def run_coding_benchmark(
 
 
 def diagnose_failure(row: dict[str, Any]) -> str:
+    if (row.get("verification") or {}).get("outcome") in {"not_run", "inconclusive"}:
+        return str(row["verification"].get("reason") or "verification_unknown")
     final_answer = str(row.get("final_answer") or "")
     if "工具推理步骤超过上限" in final_answer or "reasoning step" in final_answer.lower():
         return "budget_stop"
@@ -532,3 +615,167 @@ def _relative_or_str(path: Path, root: Path) -> str:
         return path.relative_to(root).as_posix()
     except ValueError:
         return str(path)
+
+
+def _actual_model_calls(run_dir: Path) -> list[dict]:
+    path = run_dir / "trace.jsonl"
+    result = []
+    if not path.is_file():
+        return result
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("event") != "model.call.completed":
+            continue
+        payload = event.get("payload") or {}
+        metadata = payload.get("provider_metadata") or {}
+        native = metadata.get("native_context") or {}
+        result.append({"model": metadata.get("selected_model") or native.get("model") or payload.get("model"),
+                       "profile": metadata.get("selected_profile"),
+                       "policy": payload.get("context_policy") or (payload.get("context_policy_resolution") or {}).get("effective"),
+                       "provider": payload.get("provider"), "usage": payload.get("usage")})
+    return result
+
+
+def _tool_access_proxies(run_dir: Path) -> dict:
+    """Trace proxies only: same-argument reads are not proof of wasted investigation."""
+    path = run_dir / "trace.jsonl"
+    unknown = {"trace_available": False, "repeat_read_file_calls": None,
+               "recovery_attempts": None, "recovery_tool_successes": None,
+               "read_signature_coverage_complete": False,
+               "interpretation": "Tool-status and exact-input proxies, not semantic investigation or evidence recovery quality."}
+    if not path.is_file():
+        return unknown
+    seen_calls, signatures = set(), set()
+    repeated = recoveries = successes = 0
+    complete = recovery_complete = True
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            complete = recovery_complete = False
+            continue
+        if event.get("event") not in {"tool.call.completed", "tool.call.failed"}:
+            continue
+        payload = event.get("payload") or {}
+        call_id = payload.get("tool_call_id")
+        name = payload.get("tool_name")
+        if name not in {"read_file", "read_artifact", "retrieve_tool_result"}:
+            continue
+        if not call_id:
+            complete = False
+            if name != "read_file":
+                recovery_complete = False
+            continue
+        identity = (event.get("run_id"), event.get("step"), call_id)
+        if identity in seen_calls:
+            continue
+        seen_calls.add(identity)
+        if name != "read_file":
+            recoveries += 1
+            successes += payload.get("status") == "success"
+            if payload.get("status") not in {"success", "error", "denied", "timeout", "cancelled"}:
+                recovery_complete = False
+            continue
+        arguments = payload.get("final_arguments")
+        if not isinstance(arguments, dict):
+            try:
+                arguments = json.loads(payload.get("final_arguments_preview") or "")
+            except (ValueError, TypeError):
+                arguments = None
+        signature = ("hash", payload["final_arguments_sha256"]) if payload.get("final_arguments_sha256") else None
+        if isinstance(arguments, dict):
+            signature = ("json", json.dumps(arguments, sort_keys=True, ensure_ascii=False))
+        if signature is None:
+            complete = False
+            continue
+        repeated += signature in signatures
+        signatures.add(signature)
+    return {**unknown, "trace_available": True, "repeat_read_file_calls": repeated if complete else None,
+            "repeat_read_file_calls_known": repeated, "read_signature_coverage_complete": complete,
+            "recovery_attempts": recoveries if recovery_complete else None,
+            "recovery_tool_successes": successes if recovery_complete else None,
+            "recovery_attempts_known": recoveries, "recovery_tool_successes_known": successes,
+            "recovery_coverage_complete": recovery_complete}
+
+
+def _context_intervention_evidence(run_dir: Path) -> dict:
+    """Count submitted-request changes; policy selection alone is not evidence."""
+    path = run_dir / "trace.jsonl"
+    result = {"schema_version": 1, "status": "unknown", "scope": "runtime_model_requests_after_context_guard",
+              "counting": "request exposures, not unique observations or billed token savings",
+              "requested_calls": 0, "completed_calls": 0, "audited_calls": 0,
+              "masked_observations": 0, "dropped_groups": 0, "snapshots_used": 0,
+              "native_compactions": 0, "planner_token_reduction_estimate": 0,
+              "hard_trim_calls": 0, "intervention_observed": False, "reasons": []}
+    if not path.is_file():
+        result["reasons"].append("missing_trace")
+        return result
+    started, completed, snapshots, trims = {}, {}, set(), set()
+    malformed = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+            if not isinstance(event, dict):
+                raise ValueError("not an event")
+        except (TypeError, ValueError):
+            malformed = True
+            continue
+        name = event.get("event")
+        key = event.get("span_id") or ("step", event.get("step"))
+        if name == "model.call.started":
+            started[key] = event
+        elif name == "model.call.completed":
+            completed[key] = event
+        elif name == "context_emergency_trim":
+            trims.add(event.get("step"))
+    result.update(requested_calls=len(started), completed_calls=len(completed), hard_trim_calls=len(trims))
+    reasons = result["reasons"]
+    if malformed:
+        reasons.append("malformed_trace")
+    if not started:
+        reasons.append("missing_request_audit")
+    if set(completed) - set(started):
+        reasons.append("completed_call_without_request_audit")
+    for key, event in started.items():
+        payload = event.get("payload") or {}
+        audit = (payload.get("context_summary") or {}).get("context_intervention")
+        if not isinstance(audit, dict) or audit.get("schema_version") != 1 or audit.get("audit_complete") is not True:
+            reasons.append("missing_or_incomplete_request_audit")
+            continue
+        declared_policy = (payload.get("context_summary") or {}).get("context_policy")
+        final_policy = ((completed.get(key) or {}).get("payload") or {}).get("context_policy")
+        if audit.get("policy") != declared_policy or final_policy is not None and final_policy != declared_policy:
+            reasons.append("request_policy_audit_mismatch")
+            continue
+        if audit.get("policy") == "native":
+            final = (completed.get(key) or {}).get("payload") or {}
+            metadata = final.get("provider_metadata") or {}
+            native = metadata.get("native_context") or {}
+            count = native.get("compaction_item_count")
+            if metadata.get("context_policy") != "native" or type(count) is not int or count < 0:
+                reasons.append("missing_native_commit_audit")
+                continue
+            result["native_compactions"] += count + int("compaction_usage" in metadata)
+        else:
+            values = [audit.get(name) for name in ("masked_observations", "dropped_groups")]
+            if any(type(value) is not int or value < 0 for value in values):
+                reasons.append("invalid_request_audit_counts")
+                continue
+            result["masked_observations"] += values[0]
+            result["dropped_groups"] += values[1]
+            if audit.get("snapshot_id"):
+                snapshots.add(str(audit["snapshot_id"]))
+            estimate = audit.get("planner_token_reduction_estimate")
+            if type(estimate) is int and estimate >= 0:
+                result["planner_token_reduction_estimate"] += estimate
+        result["audited_calls"] += 1
+    result["snapshots_used"] = len(snapshots)
+    result["intervention_observed"] = any(result[name] > 0 for name in
+        ("masked_observations", "dropped_groups", "snapshots_used", "native_compactions"))
+    result["reasons"] = sorted(set(reasons))
+    if not reasons and result["audited_calls"] == len(started) and started:
+        result["status"] = "observed" if result["intervention_observed"] else "none"
+    return result

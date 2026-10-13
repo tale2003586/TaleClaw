@@ -7,7 +7,7 @@ from typing import Any
 
 from config import WORKDIR
 from runtime.tooling.signature import tool_call_signature, tool_result_hash
-from tools.executor import HookOutcome, ToolExecutionRequest, ToolExecutionResult, ToolHook
+from tools.executor import HookOutcome, ToolExecutionRequest, ToolExecutionResult, ToolHook, ToolHandlerOutput
 
 
 class TaskStateLifecycleGuardHook(ToolHook):
@@ -174,13 +174,36 @@ class ToolLoopGuardHook(ToolHook):
         self._result_hash_counts: dict[str, dict[str, int]] = {}
         self._result_cache: dict[str, dict[str, str]] = {}
         self._cached_repeat_counts: dict[str, dict[str, int]] = {}
+        self._metadata_caches: dict[str, dict] = {}
+        self._snapshot_generations: dict[str, str] = {}
 
     def matches(self, request: ToolExecutionRequest) -> bool:
         return True
 
     def before(self, request: ToolExecutionRequest) -> HookOutcome:
+        # Evidence recovery has a context-visibility guard of its own. Lifetime
+        # call counts cannot establish that a historical result is still visible.
+        if request.tool_name in {"read_artifact", "retrieve_tool_result"}:
+            return HookOutcome()
         key = request.session_id or "_global"
+        if request.session is not None:
+            generation = str(getattr(request.session, "active_snapshot_id", "") or "")
+            previous = self._snapshot_generations.get(key)
+            if previous is not None and generation != previous:
+                # Compaction can remove the evidence behind prior repetitions.
+                # Retain cached bytes (file hashes are checked on replay), but
+                # restart no-progress accounting for this session's new view.
+                self._recent.pop(key, None)
+                self._recent_tools.pop(key, None)
+                self._result_hash_counts.pop(key, None)
+                self._cached_repeat_counts.pop(key, None)
+            self._snapshot_generations[key] = generation
+        if isinstance(request.metadata, dict):
+            self._metadata_caches[key] = request.metadata
         fingerprint = self._fingerprint(request)
+        # A rejected file-version cache is new information, not another
+        # no-progress attempt. Refresh it before reading repetition counters.
+        cached_output = self._cached_output(key, fingerprint, request)
         recent = self._recent.setdefault(key, deque(maxlen=self.window_size))
         recent_tools = self._recent_tools.setdefault(key, deque(maxlen=self.window_size))
         repeats = sum(1 for item in recent if item == fingerprint)
@@ -188,7 +211,6 @@ class ToolLoopGuardHook(ToolHook):
         recent.append(fingerprint)
         recent_tools.append(request.tool_name)
 
-        cached_output = self._cached_output(key, fingerprint, request)
         if cached_output is not None:
             counts = self._cached_repeat_counts.setdefault(key, {})
             count = counts.get(fingerprint, 0) + 1
@@ -228,12 +250,21 @@ class ToolLoopGuardHook(ToolHook):
         request: ToolExecutionRequest,
         result: ToolExecutionResult,
     ) -> HookOutcome | None:
+        if (request.tool_name not in _CACHE_REPLAY_TOOLS
+                and result.effect_state not in {"not_started", "no_effect"}):
+            # Arbitrary shell/plugins can affect any cached path, even when they
+            # fail. No parameter hash can establish that files stayed unchanged.
+            self._result_cache.clear()
+            self._cached_repeat_counts.clear()
+            self._result_hash_counts.clear()
+            for metadata in self._metadata_caches.values():
+                metadata.pop(_TOOL_RESULT_CACHE_KEY, None)
         if request.tool_name not in _RESULT_HASH_TOOLS:
             return None
         if result.status != "success":
             return None
         if request.tool_name in _CACHE_REPLAY_TOOLS:
-            self._store_result(request, result.output)
+            self._store_result(request, result)
         output_hash = _output_hash(result.output)
         if not output_hash:
             return None
@@ -254,11 +285,16 @@ class ToolLoopGuardHook(ToolHook):
         return None
 
     def reset_turn(self, session_id: str) -> None:
+        self._snapshot_generations.pop(session_id or "_global", None)
         self._recent.pop(session_id or "_global", None)
         self._recent_tools.pop(session_id or "_global", None)
         self._result_hash_counts.pop(session_id or "_global", None)
         self._result_cache.pop(session_id or "_global", None)
         self._cached_repeat_counts.pop(session_id or "_global", None)
+        metadata = self._metadata_caches.pop(session_id or "_global", None)
+        if metadata is not None:
+            # The user or another process may have changed files between turns.
+            metadata.pop(_TOOL_RESULT_CACHE_KEY, None)
 
     def _fingerprint(self, request: ToolExecutionRequest) -> str:
         return tool_call_signature(request.tool_name, request.arguments)
@@ -273,7 +309,9 @@ class ToolLoopGuardHook(ToolHook):
             return None
         cached = self._result_cache.get(session_key, {}).get(fingerprint)
         if cached:
-            return cached
+            if self._file_cache_current(request, cached):
+                return cached
+            self._discard_stale_file_cache(session_key, fingerprint, request)
         metadata = request.metadata if isinstance(request.metadata, dict) else {}
         cache = metadata.get(_TOOL_RESULT_CACHE_KEY)
         if not isinstance(cache, dict):
@@ -285,9 +323,51 @@ class ToolLoopGuardHook(ToolHook):
         if not output:
             return None
         step = cached_entry.get("step")
-        return f"[tool-cache] already read at step {step}; unchanged.\n{output}"
+        output = ToolHandlerOutput(
+            f"[tool-cache] already read at step {step}; unchanged.\n{output}",
+            metadata=cached_entry.get("result_metadata") or {}, effect_state="no_effect",
+        )
+        if self._file_cache_current(request, output):
+            return output
+        self._discard_stale_file_cache(session_key, fingerprint, request)
+        return None
 
-    def _store_result(self, request: ToolExecutionRequest, output: str) -> None:
+    def _discard_stale_file_cache(self, session_key, fingerprint, request) -> None:
+        self._result_cache.get(session_key, {}).pop(fingerprint, None)
+        self._cached_repeat_counts.get(session_key, {}).pop(fingerprint, None)
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        cache = metadata.get(_TOOL_RESULT_CACHE_KEY)
+        if isinstance(cache, dict):
+            cache.pop(fingerprint, None)
+        # Scope the reset to the session whose observed file version changed.
+        # Removing the stale entry also prevents failed rereads from repeatedly
+        # resetting the guard against the same unusable cached observation.
+        self._recent.pop(session_key, None)
+        self._recent_tools.pop(session_key, None)
+        self._result_hash_counts.pop(session_key, None)
+
+    def _file_cache_current(self, request: ToolExecutionRequest, output: str) -> bool:
+        if request.tool_name not in {"read_file", "read_files"} or request.session is None:
+            return True
+        observations = getattr(output, "metadata", {}).get("file_observations") or []
+        if not observations:
+            return False
+        from hashlib import sha256
+        import stat
+        from runtime.workspace import safe_workspace_path, workspace_root_for_session
+        try:
+            root = workspace_root_for_session(request.session).resolve()
+            for item in observations:
+                path = safe_workspace_path(item["path"], session=request.session)
+                if (str(root) != item["workspace_root"] or not stat.S_ISREG(path.stat().st_mode)
+                        or sha256(path.read_bytes()).hexdigest() != item["sha256"]):
+                    return False
+        except (OSError, ValueError, TypeError, KeyError):
+            return False
+        return True
+
+    def _store_result(self, request: ToolExecutionRequest, result: ToolExecutionResult) -> None:
+        output = ToolHandlerOutput(result.output, metadata=result.metadata, effect_state="no_effect")
         if not output or result_is_error(output) or _LOOP_GUARD_WARNING in output:
             return
         key = request.session_id or "_global"
@@ -295,13 +375,14 @@ class ToolLoopGuardHook(ToolHook):
         self._result_cache.setdefault(key, {})[fingerprint] = output
 
     def _with_repeat_warning(self, output: str) -> str:
-        return (
+        return ToolHandlerOutput(
             f"{output.rstrip()}\n\n"
             "[tool-loop-guard] You are repeating the exact same tool call. "
             "This result was replayed from cache instead of executing the tool "
             "again. Change strategy now: use the cached information, inspect a "
             "different path/query/offset, or summarize and conclude. If you "
-            "repeat this exact call again, the loop will be stopped."
+            "repeat this exact call again, the loop will be stopped.",
+            metadata=dict(getattr(output, "metadata", {}) or {}), effect_state="no_effect",
         )
 
 
@@ -355,6 +436,9 @@ class ToolTraceHook(ToolHook):
             "call_id": request.call_id,
             "tool_name": request.tool_name,
             "status": result.status,
+            "exit_code": result.exit_code,
+            "effect_state": result.effect_state,
+            "error_type": result.error_type,
             "final_arguments": result.final_arguments,
             "result_preview": str(result.output)[:500],
         })

@@ -11,7 +11,7 @@ from models.provider import LLMResponse
 from tests.fakes.in_memory_memory_repository import InMemoryMemoryRepository
 
 
-def test_extraction_accepts_evidence_location_revision_and_verification() -> None:
+def test_extraction_accepts_evidence_but_rejects_model_verification() -> None:
     class Provider:
         def chat(self, **kwargs):
             return LLMResponse(content=json.dumps({
@@ -37,7 +37,7 @@ def test_extraction_accepts_evidence_location_revision_and_verification() -> Non
     assert candidate.evidence_file == "tests/conftest.py"
     assert candidate.evidence_location == "fixture database"
     assert candidate.code_revision == "abc123"
-    assert candidate.verified
+    assert candidate.verified is False
 
 
 def test_old_evidence_field_remains_compatible() -> None:
@@ -91,9 +91,12 @@ def test_coding_promotion_creates_project_candidate_without_pending_markdown(tmp
         repository_revision="fallback-revision",
     )
 
-    assert result.promoted == [candidate]
+    assert result.promoted == []
+    assert result.proposed == [candidate]
     item = next(iter(repository.items.values()))
-    assert item.status is MemoryStatus.ACTIVE
+    assert item.status is MemoryStatus.CANDIDATE
+    assert result.proposal_ids == [item.id]
+    assert repository.outbox == {}
     assert item.owner_scope is MemoryOwnerScope.PROJECT
     assert item.owner_id == "/workspace/a/repository"
     evidence = repository.list_evidence(item.id)[0]
@@ -101,8 +104,9 @@ def test_coding_promotion_creates_project_candidate_without_pending_markdown(tmp
     assert evidence.task_id == "coding-a"
     assert evidence.workspace_id == "/workspace/a"
     assert evidence.project_id == "/workspace/a/repository"
-    assert evidence.metadata["code_revision"] == "abc123"
-    assert evidence.metadata["verified"] is True
+    assert evidence.metadata["code_revision"] == "fallback-revision"
+    assert evidence.metadata["claimed_code_revision"] == "abc123"
+    assert evidence.metadata["verified"] is False
 
 
 def test_model_cannot_override_trusted_coding_owner(tmp_path: Path) -> None:

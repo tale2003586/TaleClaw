@@ -45,6 +45,7 @@ export interface SessionDto {
   channel?: string;
   title?: string;
   active_agent?: string;
+  metadata?: Record<string, unknown>;
   updated_at?: string;
   messages?: MessageDto[];
   message_page?: {
@@ -217,4 +218,90 @@ export interface AsyncState<T> {
   data: T | null;
   error: string;
   updatedAt: number | null;
+}
+
+
+export interface SkillSummary {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  valid: boolean;
+  diagnostics: string[];
+  revision: string;
+  path: string;
+  tags: string[];
+  triggers: string[];
+  applies_to: string[];
+  requires_tools: string[];
+}
+
+export interface SkillCatalogResponse {
+  skills: SkillSummary[];
+  revision: string;
+}
+
+export interface SkillDetailResponse {
+  id: string;
+  content: string;
+  revision: string;
+}
+
+export type ChatRunStatus = "queued" | "running" | "cancelling" | "completed" | "stopped" | "failed" | "interrupted";
+export interface WorkspaceBinding {
+  worktree_id?: string;
+  repo_id?: string;
+  source_root?: string;
+  workspace_root?: string;
+  branch?: string;
+  base_commit?: string;
+  task_id?: string;
+  status?: string;
+  dirty_source_excluded?: boolean;
+  dirty?: boolean;
+  head_commit?: string;
+}
+export interface ChatRunDto {
+  run_id: string;
+  session_id: string;
+  status: ChatRunStatus;
+  created_at: string;
+  updated_at: string;
+  last_seq: number;
+  error?: string;
+  reply?: string;
+  workspace?: WorkspaceBinding | null;
+  task_id?: string;
+}
+export interface CodingTaskRequest {
+  mode: "new" | "continue" | "branch";
+  task_id?: string;
+  workspace_mode?: "worktree" | "in_place";
+  base_ref?: string;
+}
+export interface ChatRunRequest {
+  session_id: string;
+  message: string;
+  workspace_root?: string;
+  attachments?: string[];
+  thinking_enabled?: boolean;
+  model_profile?: string;
+  coding_task?: CodingTaskRequest;
+}
+export type ChatRunEvent = ChatStreamEvent & { seq: number; run_id: string; session_id: string };
+
+export interface CodingDelivery {
+  id: string;
+  source_worktree_id: string;
+  candidate_sha: string;
+  target_ref: string;
+  target_sha: string;
+  status: "preparing" | "prepared" | "conflict" | "verifying" | "verified" | "failed" | "interrupted" | "stale" | "published";
+  conflicts?: string[];
+  error?: string;
+  branch?: string;
+  ref?: string;
+  published_ref?: string;
+  workspace_root?: string;
+  verification?: { command?: string; exit_code?: number | null; status?: string; output?: string; passed?: boolean } | null;
 }

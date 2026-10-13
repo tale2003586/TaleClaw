@@ -54,12 +54,12 @@ class ParallelTasksTests(unittest.TestCase):
         results = run_parallel_tasks(runner=runner, tasks=tasks, max_workers=20)
 
         self.assertEqual(MAX_PARALLEL_SUBTASKS, len(results))
-        self.assertEqual(MAX_PARALLEL_SUBTASKS + 1, len(runner.calls))
+        self.assertEqual(MAX_PARALLEL_SUBTASKS, len(runner.calls))
         self.assertFalse(results[3]["success"])
         self.assertIn("RuntimeError", results[3]["error"])
         self.assertEqual(SubagentFailureReason.INTERNAL_ERROR.value, results[3]["failure_reason"])
         self.assertEqual("failed", results[3]["status"])
-        self.assertEqual(1, results[3]["retry_count"])
+        self.assertEqual(0, results[3]["retry_count"])
 
     def test_timeout_returns_structured_error_without_waiting_forever(self) -> None:
         runner = FakeRunner(delay=0.03)

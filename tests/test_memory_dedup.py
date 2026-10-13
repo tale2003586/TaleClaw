@@ -1,6 +1,6 @@
 import unittest
 
-from memory.dedup import is_duplicate_memory, is_semantic_duplicate
+from memory.dedup import is_semantic_duplicate
 
 
 class MemoryDedupTests(unittest.TestCase):
@@ -11,11 +11,6 @@ class MemoryDedupTests(unittest.TestCase):
                 "Use pytest to run tests",
             )
         )
-
-    def test_duplicate_memory_uses_semantic_fallback(self) -> None:
-        existing = "- Use pytest to run tests\n"
-
-        self.assertTrue(is_duplicate_memory("Use pytest for testing", existing))
 
 
 if __name__ == "__main__":

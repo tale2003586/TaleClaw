@@ -4,6 +4,7 @@ import type { LucideIcon } from "lucide-react";
 import { useAppContext } from "../app/contexts";
 import { useTheme } from "../hooks/useTheme";
 import { Button, PageHeader } from "../components/ui";
+import SkillsSettings from "../components/SkillsSettings";
 
 export default function SettingsPage() {
   const { user, health, codingWorkspace, setCodingWorkspace } = useAppContext();
@@ -24,7 +25,7 @@ export default function SettingsPage() {
   };
 
   return <div className="page settings-page">
-    <PageHeader eyebrow="Preferences" title="设置" description="管理当前浏览器的界面主题和工作区偏好。" />
+    <PageHeader eyebrow="Preferences" title="设置" description="管理浏览器偏好及服务端共享技能。" />
     <div className="page-body settings-body">
       {notice && <div className="settings-success" role="status"><Check aria-hidden="true" /><span>{notice}</span></div>}
       <div className="settings-grid">
@@ -42,6 +43,7 @@ export default function SettingsPage() {
             <div className="workspace-setting-meta"><span>服务端默认：<code>{serverWorkspace || "未配置"}</code></span><div className="button-row"><Button type="button" onClick={resetWorkspace}><RotateCcw aria-hidden="true" size={14} />恢复默认</Button><Button className="primary" type="submit" disabled={workspace.trim() === codingWorkspace.trim()}>保存工作区</Button></div></div>
           </form>
         </SettingsCard>
+        <SkillsSettings canManage={user.role === "admin"} />
       </div>
     </div>
   </div>;

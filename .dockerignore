@@ -13,6 +13,7 @@ __pycache__
 .gateway
 .evals
 .runs
+.worktree_data
 .users
 storage
 qdrant_storage

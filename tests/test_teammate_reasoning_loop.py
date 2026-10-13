@@ -37,7 +37,7 @@ class TeammateToolRegistryTests(unittest.TestCase):
         self.assertIn("idle", visible)
         self.assertIn("rg", visible)
         self.assertIn("read_file", visible)
-        self.assertIn("send_message", visible)
+        self.assertNotIn("send_message", visible)
         self.assertIn("tool_search", visible)
         self.assertIn("bash", visible)
         self.assertEqual(
@@ -46,7 +46,7 @@ class TeammateToolRegistryTests(unittest.TestCase):
                 session=session,
                 mode="teammate",
             ),
-            "Unknown tool: spawn_teammate",
+            "Unscoped background/team execution is disabled.",
         )
 
         output = registry.execute(

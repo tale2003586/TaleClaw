@@ -60,7 +60,9 @@ def _tool_response(index: int, name: str = "echo") -> LLMResponse:
 
 def _spec(name: str, exposure: ToolExposure, **kwargs) -> ToolSpec:
     return ToolSpec(
-        schema=function_tool(name, f"Use {name} capability.", {}, []),
+        schema=function_tool(name, f"Use {name} capability.",
+                             {"query": {"type": "string"}} if name == "tool_search" else {},
+                             ["query"] if name == "tool_search" else []),
         handler=lambda **_: "ok",
         allowed_modes=frozenset({"coding"}),
         exposure=exposure,

@@ -11,7 +11,7 @@ from runtime.sessions.session import Session
 
 class ContextInstructionCacheTests(unittest.TestCase):
     def test_instruction_file_uses_mtime_cache(self) -> None:
-        ContextBuilder._instruction_cache.clear()
+        PromptAssetsService._instruction_cache.clear()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             instruction = root / "AGENTS.md"
@@ -35,7 +35,7 @@ class ContextInstructionCacheTests(unittest.TestCase):
             self.assertIn("cached project rules", second.messages[0]["content"])
 
     def test_explicit_prefix_reuses_stable_instruction_block(self) -> None:
-        ContextBuilder._instruction_cache.clear()
+        PromptAssetsService._instruction_cache.clear()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             instruction = root / "AGENTS.md"
@@ -68,7 +68,7 @@ class ContextInstructionCacheTests(unittest.TestCase):
             )
 
     def test_prefix_cache_invalidates_when_instruction_file_changes(self) -> None:
-        ContextBuilder._instruction_cache.clear()
+        PromptAssetsService._instruction_cache.clear()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             instruction = root / "AGENTS.md"

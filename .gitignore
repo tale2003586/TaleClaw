@@ -20,6 +20,7 @@ node_modules/
 .tool_results/
 .users/
 .runs/
+.worktree_data/
 .evals/
 .backup/
 storage/
@@ -58,3 +59,9 @@ job-search-cases/
 hfd.sh*
 gpt-*.json
 security_rag_eval.jsonl
+
+# Local validation outputs (keep code and documentation tracked)
+/docs/workplan/evidence/
+/docs/agent-design-review/implementation/evidence/
+/research/hybrid_routing/results/
+/os

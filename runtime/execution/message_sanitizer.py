@@ -133,7 +133,9 @@ def _summarize_invalid_tool_call_group(
         if len(tool_text) > 300:
             tool_text = tool_text[:297].rstrip() + "..."
         lines.append(f"Tool result {tool_message.get('tool_call_id')}: {tool_text}")
-    return {"role": "user", "content": "\n".join(lines)}
+    return {"role": "user", "content": "\n".join(lines), "metadata": {
+        "source": "runtime-generated", "kind": "tool_protocol_summary", "instructions": False,
+    }}
 
 
 def _summarize_orphan_tool_result(message: dict) -> dict:
@@ -142,6 +144,7 @@ def _summarize_orphan_tool_result(message: dict) -> dict:
         content = content[:497].rstrip() + "..."
     return {
         "role": "user",
+        "metadata": {"source": "runtime-generated", "kind": "tool_protocol_summary", "instructions": False},
         "content": (
             "[Context sanitizer note: an orphan tool result was converted to plain text before the model call.]\n"
             f"tool_call_id={message.get('tool_call_id')}\n"

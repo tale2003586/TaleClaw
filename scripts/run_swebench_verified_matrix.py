@@ -21,6 +21,7 @@ RUN_SWEBENCH_VERIFIED = ROOT / "scripts" / "run_swebench_verified.py"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from evaluation.provenance import evaluation_manifest  # noqa: E402
 from evaluation.swebench_adapter import (  # noqa: E402
     DEFAULT_GIT_TIMEOUT_SECONDS,
     DEFAULT_SWEBENCH_REPO_CACHE_ROOT,
@@ -31,13 +32,13 @@ from scripts.run_coding_agent_matrix import (  # noqa: E402
     RATIO_METRIC_KEYS,
     SUM_METRIC_KEYS,
     dimension_text,
-    divide,
+    divide as _divide,
     env_value,
     escape_cell,
     expand_agent_feature_cells,
     expand_variant_cells,
     format_duration,
-    format_value,
+    format_value as _format_value,
     merge_dicts,
     merge_env,
     normalize_number,
@@ -45,6 +46,19 @@ from scripts.run_coding_agent_matrix import (  # noqa: E402
     slug,
     unique_id,
 )
+
+from evaluation.outcomes import token_summary, verification_outcome
+from scripts.run_swebench_verified import summarize_rows as summarize_verified_rows
+
+
+def divide(numerator: Any, denominator: Any) -> int | float | None:
+    if numerator is None or not denominator:
+        return None
+    return _divide(numerator, denominator)
+
+
+def format_value(value: Any, metric: str) -> str:
+    return "unknown" if value is None else _format_value(value, metric)
 
 
 DEFAULT_OUTPUT_ROOT = ".evals/swebench_verified_matrix"
@@ -150,6 +164,11 @@ def main(argv: list[str] | None = None) -> int:
 
     payload: dict[str, Any] = {
         "schema_version": 1,
+        "manifest": evaluation_manifest(
+            dataset_path=Path(args.config) if args.config else None,
+            configuration={"model_purpose": "coding", "cell_ids": [cell["cell_id"] for cell in cells]},
+            input_records=cells,
+        ),
         "matrix_id": matrix_id,
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "matrix_root": str(matrix_root),
@@ -571,7 +590,7 @@ def build_cell_result(
     dry_run: bool = False,
 ) -> dict[str, Any]:
     rows = list(batch_payload.get("rows") or [])
-    batch_summary = dict(batch_payload.get("summary") or {})
+    batch_summary = {**dict(batch_payload.get("summary") or {}), **summarize_verified_rows(rows)}
     run_metrics = collect_run_metrics(rows)
     instance_count = int(batch_summary.get("total") or len(rows) or 0)
     metrics = {
@@ -580,9 +599,9 @@ def build_cell_result(
         "pass_rate": numeric(batch_summary.get("agent_pass_rate")),
         "agent_pass_rate": numeric(batch_summary.get("agent_pass_rate")),
         "wall_duration_ms": wall_duration_ms,
-        "avg_total_tokens_per_instance": divide(run_metrics.get("total_tokens", 0), instance_count),
-        "avg_input_tokens_per_instance": divide(run_metrics.get("input_tokens", 0), instance_count),
-        "avg_output_tokens_per_instance": divide(run_metrics.get("output_tokens", 0), instance_count),
+        "avg_total_tokens_per_instance": divide(run_metrics.get("total_tokens"), instance_count),
+        "avg_input_tokens_per_instance": divide(run_metrics.get("input_tokens"), instance_count),
+        "avg_output_tokens_per_instance": divide(run_metrics.get("output_tokens"), instance_count),
         "avg_tool_calls_per_instance": divide(run_metrics.get("tool_calls", 0), instance_count),
         "avg_model_calls_per_instance": divide(run_metrics.get("model_calls", 0), instance_count),
         "avg_wall_duration_ms_per_instance": divide(wall_duration_ms, instance_count),
@@ -593,8 +612,12 @@ def build_cell_result(
         status = "error"
     elif int(batch_summary.get("errors") or 0) > 0:
         status = "error"
-    elif int(batch_summary.get("agent_failed") or 0) > 0:
+    elif int(batch_summary.get("verification_failed") or 0) > 0:
         status = "fail"
+    elif not rows or int(batch_summary.get("verification_inconclusive") or 0) > 0:
+        status = "inconclusive"
+    elif int(batch_summary.get("verification_not_run") or 0) > 0:
+        status = "not_run"
     else:
         status = "pass"
 
@@ -662,6 +685,14 @@ def collect_run_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     result["models"] = sorted(models)
     result["tools"] = sorted(tools)
     result["missing_metrics_files"] = missing
+    result.update(token_summary(rows))
+    for key in ("input_tokens", "output_tokens"):
+        if not rows or any(
+            (row.get("metrics") or {}).get(key) is None
+            or (row.get("metrics") or {}).get("usage_status") in {"unknown", "partial"}
+            for row in rows
+        ):
+            result[key] = None
     return result
 
 
@@ -669,21 +700,24 @@ def collect_instance_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     task_rows = []
     for row in rows:
         metrics = row.get("metrics") or {}
-        status = str(row.get("status") or "")
+        outcome = verification_outcome(row)
+        status = "error" if row.get("status") == "error" else outcome
         task_rows.append({
             "id": row.get("instance_id", ""),
             "repo": row.get("repo", ""),
             "base_commit": row.get("base_commit", ""),
             "status": status,
-            "passed": status == "pass",
+            "passed": outcome == "pass" if outcome in {"pass", "fail"} else None,
+            "execution_status": row.get("execution_status", row.get("run_status", "unknown")),
+            "verification": row.get("verification") or {"outcome": "not_run", "reason": "legacy_unverified"},
             "error": row.get("error", ""),
             "duration_ms": row.get("duration_ms", 0),
             "patch_bytes": row.get("patch_bytes", 0),
             "tool_calls": metrics.get("tool_calls", 0),
             "model_calls": metrics.get("model_calls", 0),
-            "input_tokens": metrics.get("input_tokens", 0),
-            "output_tokens": metrics.get("output_tokens", 0),
-            "total_tokens": metrics.get("total_tokens", 0),
+            "input_tokens": metrics.get("input_tokens"),
+            "output_tokens": metrics.get("output_tokens"),
+            "total_tokens": metrics.get("total_tokens"),
             "tool_failures": metrics.get("tool_failures", 0),
             "tool_denials": metrics.get("tool_denials", 0),
             "workspace": row.get("workspace", ""),
@@ -714,9 +748,15 @@ def summarize_matrix(cells: list[dict[str, Any]]) -> dict[str, Any]:
         "failed_cells": len(failed),
         "error_cells": len(errors),
         "planned_cells": len(planned),
+        "unverified_cells": sum(cell.get("status") in {"not_run", "inconclusive"} for cell in cells),
         "cell_pass_rate": divide(len(passed), len(completed)),
         "wall_duration_ms": normalize_number(wall_duration_ms),
-        **{f"sum_{key}": normalize_number(value) for key, value in totals.items()},
+        **{f"sum_{key}": (
+            None if key in {"input_tokens", "output_tokens", "total_tokens"}
+            and (not cells or any((cell.get("metrics") or {}).get(key) is None for cell in cells))
+            else normalize_number(value)
+        ) for key, value in totals.items()},
+        "known_total_tokens": token_summary(cells)["known_total_tokens"],
     }
 
 

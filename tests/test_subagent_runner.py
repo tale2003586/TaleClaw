@@ -279,7 +279,7 @@ def _registry(read_file_handler=None) -> ToolRegistry:
     ]:
         handler = read_file_handler if name == "read_file" and read_file_handler else (lambda **kwargs: "ok")
         registry.register(ToolSpec(
-            schema=function_tool(name, f"{name} tool", {}, []),
+            schema=function_tool(name, f"{name} tool", {"path": {"type": "string"}} if name == "read_file" else {}, []),
             handler=handler,
             allowed_modes=frozenset({"coding"}),
         ))

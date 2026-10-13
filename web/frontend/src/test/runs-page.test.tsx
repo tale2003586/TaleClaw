@@ -36,6 +36,16 @@ const controller = {
 vi.mock("../hooks/useRuns", () => ({ useRuns: () => controller }));
 
 describe("RunsPage subagent hierarchy", () => {
+  it("offers the full background run lifecycle in the status filter", async () => {
+    const user = userEvent.setup();
+    render(<RunsPage />);
+    const filter = screen.getByRole("combobox", { name: "状态筛选" });
+    for (const status of ["queued", "cancelling", "interrupted"]) {
+      await user.selectOptions(filter, status);
+      expect(filter).toHaveValue(status);
+      expect(screen.getByText("没有匹配状态")).toBeInTheDocument();
+    }
+  });
   it("shows a parent summary and lazily renders folded child events", async () => {
     const user = userEvent.setup();
     render(<RunsPage />);

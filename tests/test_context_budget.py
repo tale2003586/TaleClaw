@@ -28,7 +28,7 @@ class ContextBudgetTests(unittest.TestCase):
             {
                 "CONTEXT_ENABLE_SECTION_BUDGET": "",
                 "CONTEXT_MEMORY_BUDGET": "",
-                "CONTEXT_RETRIEVED_HISTORY_BUDGET": "",
+                "CONTEXT_EPISODIC_HISTORY_BUDGET": "",
                 "CONTEXT_SECURITY_KNOWLEDGE_BUDGET": "",
                 "CONTEXT_TASK_RUNTIME_EVENTS_BUDGET": "",
                 "CONTEXT_CONVERSATION_HISTORY_BUDGET": "",
@@ -40,7 +40,7 @@ class ContextBudgetTests(unittest.TestCase):
 
         self.assertTrue(budgeter.enabled)
         self.assertEqual(2000, budgeter.rules["memory"].budget_chars)
-        self.assertEqual(2500, budgeter.rules["retrieved_history"].budget_chars)
+        self.assertEqual(2500, budgeter.rules["episodic_history"].budget_chars)
         self.assertEqual(3000, budgeter.rules["security_knowledge"].budget_chars)
         self.assertEqual(1500, budgeter.rules["task_runtime_events"].budget_chars)
         self.assertEqual(16000, budgeter.rules["conversation_history"].budget_chars)

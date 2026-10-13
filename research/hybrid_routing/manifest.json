@@ -1,0 +1,17 @@
+{
+  "schema_version": "route_manifest.v1",
+  "dataset": "pilot.jsonl",
+  "sha256": "920d95b3748a6ced1110097ff7614e48d897216384ea3104d474e4d7f1973068",
+  "rows": 64,
+  "families": 32,
+  "source": "original_synthetic",
+  "label_origin": "single author; not independently adjudicated",
+  "privacy": "No production logs, private files, credentials, or personal data used.",
+  "split": "family grouped and label stratified; seed routing-pilot-v1; train20/dev6/test6 families",
+  "frozen_baselines": [
+    "rule_v1",
+    "char_ngram_logistic_v1"
+  ],
+  "purpose": "pipeline smoke and exploratory baseline only; not deployment evidence",
+  "created": "2026-09-27"
+}

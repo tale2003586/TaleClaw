@@ -7,7 +7,7 @@ from applications.app_runtime import AppRuntime
 from gateway.feishu.adapter import FeishuGateway
 from gateway.telegram.client import TelegramBotApiClient
 from models.provider import OpenAICompatibleProvider
-from web.server import AgentService
+from web.agent_service import AgentService
 
 
 class ModelError(RuntimeError):
@@ -171,63 +171,52 @@ class AsyncRuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AgentServiceLifecycleTests(unittest.TestCase):
-    def test_stop_cancels_request_and_waits_for_finally(self) -> None:
-        request_started = threading.Event()
-        request_finalized = threading.Event()
-
-        class Runtime:
-            def __init__(self):
-                self.coordinator = SimpleNamespace(
-                    sessions=SimpleNamespace(close=lambda: None)
-                )
-
-            def start(self):
-                pass
-
-            async def stop(self):
-                pass
-
-        class Service(AgentService):
-            async def _start_async(self):
-                self._runtime = Runtime()
-                self._session_locks = {}
-                self._runtime.start()
-
-        async def request():
-            request_started.set()
+    def test_stop_confirms_real_worker_exit_and_is_idempotent(self) -> None:
+        import json
+        from pathlib import Path
+        import tempfile
+        import time
+        with tempfile.TemporaryDirectory() as root:
+            service = AgentService(root=root, worker_target="tests.run_worker_fakes:run_fake")
+            run = service.submit(session_id="a", content="wait:" + str(Path(root) / "release"),
+                                 user_id="local", request_id="first")
             try:
-                await asyncio.Event().wait()
+                deadline = time.monotonic() + 5
+                while not any(event["type"] == "delta" for event in service.events_after(run["run_id"], user_id="local")):
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.01)
             finally:
-                request_finalized.set()
+                service.stop()
+                service.stop()
+            self.assertFalse(service._thread.is_alive())
+            self.assertFalse(service._workers)
+            persisted = json.loads((Path(root) / run["run_id"] / "run_state.json").read_text())
+            self.assertEqual("stopped", persisted["status"])
+            self.assertFalse(persisted["metadata"]["background_execution"]["quarantined"])
+            replacement = AgentService(root=root, worker_target="tests.run_worker_fakes:run_fake")
+            try:
+                replacement.ensure_started()  # OS ownership was released only after cleanup.
+            finally:
+                replacement.stop()
 
-        service = Service()
-        service.ensure_started()
-        future = service._submit(request())
-        self.assertTrue(request_started.wait(timeout=2))
-
-        service.stop()
-        service.stop()
-
-        self.assertTrue(request_finalized.is_set())
-        self.assertTrue(future.done())
-        self.assertFalse(service._thread.is_alive())
-        self.assertIsNone(service._loop)
-
-    def test_startup_error_is_not_replaced_by_cleanup_error(self) -> None:
-        class Service(AgentService):
-            async def _start_async(self):
-                raise ModelError("first model failure")
-
-            async def _stop_async(self):
-                raise RuntimeError("secondary cleanup failure")
-
-        service = Service()
-
-        with self.assertRaises(RuntimeError) as caught:
-            service.ensure_started()
-
-        self.assertIsInstance(caught.exception.__cause__, ModelError)
-        self.assertEqual("first model failure", str(caught.exception.__cause__))
+    def test_worker_failure_keeps_primary_error_and_supervisor_available(self) -> None:
+        import tempfile
+        import time
+        with tempfile.TemporaryDirectory() as root:
+            service = AgentService(root=root, worker_target="tests.run_worker_fakes:run_fake")
+            try:
+                run = service.submit(session_id="a", content="error", user_id="local", request_id="bad")
+                deadline = time.monotonic() + 5
+                while True:
+                    state = service.get_run(run["run_id"], user_id="local")
+                    if state["status"] == "failed":
+                        break
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.01)
+                self.assertIn("fake primary model failure", state["error"])
+                self.assertEqual("reply:hello", service.ask(session_id="a", content="hello", user_id="local"))
+            finally:
+                service.stop()
 
 
 class _Stream:

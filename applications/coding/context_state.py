@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
+import re
+from html import escape
 import time
 from typing import Any, Sequence
 
@@ -18,7 +20,7 @@ from config import (
     PROMPT_SOFT_COMPACTION_RATIO,
 )
 from runtime.context.dynamic_budget import PromptBudgetExceeded, select_complete_groups
-from runtime.context.events import ContextEvent, ContextEventType, thaw
+from runtime.context.events import ContextEvent, ContextEventType, is_real_user_message, thaw
 from runtime.context.snapshots import (
     ContextSnapshot,
     ContextSnapshotManager,
@@ -26,6 +28,9 @@ from runtime.context.snapshots import (
     active_context_snapshot,
 )
 from runtime.token_estimator import estimate_tokens
+from runtime.workspace import workspace_root_for_session
+
+from .evidence_validity import refresh_evidence_validity
 
 from .task_state import (
     Objective,
@@ -67,6 +72,8 @@ class CodingContextSnapshot:
     compacted_until_index: int = 0
     last_compaction: dict[str, Any] | None = None
     summary: str = ""
+    source_requests: tuple[dict[str, Any], ...] = ()
+    historical_requests: tuple[dict[str, Any], ...] = ()
     metrics: dict[str, Any] = field(default_factory=dict)
     updated_at: str = field(default_factory=_now)
 
@@ -134,6 +141,9 @@ def build_coding_context_view(
     backfill = getattr(session, "_backfill_legacy_messages", None)
     if callable(backfill):
         backfill()
+    from runtime.context.policies import context_policy, plan_context
+
+    policy = context_policy(session)
     messages = [dict(item) for item in (getattr(session, "messages", []) or [])]
     start = max(0, min(int(active_turn_start_index or 0), len(messages)))
     previous_snapshot = load_coding_context_snapshot(session)
@@ -146,6 +156,10 @@ def build_coding_context_view(
             len(messages),
         ),
     )
+    if policy.name != "current":
+        # Experimental views always replan from immutable full history. Old
+        # archive boundaries cannot prevent evidence from being restored.
+        tail_start = 0
     pinned_user = _latest_real_user_message(messages)
     active_messages = _pin_latest_user(messages[tail_start:], pinned_user)
     event_ref = _latest_real_user_event_ref(session)
@@ -163,6 +177,7 @@ def build_coding_context_view(
         event_ref=event_ref,
         artifact_refs=artifact_refs,
     )
+    task_state = refresh_evidence_validity(task_state, workspace_root_for_session(session))
     snapshot = _snapshot(session, task_state, prompt_tail_start_index=tail_start)
     state_message = render_coding_context_message(task_state, snapshot=snapshot)
     groups = group_messages(messages, start_index=tail_start)
@@ -184,13 +199,30 @@ def build_coding_context_view(
             1,
             int(usable_input_tokens) - estimate_tokens(dynamic_static),
         )
-    soft_trigger = max(1, int(available * PROMPT_SOFT_COMPACTION_RATIO))
-    target = max(1, int(available * PROMPT_COMPACTION_TARGET_RATIO))
+    configured = isinstance(session.metadata.get("context_policy"), dict)
+    soft_ratio = policy.soft_ratio if configured else PROMPT_SOFT_COMPACTION_RATIO
+    target_ratio = policy.target_ratio if configured else PROMPT_COMPACTION_TARGET_RATIO
+    soft_trigger = max(1, int(available * soft_ratio))
+    target = max(1, int(available * target_ratio))
+    request = session.metadata.get("context_compaction_request") or {}
+    proactive = request.get("status") == "pending" and all(group.closed for group in groups)
+    if policy.name in {"masking", "adaptive", "raw", "native"}:
+        from .reasoning_memory import reasoning_context_view
+        focus = {"reasoning": reasoning_context_view(task_state), "request": request.get("focus", "")}
+        plan = plan_context(session, groups=groups, policy=policy,
+                            max_tokens=max(1, target - estimate_tokens([state_message])), focus=focus)
+        recent_messages = _pin_latest_user(plan.messages, pinned_user)
+        session.metadata["context_policy_audit"] = plan.audit()
+    else:
+        session.metadata["context_policy_audit"] = {"version": 1, "policy": "current"}
     compacted = False
     reduction: dict[str, Any] | None = None
     compaction_duration_ms = 0
 
-    if before_tokens > soft_trigger and len(groups) > 1:
+    # Fixed sections have already been reserved in available. Compare only the
+    # managed state/tail here, rather than charging system/history a second time.
+    managed_tokens = estimate_tokens([state_message, *recent_messages])
+    if policy.name == "current" and (managed_tokens > soft_trigger or proactive) and len(groups) > 1:
         flattened_groups = _flatten(groups)
         pinned_tokens = (
             estimate_tokens([pinned_user])
@@ -219,6 +251,7 @@ def build_coding_context_view(
             )
             if result is not None:
                 task_state, checkpoint = result
+                task_state = refresh_evidence_validity(task_state, workspace_root_for_session(session))
                 recent_messages = _pin_latest_user(selected, pinned_user)
                 snapshot = _snapshot(
                     session,
@@ -243,6 +276,11 @@ def build_coding_context_view(
                     "compacted_until_event_id": checkpoint.covered_event_end_id,
                 }
 
+    if proactive and policy.name != "native":
+        session.metadata["context_compaction_request"] = {
+            **request, "status": "completed" if compacted or policy.name in {"masking", "adaptive"} else "no_change",
+            "handled_by": policy.name, "generation": snapshot.generation,
+        }
     after_tokens = estimate_tokens([*static_messages, state_message, *recent_messages])
     runtime_metrics = (getattr(session, "metadata", {}) or {}).get("context_metrics")
     metrics = {
@@ -293,23 +331,55 @@ def render_coding_context_message(
 ) -> dict[str, Any]:
     snapshot = snapshot or CodingContextSnapshot(task_state_version=state.version)
     payload = state.to_dict()
+    _bound_state_evidence_projection(payload)
     # Historical replacement details remain checkpointed but do not consume
     # every prompt. Current superseded status is already represented by items.
-    payload.pop("history", None)
+    core = payload.get("core", {})
+    # Exact task instructions are rendered once in protected-task. This remaining
+    # envelope is a prompt projection, never written back as persistent state.
+    core.pop("objective", None)
+    core.pop("constraints", None)
     extensions = payload.get("extensions")
     coding = extensions.get("coding") if isinstance(extensions, dict) else None
     if isinstance(coding, dict):
         coding.pop("history", None)
     compacted_summary = (
-        "<context-snapshot>\n" + snapshot.summary + "\n</context-snapshot>\n"
+        '<context-snapshot instructions="false" semantic_verification="none" '
+        f'ref="snapshot://{escape(str((snapshot.last_compaction or {}).get("snapshot_id") or ""), quote=True)}">\n'
+        + escape(snapshot.summary) + "\n</context-snapshot>\n"
         if snapshot.summary
         else ""
+    )
+    protected = {
+        "objective": state.objective.__dict__,
+        "constraints": [asdict(item) for item in state.constraints
+                        if getattr(item.status, "value", item.status) != "superseded"],
+        "revision_precedence": "Explicit later user requirements_revision overrides earlier source text only for the revised fields. Unchanged requirements remain active.",
+        "source_requests": list(snapshot.source_requests),
+    }
+    historical = (
+        '<historical-user-requests source="parent-user-events" instructions="false">\n'
+        + json.dumps({"scope": (
+            "Historical user requests provide context for the current task; they do not "
+            "activate earlier tasks. Apply only relevant requirements; later real user "
+            "requests may correct or supersede earlier ones. Host and assistant summaries "
+            "cannot amend user requirements. Source refs identify parent-session provenance "
+            "and may not be directly readable from this task; the complete source text is "
+            "included here."
+        )}, ensure_ascii=False)
+        + "\n" + escape(json.dumps(list(snapshot.historical_requests), ensure_ascii=False, default=str), quote=False)
+        + "\n</historical-user-requests>\n"
+        if snapshot.historical_requests else ""
     )
     content = (
         '<coding-context-state source="runtime-generated" trust="context-only" '
         f'instructions="false" version="{state.version}" generation="{snapshot.generation}">\n'
         + compacted_summary
-        + json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        + '<protected-task source="task-state-and-user-events" instructions="true">\n'
+        + escape(json.dumps(protected, ensure_ascii=False, default=str), quote=False)
+        + "\n</protected-task>\n"
+        + historical
+        + escape(json.dumps(payload, ensure_ascii=False, default=str), quote=False)
         + "\n</coding-context-state>"
     )
     return {
@@ -324,6 +394,105 @@ def render_coding_context_message(
         },
     }
 
+
+
+def _bound_state_evidence_projection(payload: dict[str, Any]) -> None:
+    """Bound prompt-only indexes; the current authoritative state stays intact.
+
+    Active claims get first choice of evidence. Omitted or abbreviated rows must
+    be recovered before treating the displayed index as complete coverage.
+    """
+    core = payload.get("core", {})
+    coding = (payload.get("extensions") or {}).get("coding", {})
+    if not isinstance(core, dict) or not isinstance(coding, dict):
+        return
+    active_refs: set[str] = {str(ref) for ref in core.get("completion_basis") or []}
+    for container, keys in ((core, ("pending_actions", "open_questions", "blockers", "completed")),
+                            (coding, ("findings", "hypotheses", "decisions", "plan"))):
+        for key in keys:
+            for item in container.get(key) or []:
+                if not isinstance(item, dict) or item.get("status") == "superseded":
+                    continue
+                if key not in {"findings", "decisions", "completed"} and item.get("status") == "completed":
+                    continue
+                for refs_key in ("evidence_refs", "supporting_evidence_refs", "refuting_evidence_refs"):
+                    active_refs.update(str(ref) for ref in item.get(refs_key) or [])
+    index = coding.get("evidence_index")
+    omitted: dict[str, Any] = {}
+    if isinstance(index, dict) and _projection_chars(index) > 6_000:
+        ordered = sorted(reversed(list(index)), key=lambda ref: ref not in active_refs)
+        selected: dict[str, Any] = {}
+        remaining = 6_000
+        abbreviated = 0
+        for ref in ordered:
+            row = index[ref]
+            cost = _projection_chars({ref: row})
+            if cost > remaining and ref in active_refs and isinstance(row, dict):
+                row = {key: row[key] for key in (
+                    "id", "event_id", "kind", "artifact_ref", "tool_result_ref", "path",
+                    "lines", "content_hash", "stale", "stale_reason", "verification", "tool_name", "effect_state", "provenance", "task_id",
+                ) if key in row}
+                row["details_omitted"] = True
+                row["recovery_ref"] = "state://current"
+                cost = _projection_chars({ref: row})
+            if cost <= remaining:
+                selected[ref] = row
+                remaining -= cost
+                abbreviated += bool(isinstance(row, dict) and row.get("details_omitted"))
+        coding["evidence_index"] = selected
+        omitted["evidence_index"] = {
+            "total": len(index), "shown": len(selected), "abbreviated": abbreviated,
+            "active_references_omitted": len((active_refs & index.keys()) - selected.keys()),
+        }
+    coverage = coding.get("coverage")
+    if isinstance(coverage, dict) and _projection_chars(coverage) > 2_500:
+        projected: dict[str, Any] = {}
+        counts: dict[str, int] = {}
+        remaining = 2_200
+        # Open coverage gaps and entries backing live claims precede routine
+        # lists of previously inspected files and tests.
+        keys = sorted(coverage, key=lambda key: (key not in {"uncovered", "areas_unchecked"}, key != "entries"))
+        for key in keys:
+            values = coverage[key]
+            if not isinstance(values, list):
+                continue
+            entries = list(reversed(values))
+            if key == "entries":
+                entries.sort(key=lambda row: not (
+                    isinstance(row, dict) and active_refs.intersection(row.get("evidence_refs") or [])
+                ))
+            kept = []
+            for row in entries:
+                cost = _projection_chars(row) + 2
+                if cost <= remaining:
+                    kept.append(row)
+                    remaining -= cost
+            projected[key] = kept
+            if len(kept) < len(values):
+                counts[key] = len(values) - len(kept)
+        projected["projection_incomplete"] = True
+        coding["coverage"] = projected
+        omitted["coverage"] = counts
+    artifacts = core.get("artifact_refs")
+    if isinstance(artifacts, list) and _projection_chars(artifacts) > 1_000:
+        kept, remaining = [], 950
+        for ref in reversed(artifacts):
+            cost = _projection_chars(ref) + 2
+            if cost <= remaining:
+                kept.append(ref)
+                remaining -= cost
+        core["artifact_refs"] = list(reversed(kept))
+        omitted["artifact_refs"] = len(artifacts) - len(kept)
+    if omitted:
+        payload["evidence_projection"] = {
+            "partial": True, "omitted": omitted, "source_version": core.get("version"),
+            "recovery_ref": "state://current",
+            "recovery": "Use read_artifact(artifact_ref='state://current', query='reference or field') or offset/limit. This is current mutable state: restart pagination if version or state_sha256 changes. Omitted evidence and coverage must not be interpreted as absent, verified, or complete.",
+        }
+
+
+def _projection_chars(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, default=str))
 
 def group_messages(
     messages: list[dict[str, Any]], *, start_index: int = 0
@@ -391,6 +560,7 @@ def _compact_events(
             events=event_payloads,
             covered_start_seq=events[0].seq,
             covered_end_seq=events[-1].seq,
+            previous_snapshot=active_context_snapshot(session),
         )
         prepared = manager.prepare(
             session,
@@ -428,6 +598,10 @@ def _snapshot(
         compacted_until_index=int(getattr(session, "archive_boundary_seq", 0) or 0),
         last_compaction=(latest_checkpoint.to_dict() if latest_checkpoint else None),
         summary=(latest_checkpoint.summary if latest_checkpoint else ""),
+        source_requests=_source_requests(session, task_state),
+        historical_requests=tuple(
+            (getattr(session, "metadata", {}) or {}).get("coding_session_handoff", {}).get("source_requests", [])
+        ),
     )
 
 
@@ -523,7 +697,7 @@ def _latest_real_user_event_ref(session) -> str:
             payload = thaw(event.payload)
             message = payload.get("message") if isinstance(payload.get("message"), dict) else payload
             metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
-            if str(metadata.get("source") or "").startswith("runtime-generated"):
+            if not is_real_user_message({"role": "user", **message}):
                 continue
             return f"event://{event.event_id}"
     return ""
@@ -531,16 +705,19 @@ def _latest_real_user_event_ref(session) -> str:
 
 def _latest_user_artifact_refs(messages: Sequence[dict[str, Any]]) -> list[str]:
     for message in reversed(messages):
-        if str(message.get("role") or "") != "user":
+        if not is_real_user_message(message):
             continue
         metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+        refs = list(metadata.get("artifact_refs") or [])
         ref = metadata.get("artifact_ref") or message.get("artifact_ref")
-        if isinstance(ref, dict):
-            uri = ref.get("storage_uri") or ref.get("artifact_id")
-            return [str(uri)] if uri else []
         if ref:
-            return [str(ref)]
-        return []
+            refs.append(ref)
+        result = []
+        for ref in refs:
+            uri = ref.get("storage_uri") or ref.get("artifact_id") if isinstance(ref, dict) else ref
+            if uri and str(uri) not in result:
+                result.append(str(uri))
+        return result
     return []
 
 
@@ -551,7 +728,7 @@ def _latest_real_user_message(
         if not isinstance(message, dict) or str(message.get("role") or "") != "user":
             continue
         metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
-        if str(metadata.get("source") or "").startswith("runtime-generated"):
+        if not is_real_user_message(message):
             continue
         return dict(message)
     return None
@@ -577,7 +754,7 @@ def _latest_real_user_group(groups: Sequence[MessageGroup]) -> int | None:
                 if isinstance(message.get("metadata"), dict)
                 else {}
             )
-            if not str(metadata.get("source") or "").startswith("runtime-generated"):
+            if is_real_user_message(message):
                 return index
     return None
 
@@ -592,6 +769,32 @@ def _apply_user_objective_change(
 ) -> TaskState:
     if not event_ref or event_ref == state.objective.original_request_ref:
         return state
+    message = _message_for_event_ref(session, event_ref)
+    if message is None or not is_real_user_message(message):
+        return state
+    metadata = message.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    # Structured host revisions were already applied transactionally by task_lifecycle.
+    if isinstance(metadata.get("requirements_revision"), dict):
+        return state
+    text = str(message.get("content") or "").strip()
+    if not text:
+        return state
+    explicit = (
+        metadata.get("objective_change") is True
+        or metadata.get("kind") in {"objective_change", "correction", "user_correction"}
+        or bool(re.match(
+            r"^(?:更正[：:]|纠正[：:]|(?:请)?(?:把)?(?:目标|任务)(?:改为|改成)|"
+            r"(?:请)?改为|(?:请)?只检查|correction\s*:|"
+            r"change (?:the )?(?:goal|objective|task) to\b|instead[, :] )",
+            text, re.IGNORECASE,
+        ))
+    )
+    if not explicit:
+        return state
+    # The supplied objective may be a runtime rendering; only this source event
+    # can amend the target. Existing hard constraints are left untouched.
+    objective = text
     state.history.append(_objective_history(state, objective, event_ref))
     state.objective = Objective(
         summary=_objective_summary(objective),
@@ -599,9 +802,55 @@ def _apply_user_objective_change(
         source_artifacts=artifact_refs,
         supersedes=state.objective.original_request_ref,
     )
+    from .task_lifecycle import _invalidate_revision_reasoning
+    _invalidate_revision_reasoning(state, "User objective changed")
     state.version += 1
     state.updated_at = _now()
     return save_task_state(session, state)
+
+
+def _message_for_event_ref(session, event_ref: str) -> dict[str, Any] | None:
+    event_id = str(event_ref).removeprefix("event://")
+    for event in getattr(session, "event_log", []) or []:
+        if event.event_id == event_id:
+            if event.type not in {ContextEventType.USER_MESSAGE.value, ContextEventType.USER_CORRECTION.value}:
+                return None
+            payload = thaw(event.payload)
+            message = payload.get("message", payload)
+            if isinstance(message, dict):
+                result = {"role": "user", **message}
+                if "content" not in result and "text" in result:
+                    result["content"] = result["text"]
+                if event.type == ContextEventType.USER_CORRECTION.value:
+                    result["metadata"] = {"kind": "user_correction", **dict(result.get("metadata") or {})}
+                return result
+    return None
+
+
+def _source_requests(session, state: TaskState) -> tuple[dict[str, Any], ...]:
+    """Pin exact user request text; never summarize task constraints with an LLM.
+
+    Full request content can exceed a model budget. The final request gate must
+    then reject the prompt instead of silently dropping a hard instruction.
+    """
+    # Follow-ups can contain new hard constraints without changing the objective.
+    # Pin their exact text as well; never classify away an arbitrary user sentence.
+    all_events = session.events_after(0) if hasattr(session, "events_after") else session.event_log
+    result = []
+    for event in all_events:
+        if event.type not in {ContextEventType.USER_MESSAGE.value, ContextEventType.USER_CORRECTION.value}:
+            continue
+        ref = f"event://{event.event_id}"
+        message = _message_for_event_ref(session, ref)
+        if message is not None and is_real_user_message(message):
+            row = {"source_ref": ref, "content": message.get("content", "")}
+            revision = (message.get("metadata") or {}).get("requirements_revision")
+            if isinstance(revision, dict):
+                row["requirements_revision"] = revision
+                row["scope"] = "explicit_field_revision; supersedes earlier source only for these fields"
+            result.append(row)
+
+    return tuple(result)
 
 
 def _objective_history(state: TaskState, objective: str, event_ref: str):

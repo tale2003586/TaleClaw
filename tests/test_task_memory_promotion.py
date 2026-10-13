@@ -156,7 +156,7 @@ class TaskMemoryPromotionTests(unittest.TestCase):
                     summary="Fixed and tested the bug.",
                     candidates=[candidate],
                 ),
-                promotion=PromotionResult(promoted=[candidate]),
+                promotion=PromotionResult(proposed=[candidate], proposal_ids=["proposal-1"]),
             )
 
             log = paths.task_log_path.read_text(encoding="utf-8")
@@ -164,7 +164,10 @@ class TaskMemoryPromotionTests(unittest.TestCase):
             self.assertIn("# Task Log: coding-12345678", log)
             self.assertIn('"command": "pytest"', log)
             self.assertEqual("Fixed and tested the bug.", conclusions["summary"])
-            self.assertEqual("Tests use pytest.", conclusions["promoted"][0]["content"])
+            self.assertEqual([], conclusions["promoted"])
+            self.assertEqual("Tests use pytest.", conclusions["proposed"][0]["content"])
+            self.assertEqual(["proposal-1"], conclusions["proposal_ids"])
+            self.assertIn("proposed_pending_review: 1", log)
 
 
 class ProviderRequestTests(unittest.TestCase):
@@ -183,7 +186,7 @@ class ProviderRequestTests(unittest.TestCase):
             def create(self, **kwargs):
                 self.kwargs = kwargs
                 return type("Response", (), {
-                    "choices": [type("Choice", (), {"message": Message()})()],
+                    "choices": [type("Choice", (), {"message": Message(), "finish_reason": "stop"})()],
                 })()
 
         completions = Completions()

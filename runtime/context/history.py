@@ -7,6 +7,7 @@ import json
 from typing import Any
 
 from runtime.context.budget import SectionBudgetRule
+from runtime.context.events import is_real_user_message
 from runtime.tooling.result_compression import compact_tool_result_for_tail, compress_tool_result
 
 
@@ -54,7 +55,7 @@ def budget_conversation_history(
         return BudgetedMessages(
             name=name,
             raw_messages=raw_messages,
-            rendered_messages=_copy_messages(messages),
+            rendered_messages=_mark_required_requests(messages),
         )
 
     target = max(1, int(rule.budget_chars))
@@ -74,7 +75,7 @@ def budget_conversation_history(
         return BudgetedMessages(
             name=name,
             raw_messages=raw_messages,
-            rendered_messages=_copy_messages(messages),
+            rendered_messages=_mark_required_requests(messages),
             budget_chars=None,
             floor_chars=floor,
             strategy=rule.strategy,
@@ -86,7 +87,7 @@ def budget_conversation_history(
         return BudgetedMessages(
             name=name,
             raw_messages=raw_messages,
-            rendered_messages=_copy_messages(messages),
+            rendered_messages=_mark_required_requests(messages),
             budget_chars=target,
             floor_chars=floor,
             strategy=rule.strategy,
@@ -97,6 +98,11 @@ def budget_conversation_history(
     effective_target = max(target, min(floor, raw_chars))
     if messages_chars(rendered) > effective_target:
         rendered = _tail_trim_groups(rendered, effective_target)
+
+    if any(is_real_user_message(item) and item not in rendered for item in raw_messages):
+        rendered = _history_with_verbatim_requests(raw_messages, effective_target)
+        metadata["protected_user_requests"] = True
+    rendered = _mark_required_requests(rendered)
 
     reduction = {
         "section": name,
@@ -142,7 +148,7 @@ def budget_active_turn(
         return BudgetedMessages(
             name=name,
             raw_messages=raw_messages,
-            rendered_messages=_copy_messages(messages),
+            rendered_messages=_mark_active_requests(messages),
         )
 
     target = max(1, int(rule.budget_chars))
@@ -163,7 +169,7 @@ def budget_active_turn(
         return BudgetedMessages(
             name=name,
             raw_messages=raw_messages,
-            rendered_messages=_copy_messages(messages),
+            rendered_messages=_mark_active_requests(messages),
             budget_chars=None,
             floor_chars=floor,
             strategy=rule.strategy,
@@ -191,7 +197,7 @@ def budget_active_turn(
         return BudgetedMessages(
             name=name,
             raw_messages=raw_messages,
-            rendered_messages=working_messages,
+            rendered_messages=_mark_active_requests(working_messages),
             budget_chars=target,
             floor_chars=floor,
             strategy=rule.strategy,
@@ -208,6 +214,14 @@ def budget_active_turn(
     effective_target = max(target, min(floor, raw_chars))
     if messages_chars(rendered) > effective_target:
         rendered = _compact_active_tail(rendered, effective_target)
+
+    # A character budget is not permission to summarize away current instructions.
+    # Retain the already-compressed tool view if further trimming lost a real user
+    # message; the final token gate either fits it or explicitly refuses the call.
+    if any(is_real_user_message(item) and item not in rendered for item in raw_messages):
+        rendered = _copy_messages(working_messages)
+        summarized = []
+        metadata["protected_user_fallback"] = True
 
     reduction = {
         "section": name,
@@ -233,7 +247,7 @@ def budget_active_turn(
     return BudgetedMessages(
         name=name,
         raw_messages=raw_messages,
-        rendered_messages=rendered,
+        rendered_messages=_mark_active_requests(rendered),
         budget_chars=target,
         floor_chars=floor,
         strategy=rule.strategy,
@@ -299,6 +313,7 @@ def _tail_trim_groups(messages: list[dict[str, Any]], limit: int) -> list[dict[s
     marker = [{
         "role": "user",
         "content": "[Context budget note: older conversation history was omitted after section budgeting.]",
+        "metadata": {"source": "runtime-generated", "kind": "history_summary", "instructions": False},
     }]
     marker_chars = messages_chars(marker)
     for group in reversed(groups):
@@ -319,7 +334,7 @@ def _compact_group(group: list[dict[str, Any]], limit: int) -> list[dict[str, An
     return [summary]
 
 
-def _summary_message(messages: list[dict[str, Any]], max_chars: int) -> dict[str, str]:
+def _summary_message(messages: list[dict[str, Any]], max_chars: int) -> dict[str, Any]:
     max_chars = int(max_chars or 1200)
     if max_chars <= 0:
         max_chars = 1200
@@ -372,7 +387,9 @@ def _summary_message(messages: list[dict[str, Any]], max_chars: int) -> dict[str
             content = content[:max_chars]
         else:
             content = content[: max_chars - len(marker)].rstrip() + marker
-    return {"role": "user", "content": content}
+    return {"role": "user", "content": content, "metadata": {
+        "source": "runtime-generated", "kind": "history_summary", "instructions": False,
+    }}
 
 
 def _compress_old_tool_results(
@@ -533,6 +550,74 @@ def _copy_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [dict(message) for message in messages or []]
 
 
+
+def _mark_required_requests(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep user provenance/ordering; retention never makes old goals irrevocable."""
+    result = _copy_messages(messages)
+    for message in result:
+        if is_real_user_message(message):
+            message["metadata"] = {
+                **(message.get("metadata") if isinstance(message.get("metadata"), dict) else {}),
+                "preserve_user_request": True,
+            }
+    return result
+
+
+
+def _mark_active_requests(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rendered = _mark_required_requests(messages)
+    # The final reducer already retains the latest user's entire open turn.
+    # Earlier corrections must survive without pinning all of their old tools.
+    for message in reversed(rendered):
+        if is_real_user_message(message):
+            message["metadata"].pop("preserve_user_request", None)
+            break
+    return rendered
+
+
+def _history_with_verbatim_requests(
+    messages: list[dict[str, Any]], limit: int,
+) -> list[dict[str, Any]]:
+    """Spend the soft budget on old results only after reserving source requests."""
+    groups = _group_turns(messages)
+    retained = [
+        [dict(item) for item in group if is_real_user_message(item)]
+        for group in groups
+    ]
+    marker = _summary_message([], 240)
+    marker["content"] = (
+        "[Conversation history summary: older assistant/tool messages were omitted. "
+        "User requests remain verbatim in chronological order; later requests may "
+        "correct or supersede earlier ones.]"
+    )
+    total = messages_chars(_flatten(retained)) + messages_chars([marker])
+    for index in range(len(groups) - 1, -1, -1):
+        extra = messages_chars(groups[index]) - messages_chars(retained[index])
+        if total + extra <= limit:
+            retained[index] = _copy_messages(groups[index])
+            total += extra
+    return [marker, *_flatten(retained)]
+
+
+def _summarize_around_user_requests(
+    messages: list[dict[str, Any]], max_chars: int,
+) -> list[dict[str, Any]]:
+    """Compress observations without folding intervening user corrections into them."""
+    rendered = []
+    pending = []
+    for message in messages:
+        if is_real_user_message(message):
+            if pending:
+                rendered.append(_active_turn_summary_message(pending, max_chars))
+                pending = []
+            rendered.append(dict(message))
+        else:
+            pending.append(message)
+    if pending:
+        rendered.append(_active_turn_summary_message(pending, max_chars))
+    return rendered
+
+
 def _reduce_active_turn(
     messages: list[dict[str, Any]],
     rule: SectionBudgetRule,
@@ -550,7 +635,7 @@ def _reduce_active_turn(
         rendered = _copy_messages(user_prefix)
         summarized = _copy_messages(messages[first_user_index + 1 :])
         if summarized:
-            rendered.append(_active_turn_summary_message(summarized, rule.summary_chars))
+            rendered.extend(_summarize_around_user_requests(summarized, rule.summary_chars))
         return rendered, summarized
 
     latest_tool_end = _tool_group_end(messages, latest_tool_start)
@@ -560,7 +645,7 @@ def _reduce_active_turn(
 
     rendered = _copy_messages(user_prefix)
     if summarized:
-        rendered.append(_active_turn_summary_message(summarized, rule.summary_chars))
+        rendered.extend(_summarize_around_user_requests(summarized, rule.summary_chars))
     rendered.extend(latest_group)
     rendered.extend(trailing)
     return rendered, summarized
@@ -575,7 +660,7 @@ def _compact_active_tail(messages: list[dict[str, Any]], limit: int) -> list[dic
         first_user_index = 0
     latest_tool_start = _last_tool_call_index(messages)
     if latest_tool_start is None:
-        return _tail_trim_groups(messages, limit)
+        return _history_with_verbatim_requests(messages, limit)
 
     prefix = _copy_messages(messages[: first_user_index + 1])
     summary_candidates = _copy_messages(messages[first_user_index + 1 : latest_tool_start])
@@ -583,7 +668,7 @@ def _compact_active_tail(messages: list[dict[str, Any]], limit: int) -> list[dic
     rendered = prefix
     if summary_candidates:
         summary_limit = max(120, min(limit // 3, limit - messages_chars(prefix)))
-        rendered.append(_active_turn_summary_message(summary_candidates, summary_limit))
+        rendered.extend(_summarize_around_user_requests(summary_candidates, summary_limit))
     rendered.extend(_compact_tool_group_if_needed(tool_group, max(200, limit - messages_chars(rendered))))
     if messages_chars(rendered) > limit:
         rendered = _force_trim_tool_contents(rendered, limit)

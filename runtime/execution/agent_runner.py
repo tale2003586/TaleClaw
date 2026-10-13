@@ -1,5 +1,9 @@
 """Agent execution adapter."""
 
+from runtime.execution.budget import ExecutionCancelled, ExecutionBudgetExceeded, ExecutionEffectUncertain
+from runtime.context.dynamic_budget import PromptBudgetExceeded
+from runtime.execution.failure_reasons import StopReason
+from models.provider import ModelProtocolError
 from types import SimpleNamespace
 from typing import Callable
 
@@ -80,26 +84,39 @@ class AgentRunner:
             max_reasoning_steps=effective_max_steps,
             policies=policies,
         )
-        loop.run(
-            session=session,
-            agent_spec=spec,
-            build_context=context_builder,
-            resolve_provider=lambda session, agent_spec: self._provider_and_model(
-                session,
-                agent_spec,
+        try:
+            loop.run(
+                session=session,
+                agent_spec=spec,
+                build_context=context_builder,
+                resolve_provider=lambda session, agent_spec: self._provider_and_model(
+                    session,
+                    agent_spec,
+                    run_context=run_context,
+                ),
+                after_turn=turn_finished,
+                after_tool_calls=after_tool_calls,
+                reflection_agent=self.reflection_agent,
+                on_text=on_text,
+                cancel_requested=cancel_requested,
+                checkpoint_callback=checkpoint_callback,
+                run_state=run_state,
+                trace_store=trace_store,
+                trace_parent_span_id=trace_parent_span_id,
                 run_context=run_context,
-            ),
-            after_turn=turn_finished,
-            after_tool_calls=after_tool_calls,
-            reflection_agent=self.reflection_agent,
-            on_text=on_text,
-            cancel_requested=cancel_requested,
-            checkpoint_callback=checkpoint_callback,
-            run_state=run_state,
-            trace_store=trace_store,
-            trace_parent_span_id=trace_parent_span_id,
-            run_context=run_context,
-        )
+            )
+        except (ExecutionCancelled, ExecutionBudgetExceeded, ExecutionEffectUncertain, PromptBudgetExceeded, ModelProtocolError) as exc:
+            loop._stop_turn(
+                session, str(exc),
+                reason=(StopReason.USER_CANCELLED if isinstance(exc, ExecutionCancelled)
+                        else StopReason.NON_RETRYABLE_FAILURE if isinstance(exc, ModelProtocolError)
+                        else StopReason.REPEATED_SIDE_EFFECT_RISK if isinstance(exc, ExecutionEffectUncertain)
+                        else StopReason.HARD_BUDGET_EXCEEDED),
+                agent_spec=spec, after_turn=turn_finished, on_text=on_text,
+                run_state=run_state, trace_store=trace_store,
+                reasoning_step=run_context.state.reasoning_step,
+                checkpoint_callback=checkpoint_callback,
+            )
 
     def reset_turn_state(self, session) -> None:
         reset_tools = getattr(self.tools, "reset_turn_unlocks", None)

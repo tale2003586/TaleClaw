@@ -8,7 +8,9 @@ from runtime.trace.failure import FailureCategory
 
 def summarize_rows(rows: list[dict]) -> dict:
     total = len(rows)
-    passed = sum(1 for row in rows if row.get("passed"))
+    passed = sum(1 for row in rows if row.get("passed") is True)
+    failed = sum(1 for row in rows if row.get("passed") is False)
+    outcomes = Counter((row.get("verification") or {}).get("outcome", "unknown") for row in rows)
     within_budget = sum(1 for row in rows if row.get("within_budget"))
     verifier_passes = sum(1 for row in rows if row.get("verifier_passed"))
     diff_passes = sum(1 for row in rows if row.get("workspace_diff_passed"))
@@ -21,8 +23,12 @@ def summarize_rows(rows: list[dict]) -> dict:
     return {
         "total_tasks": total,
         "passed": passed,
-        "failed": total - passed,
+        "failed": failed,
+        "unverified": total - passed - failed,
+        "verification_outcomes": dict(sorted(outcomes.items())),
         "pass_rate": _rate(passed, total),
+        "pass_rate_semantics": "verified_delivery_per_attempt",
+        "valid_verification_rate": _rate(outcomes["pass"] + outcomes["fail"], total),
         "within_budget": within_budget,
         "within_budget_rate": _rate(within_budget, total),
         "verifier_passes": verifier_passes,

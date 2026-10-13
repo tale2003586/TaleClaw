@@ -1,0 +1,241 @@
+{
+  "schema_version": 1,
+  "description": "Synthetic bounded context-pressure diagnostics. Mandatory sequential log reads, explicit compaction and independent tests. This is a mechanism stress suite, not a representative production benchmark.",
+  "tasks": [
+    {
+      "id": "context-pressure-repair-001",
+      "category": "context-pressure",
+      "fixture_repo": "benchmarks/fixtures/context_pressure/repair",
+      "prompt": "这是上下文压力实验，资料是合成夹具。首先用 read_file 分四次完整读取 observations/phase0.txt 到 observations/phase3.txt（依此顺序，必须分四轮调用，每轮收到上一个结果后再读下一个，不能在一轮中并列读取；固定 offset=0、limit=200；每个文件105行，不要用摘要或 grep 代替。先完成这四次读取，再进行回读或修复）。然后调用 compact，focus 写当前待解决问题。若旧证据已被遮蔽或归档，使用 read_artifact 的真实恢复引用重新读取所需范围；不要凭不完整预览猜测。 修复 src/limits.py 和 src/retry.py：重试参数必须采用日志中的已批准值，retry_delay_seconds() 返回秒。先运行测试观察失败，完成后重新运行 python -m pytest -q。只能修改这两个实现文件，禁止修改日志、测试或新增文件。",
+      "step_budget": 18,
+      "allowed_tools": [
+        "read_file",
+        "read_artifact",
+        "edit_file",
+        "write_file",
+        "bash",
+        "git_status",
+        "git_diff",
+        "update_task_state",
+        "compact"
+      ],
+      "expected": {
+        "not_modified": [
+          ".gitignore",
+          "observations/phase0.txt",
+          "observations/phase1.txt",
+          "observations/phase2.txt",
+          "observations/phase3.txt",
+          "tests/test_retry.py"
+        ],
+        "trace_events": [
+          "context.build.completed",
+          "workspace.diff.written"
+        ],
+        "tool_called": [
+          "read_file",
+          "compact"
+        ],
+        "must_pass_command": "python -m pytest -q",
+        "modified": [
+          "src/limits.py",
+          "src/retry.py"
+        ]
+      },
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "observations/phase0.txt",
+            "offset": 0,
+            "limit": 200
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "observations/phase1.txt",
+            "offset": 0,
+            "limit": 200
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "observations/phase2.txt",
+            "offset": 0,
+            "limit": 200
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "observations/phase3.txt",
+            "offset": 0,
+            "limit": 200
+          }
+        },
+        {
+          "tool": "compact",
+          "args": {
+            "focus": "retry units approved contract"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/limits.py"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/retry.py"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/limits.py",
+            "old_text": "250",
+            "new_text": "1875"
+          }
+        },
+        {
+          "tool": "edit_file",
+          "args": {
+            "path": "src/retry.py",
+            "old_text": "return RETRY_DELAY_MS",
+            "new_text": "return RETRY_DELAY_MS / 1000"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "final": "Fixed approved retry delay and units; tests pass."
+        }
+      ],
+      "verifier": "context_pressure_fixture_v1"
+    },
+    {
+      "id": "context-pressure-recovery-001",
+      "category": "context-pressure",
+      "fixture_repo": "benchmarks/fixtures/context_pressure/recovery",
+      "prompt": "这是上下文压力实验，资料是合成夹具。首先用 read_file 分四次完整读取 observations/phase0.txt 到 observations/phase3.txt（依此顺序，必须分四轮调用，每轮收到上一个结果后再读下一个，不能在一轮中并列读取；固定 offset=0、limit=200；每个文件105行，不要用摘要或 grep 代替。先完成这四次读取，再进行回读或修复）。然后调用 compact，focus 写当前待解决问题。若旧证据已被遮蔽或归档，使用 read_artifact 的真实恢复引用重新读取所需范围；不要凭不完整预览猜测。 observations/phase3.txt 决定从 phase0 的表中选哪一条。压缩后必须调用 read_artifact(artifact_ref=\"event://session\", query=选中 key)，等待恢复结果返回后，从中获取精确 recovery_code（不要重读原文件替代这一步）。将对应 key 和精确 recovery_code 写入 src/selection.json，再运行 python -m pytest -q。只能修改 src/selection.json，禁止改日志和测试、禁止新增文件。",
+      "step_budget": 18,
+      "allowed_tools": [
+        "read_file",
+        "read_artifact",
+        "edit_file",
+        "write_file",
+        "bash",
+        "git_status",
+        "git_diff",
+        "update_task_state",
+        "compact"
+      ],
+      "expected": {
+        "not_modified": [
+          ".gitignore",
+          "observations/phase0.txt",
+          "observations/phase1.txt",
+          "observations/phase2.txt",
+          "observations/phase3.txt",
+          "tests/test_selection.py"
+        ],
+        "trace_events": [
+          "context.build.completed",
+          "workspace.diff.written"
+        ],
+        "tool_called": [
+          "read_file",
+          "compact"
+        ],
+        "must_pass_command": "python -m pytest -q",
+        "modified": [
+          "src/selection.json"
+        ]
+      },
+      "script": [
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "observations/phase0.txt",
+            "offset": 0,
+            "limit": 200
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "observations/phase1.txt",
+            "offset": 0,
+            "limit": 200
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "observations/phase2.txt",
+            "offset": 0,
+            "limit": 200
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "observations/phase3.txt",
+            "offset": 0,
+            "limit": 200
+          }
+        },
+        {
+          "tool": "compact",
+          "args": {
+            "focus": "exact K078 recovery code accepted ledger"
+          }
+        },
+        {
+          "tool": "read_artifact",
+          "args": {
+            "artifact_ref": "event://session",
+            "query": "record key=K078"
+          }
+        },
+        {
+          "tool": "read_file",
+          "args": {
+            "path": "src/selection.json"
+          }
+        },
+        {
+          "tool": "write_file",
+          "args": {
+            "path": "src/selection.json",
+            "content": "{\"key\":\"K078\",\"recovery_code\":\"b8785046c3b1e12fb1c1a424\"}\n"
+          }
+        },
+        {
+          "tool": "bash",
+          "args": {
+            "command": "python -m pytest -q"
+          }
+        },
+        {
+          "final": "Recovered the selected exact code; tests pass."
+        }
+      ],
+      "verifier": "context_pressure_fixture_v1"
+    }
+  ]
+}

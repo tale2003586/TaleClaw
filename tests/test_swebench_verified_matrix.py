@@ -61,6 +61,7 @@ class SweBenchVerifiedMatrixTests(unittest.TestCase):
                     "instance_id": "repo__repo-1",
                     "repo": "owner/repo",
                     "status": "pass",
+                    "verification": {"outcome": "pass"},
                     "duration_ms": 100,
                     "patch_bytes": 10,
                     "metrics": {
@@ -75,6 +76,7 @@ class SweBenchVerifiedMatrixTests(unittest.TestCase):
                     "instance_id": "repo__repo-2",
                     "repo": "owner/repo",
                     "status": "fail",
+                    "verification": {"outcome": "fail"},
                     "error": "stopped",
                     "duration_ms": 200,
                     "patch_bytes": 20,

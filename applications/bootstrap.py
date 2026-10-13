@@ -146,17 +146,14 @@ def build_runtime() -> AppRuntime:
     )
 
     history_vector_index = None
-    history_scope_resolver = None
     if _history_vector_enabled():
         from memory.vector_runtime import (
             build_history_vector_index_from_env,
-            history_vector_scope_for_session,
         )
 
         history_vector_index = build_history_vector_index_from_env(
             embeddings=shared_memory_embeddings,
         )
-        history_scope_resolver = history_vector_scope_for_session
     semantic_memory_repository = None
     semantic_memory_command_service = None
     semantic_memory_retrieval_service = None
@@ -257,7 +254,6 @@ def build_runtime() -> AppRuntime:
         ),
         retrieval_service=ContextRetrievalService(
             history_vector_index=history_vector_index,
-            history_scope_resolver=history_scope_resolver,
             retrieval_top_k=_env_int("HISTORY_RETRIEVAL_TOP_K", 6),
             retrieval_min_score=_env_float("HISTORY_RETRIEVAL_MIN_SCORE", 0.35),
             security_retrieval_router=security_retrieval_router,
@@ -293,7 +289,7 @@ def build_runtime() -> AppRuntime:
     if _security_rag_plugin_enabled():
         from plugins.security_rag import SecurityRagPlugin
 
-        plugins.insert(3, SecurityRagPlugin())
+        plugins.insert(3, SecurityRagPlugin(index=security_knowledge_index))
 
     plugin_manager = PluginManager(
         plugins,

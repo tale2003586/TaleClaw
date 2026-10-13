@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 import json
+from contextvars import copy_context
+from runtime.execution.budget import execution_scope, current_budget
 import time
 from typing import Any
 
@@ -30,7 +32,29 @@ def run_parallel_tasks(
     parent_run_state=None,
     parent_span_id: str | None = None,
 ) -> list[dict[str, Any]]:
+    with execution_scope():
+        return _run_parallel_tasks(
+            runner=runner, tasks=tasks, parent_session=parent_session,
+            max_workers=max_workers, timeout_seconds=timeout_seconds,
+            trace_store=trace_store, parent_run_state=parent_run_state,
+            parent_span_id=parent_span_id,
+        )
+
+
+def _run_parallel_tasks(
+    *,
+    runner,
+    tasks: list[dict[str, Any]],
+    parent_session=None,
+    max_workers: int | None = None,
+    timeout_seconds: float = 300,
+    trace_store=None,
+    parent_run_state=None,
+    parent_span_id: str | None = None,
+) -> list[dict[str, Any]]:
     bounded_tasks = list(tasks or [])[:MAX_PARALLEL_SUBTASKS]
+    if any(str(task.get("agent_type") or "explore") not in {"explore", "plan"} for task in bounded_tasks):
+        raise ValueError("Parallel delegation accepts read-only explore/plan tasks only.")
     if not bounded_tasks:
         return []
 
@@ -55,7 +79,7 @@ def run_parallel_tasks(
                 })
             run_specs.append(run_kwargs)
             futures[executor.submit(
-                runner.run,
+                copy_context().run, runner.run,
                 **run_kwargs,
             )] = index
 
@@ -72,6 +96,9 @@ def run_parallel_tasks(
             if results[index] is not None:
                 continue
             if not future.done():
+                budget = current_budget()
+                if budget is not None:
+                    budget.stop("A parallel worker timed out; further work is stopped until its outcome is inspected.")
                 future.cancel()
                 failure = timeout_failure(timeout_seconds)
                 results[index] = _error_result(
@@ -208,7 +235,7 @@ def _run_once_with_timeout(
     retry_count: int,
 ) -> dict[str, Any]:
     executor = ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(runner.run, **run_kwargs)
+    future = executor.submit(copy_context().run, runner.run, **run_kwargs)
     try:
         result = future.result(timeout=max(0.001, timeout_seconds))
         executor.shutdown(wait=True, cancel_futures=True)

@@ -40,6 +40,13 @@ through `RuntimeExtensions`; the core loop does not import or mutate TaskState.
 Tool-result artifact creation is owned by `ToolResultStoreHook`, which records
 the artifact event between the assistant tool request and tool result.
 
+Web admission now runs through a single durable supervisor in
+`web/agent_service.py`, with a separate `build_runtime()` per spawned worker.
+Browser subscriptions do not own execution. Coding tasks can bind managed Git
+worktrees and deliver fixed, independently verified candidate branches. See
+[parallel Coding contracts](PARALLEL_CODING.md) for state ownership, APIs,
+resource coordination, deployment and recovery limits.
+
 ## Ownership
 
 | Fact or behavior | Owner |
@@ -62,12 +69,14 @@ WorkingMemory runtime, or CodingContextState task-progress owner.
 
 ## Context
 
-Static prompt material has four sources:
-
-1. a minimal runtime contract;
-2. the selected `AgentSpec` instructions;
-3. dynamic structured context from explicit contributors;
-4. session history and the current interaction.
+Context has stable instructions, selected conversation, and live host observations.
+`ContextBuilder` uses one assembly/report path for general and Coding policies.
+It places the selected conversation before mutable TaskState, attachments and
+retrieval, preserving the reusable trajectory prefix when live state changes.
+Actual model input belongs only to `ContextBundle`; Session does not store a
+second prompt representation. See [context/cache contracts](TASK_STATE_CONTEXT_ARCHITECTURE.md)
+for budgets, provenance, per-run retrieval lifetime, provider cache metrics and
+known compaction limits.
 
 Skills are loaded only after a matching tool/capability path selects them. The
 catalog is not injected into ordinary turns. Coding context is a read-only view

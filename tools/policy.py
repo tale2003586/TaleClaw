@@ -6,6 +6,11 @@ from typing import Any
 from tools.spec import ToolExposure
 
 UNLOCKED_TOOLS_KEY = "unlocked_tools"
+# These paths lack a scoped lifecycle/confirmed stop contract. Old handlers remain
+# import-compatible but cannot be discovered or invoked through runtime policy.
+UNSCOPED_TOOLS = frozenset({"background_run", "check_background", "spawn_teammate",
+    "list_teammates", "broadcast", "send_message", "read_inbox", "shutdown_request", "shutdown_status",
+    "plan_approval", "plan_approval_request"})
 
 @dataclass(frozen=True)
 class ToolPolicyDecision:
@@ -55,6 +60,8 @@ class ToolPolicy:
         run_context: Any | None = None,
         agent_spec: Any | None = None,
     ) -> ToolPolicyDecision:
+        if tool_name in UNSCOPED_TOOLS:
+            return ToolPolicyDecision(False, "Unscoped background/team execution is disabled.")
         tool = self.registry._tools.get(tool_name)
         if tool is None:
             return ToolPolicyDecision(
@@ -119,7 +126,7 @@ class ToolPolicy:
         deny = set(getattr(tool_set, "deny", ()) or ())
         if allow:
             names &= allow
-        return names - deny
+        return names - deny - UNSCOPED_TOOLS
 
     @staticmethod
     def _skills_enabled(agent_spec: Any | None) -> bool:
@@ -146,6 +153,8 @@ class ToolPolicy:
             for item in args.get("tasks") or []:
                 if isinstance(item, dict):
                     requested.append(str(item.get("agent_type") or "explore"))
+        if tool_name == "parallel_tasks" and any(value not in {"explore", "plan"} for value in requested):
+            return "Parallel delegation accepts read-only explore/plan tasks only."
         denied = sorted({value for value in requested if value not in allowed})
         if denied:
             return (

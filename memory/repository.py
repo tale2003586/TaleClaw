@@ -10,6 +10,7 @@ from memory.domain import (
     MemoryIndexOperation,
     MemoryItem,
     MemoryKind,
+    MemoryStatus,
     OwnerKey,
 )
 
@@ -72,7 +73,16 @@ class MemoryRepository(Protocol):
         owner: OwnerKey,
         kind: MemoryKind,
         normalized: str,
-    ) -> MemoryItem | None: ...
+        *,
+        status: MemoryStatus | None = None,
+        now: datetime | None = None,
+    ) -> MemoryItem | None:
+        """Find the latest candidate/active match after optional lifecycle filtering.
+
+        ``now`` requires valid_from <= now < valid_until (if an end exists).
+        Omitting both filters preserves the historical import lookup behavior.
+        """
+        ...
 
     def transition(self, command: MemoryTransition) -> MemoryItem: ...
 

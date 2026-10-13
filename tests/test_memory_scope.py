@@ -11,6 +11,8 @@ from tools import handlers
 from tools.tool_registry import ToolRegistry
 from tools.spec import ToolSpec
 from memory.command_service import MemoryCommandService
+from memory.commands import MemoryContext
+from memory.domain import MemoryStatus
 from memory.index_sync import MemoryIndexSynchronizer
 from memory.semantic_retrieval import SemanticMemoryRetrievalService
 from tests.fakes.in_memory_memory_index import InMemoryMemoryIndex
@@ -25,7 +27,8 @@ def _tool_schema(name: str) -> dict:
             "description": name,
             "parameters": {
                 "type": "object",
-                "properties": {},
+                "properties": {("content" if name == "memorize" else "query"): {"type": "string"}},
+                "required": ["content"] if name == "memorize" else [],
             },
         },
     }
@@ -148,16 +151,23 @@ class MemoryScopeTests(unittest.TestCase):
                 mode="bot",
             )
 
-            self.assertIn("Saved semantic memory", saved)
+            self.assertIn("Proposed semantic memory", saved)
+            self.assertNotIn("Prefer concise answers", recalled)
+            self.assertEqual(1, len(repository.items))
+            item = next(iter(repository.items.values()))
+            self.assertEqual(MemoryStatus.CANDIDATE, item.status)
+            self.assertFalse(repository.outbox)
+            commands.confirm(item.id, MemoryContext.from_session(session))
+            synchronizer.drain()
+            recalled = registry.execute("recall_memory", {"query": "concise"}, session=session, mode="bot")
             self.assertIn("<semantic_memory>", recalled)
             self.assertIn("Prefer concise answers", recalled)
-            self.assertEqual(1, len(repository.items))
             event_names = [
                 event["event"]
                 for event in session.metadata.get("memory_trace_events", [])
             ]
-            self.assertIn("memory.item.created", event_names)
-            self.assertIn("memory.index.completed", event_names)
+            self.assertIn("memory.candidate.created", event_names)
+            self.assertIn("memory.index.completed", [event["event"] for event in synchronizer.trace_events])
             self.assertIn("memory.semantic.retrieved", event_names)
 
     def test_memory_handler_dependencies_are_isolated_per_registry(self) -> None:

@@ -30,6 +30,8 @@ def write_eval_report(eval_dir, payload: dict) -> None:
         f"- Tasks: {summary.get('total_tasks', 0)}",
         f"- Passed: {summary.get('passed', 0)}",
         f"- Failed: {summary.get('failed', 0)}",
+        f"- Unverified: {summary.get('unverified', 0)}",
+        f"- Verification outcomes: {summary.get('verification_outcomes', {})}",
         f"- Pass rate: {summary.get('pass_rate', 0):.2%}",
         f"- Verifier pass rate: {summary.get('verifier_pass_rate', 0):.2%}",
         f"- Workspace diff pass rate: {summary.get('workspace_diff_pass_rate', 0):.2%}",
@@ -69,11 +71,13 @@ def write_eval_report(eval_dir, payload: dict) -> None:
 
     failed = [row for row in rows if not row.get("passed")]
     if failed:
-        lines.extend(["", "## Failed Tasks", ""])
+        lines.extend(["", "## Failed or Unverified Tasks", ""])
         for row in failed:
             lines.extend([
                 f"### {row.get('id', '')}",
                 "",
+                f"- Execution: `{row.get('execution_status', row.get('run_status', 'unknown'))}`",
+                f"- Verification: `{(row.get('verification') or {}).get('outcome', 'unknown')}`",
                 f"- Failure: `{row.get('failure_category', '')}`",
                 f"- Reason: `{row.get('failure_reason', '')}`",
                 f"- Run dir: `{row.get('run_dir', '')}`",
