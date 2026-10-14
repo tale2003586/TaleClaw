@@ -282,7 +282,7 @@ def test_worker_rebuilds_imported_pool_from_one_run_snapshot(tmp_path, monkeypat
     assert bootstrap._MODEL_HEALTHCHECK_RESULTS is None
 
 
-@pytest.mark.parametrize("name", ["_Relay", "-Relay", "Relay-1", "a" * 64])
+@pytest.mark.parametrize("name", ["glm4.7flash", "GLM4.7-Flash", "_Relay", "-Relay", "Relay-1", "a" * 64])
 def test_permitted_profile_names_round_trip(tmp_path, name):
     store = RuntimeSettingsStore(tmp_path, environ=environment())
     public = store.update({"revision": 0, "default_profile": name,
@@ -292,3 +292,18 @@ def test_permitted_profile_names_round_trip(tmp_path, name):
     restored = RuntimeSettingsStore(tmp_path, environ=environment())
     assert restored.get_public()["profiles"][0]["name"] == normalized
     assert build_model_pool_from_env(restored.effective_environ()).profile_named(normalized).model == "relay-model"
+
+
+def test_dotted_profile_retains_key_on_hot_update(tmp_path):
+    store = RuntimeSettingsStore(tmp_path, environ=environment())
+    public = store.update({"revision": 0, "default_profile": "glm4.7flash",
+                           "profiles": [relay("glm4.7flash")],
+                           "routes": {"default": ["glm4.7flash"], "chat": ["glm4.7flash"]}})
+    payload = update_payload(public)
+    payload["profiles"][0]["model"] = "updated-model"
+    updated = store.update(payload)
+    assert updated["revision"] == 2
+    pool = build_model_pool_from_env(store.effective_environ())
+    assert pool.route_profile_names("chat") == ["glm4.7flash"]
+    assert pool.profile_named("glm4.7flash").model == "updated-model"
+    assert pool.profile_named("glm4.7flash").api_key == "new-private-key"

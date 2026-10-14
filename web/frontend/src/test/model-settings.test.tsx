@@ -74,7 +74,7 @@ describe("hot model settings", () => {
     expect(screen.getByText(/已运行的任务保持启动时的配置/)).toBeInTheDocument();
   });
 
-  it.each(["_Relay", "-Relay", "Relay-1", "a".repeat(64)])("saves a permitted profile name %s", async (name) => {
+  it.each(["glm4.7flash", "GLM4.7-Flash", "_Relay", "-Relay", "Relay-1", "a".repeat(64)])("saves a permitted profile name %s", async (name) => {
     const user = userEvent.setup();
     const fetchMock = mockApi((init) => init?.method === "POST" ? undefined : json(settings({
       default_profile: name, profiles: [profile(name)], routes: { default: [name] },
@@ -88,7 +88,7 @@ describe("hot model settings", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it.each(["bad.name", "bad name", "中文", "a".repeat(65)])("identifies the invalid profile %s without losing edits", async (name) => {
+  it.each(["bad/name", "bad name", "中文", "a".repeat(65)])("identifies the invalid profile %s without losing edits", async (name) => {
     const user = userEvent.setup();
     const fetchMock = mockApi((init) => init?.method === "POST" ? undefined : json(settings({
       default_profile: name, profiles: [profile(name)], routes: { default: [name] },
