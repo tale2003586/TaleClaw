@@ -17,7 +17,7 @@ Telegram 私聊接入见：[Telegram Gateway 部署说明](../docs/gateways/TELE
 - 助手消息支持安全 Markdown 展示，标题、列表和代码块可直接阅读
 - 工具请求和工具结果默认折叠，按需展开查看完整内容
 - 会话历史列表
-- `memory/*.md` 记忆文件浏览
+- PostgreSQL 长期记忆查看：状态、来源证据、作用域和检索资格；旧 Markdown 文件保留在兼容入口
 - `storage/` 私有文件区，支持上传、弹窗预览文本、下载、重命名、删除
 - Bot 模式可以读取 `storage/`，并将报告、笔记和导出文件新建到 `storage/generated/`
 - Bot 模式拥有按会话隔离的 `.task_sandbox/` 临时工作区，可以将选定的最终文件发布到 `storage/generated/`
@@ -26,6 +26,7 @@ Telegram 私聊接入见：[Telegram Gateway 部署说明](../docs/gateways/TELE
 - `/hybrid`、`/chat`、`/coding` 模式切换
 - 聊天附件先经 MinerU 精准解析，再将解析结果和用户问题一起交给 LLM
 - 设置页的服务端技能管理：管理员查看、启停、编辑 `SKILL.md` 和重新扫描目录
+- 设置页的模型热更新：管理员增删 Provider、更新 API Key、模型及路由，无需重启 Web 服务
 
 快捷键：
 
@@ -75,7 +76,7 @@ Python 入口同样支持 `run_coding_task(..., task_mode="continue", context_po
 
 保存和启停都携带读取时的文件版本。文件已被另一位编辑者修改时返回冲突，前端保留草稿，需重新读取后合并。版本校验不提供与任意外部编辑器同时写入的跨进程事务；无效 YAML、重复技能名称和超限文档不会替换当前有效文件。外部加入的坏文件会在列表中显示诊断，并停止被运行时发现或加载，不会让整个目录失效。单个技能文件上限为 256 KiB。
 
-更改对后续技能搜索和 `load_skill` 调用生效，无需重启 Agent 服务。已经载入现有会话的技能文本不会从历史中自动删除；若需要完整采用新流程，应新建会话。热更新范围是技能文档，不包含 Python 插件代码、模型客户端或 `.env` 运行参数。
+更改对后续技能搜索和 `load_skill` 调用生效，无需重启 Agent 服务。已经载入现有会话的技能文本不会从历史中自动删除；若需要完整采用新流程，应新建会话。这里的技能热更新范围是技能文档。模型连接配置由下述模型设置入口单独管理；Python 插件代码和其他 `.env` 参数仍沿用原有启动流程。
 
 Compose 的 Web、Telegram 与 Feishu 应用均挂载 `./skills:/app/skills`，因此技能编辑在容器重建后保留，并由各进程在后续读取时发现。已有部署需先按更新后的 Compose 重建应用容器以建立该挂载；后续技能文档修改无需重建。共享目录的文件权限仍需允许服务账号写入。
 
@@ -89,6 +90,34 @@ Compose 的 Web、Telegram 与 Feishu 应用均挂载 `./skills:/app/skills`，�
 | `POST /api/skills/update` | `{id, revision, content}` 保存原文，或 `{id, revision, enabled}` 启停 |
 
 写请求需要 `application/json`，浏览器跨来源写入被拒绝。版本冲突返回 409，非法输入返回 400，不存在返回 404；磁盘不可写等存储错误返回 503。管理接口复用运行时的同一个 SkillLoader，不会为了打开设置页启动模型或数据库运行时。
+
+### 模型设置与热更新
+
+管理员打开设置页的“模型与 Provider”，可以添加或移除模型配置，更新 Provider、API Key、Base URL、模型名、接口协议，并设置各用途的首选及后备模型。保存会先校验配置和路由引用，再原子替换服务端设置；不会向 Provider 发起付费验证请求。
+
+配置以 `.env` / 进程环境作为初始值，网页保存后使用 `.runtime/settings.json` 中的覆盖配置。该文件包含密钥，权限为 `0600`，不会进入 Git 或 Docker 构建上下文。API 仅返回是否已配置密钥；配置名称、Provider 和接口目标均未改变时，密钥输入框留空会保留原密钥。修改 Provider、地址、协议方案、端口或 API 路径后需要重新填写密钥，避免将旧凭证发送到新目标。保存携带版本，其他管理员同时修改时返回 409 并保留网页草稿，需重新读取后合并。
+
+保存无需重启 Web 服务，后续启动的 Web 任务采用新配置；已启动任务继续使用自己的配置快照，排队任务在启动时读取配置。当前浏览器的聊天模型列表会在保存后更新，其他浏览器回到窗口时重新读取。配置文件通过 Compose 的 `./.runtime:/app/.runtime` 挂载在容器重建后保留；已有部署第一次升级需要重建 Web 容器以建立挂载。此入口目前作用于 Web 执行进程，Telegram / 飞书仍使用各自原有配置。
+
+管理 API：`GET /api/settings/models` 读取脱敏配置；`POST /api/settings/models` 保存 `{revision, default_profile, profiles, routes}`。读写均要求管理员；写请求要求同源 `application/json`。非法设置返回 400、版本冲突返回 409、配置存储不可用返回 503。读取页面不启动 Agent，也不初始化模型客户端。
+
+每个模型配置提供“测试连接并发现模型”，使用当前草稿请求 `/models`，成功后可选择发现的模型填入名称。只有点击才发起请求，不调用模型生成；列表鉴权成功不能证明指定模型的生成、额度或接口协议可用。没有模型列表接口的服务仍可手填模型并保存。探测采用服务端直接连接，最多 8 秒、1 MiB 响应、200 个模型，固定已校验的 DNS 地址并保留原 Host / TLS 证书校验，禁止跟随重定向转发凭证。本地私有 Provider 可用，云元数据等特殊地址被拒绝；探测传输不继承进程代理变量。
+
+“检查配置与路由”执行与保存一致的本地草稿校验，展示实际用途继承、默认路由和配置备用模型的尝试顺序；不保存、不发网络请求。预览是配置计划，运行中的动态冷却与实际失败以执行记录为准。编辑草稿后，旧预览和连接测试结果失效。
+
+这两项管理 API 分别为 `POST /api/settings/models/probe`，正文 `{revision, profile}`，以及 `POST /api/settings/models/preview`，正文与保存一致。均要求管理员、同源 JSON 与当前 revision；探测状态在响应正文区分 `ok`、`unsupported`、`authentication_failed`、`unavailable`、`invalid_response`，参数错误 / 版本冲突 / 存储错误仍分别返回 400 / 409 / 503。
+
+### 记忆控制台
+
+记忆页以 PostgreSQL 的 `memory_items` / `memory_evidence` 为数据源，展示记忆状态、类型、置信度、有效期和来源证据。默认仅查看当前账号的个人记忆；选择当前会话后，服务端从该账号的会话元数据解析应用、工作区、项目和任务作用域。浏览器不能指定任意 owner 或读取其他账号的会话。
+
+`GET /api/memory` 返回结构化概览，支持 `session_id`、`limit`（1–200）、`offset` 及 `query` / `status` / `kind`。搜索在整个授权作用域的数据库中执行，再分页；`query` 按内容、ID 和归属标识进行字面匹配，`%` / `_` 不作为通配符。`counts` 仍为整个作用域总数，`filtered_total` 为筛选匹配数。页面显示语义记忆读、写、上下文注入的运行开关，只有 active 且在有效期内的条目具备检索资格；是否实际命中还取决于检索查询和运行开关。数据库未配置或记忆表未初始化时显示不可用原因；不会把旧文件当作数据库记忆，也不会为查看页面初始化数据库或向量索引。
+
+个人记忆和当前账号已验证绑定任务的记忆可人工管理：candidate 可确认或拒绝，active 可撤销。页面要求再次确认操作，支持说明；共享应用 / 项目 / 工作区记忆及过期记录保持只读。动作不硬删除内容和证据。`POST /api/memory/action` 接收 `{id, expected_version, action, session_id?, reason?}`，要求登录与同源 JSON。授权、版本和状态在同一数据库行锁内检查，状态变化、操作元数据、语义索引 outbox 在同一事务提交；冲突返回 409 并保留当前详情，外部作用域与不存在的记录统一返回 404。
+
+动作提交后索引同步显示为“已排队”。撤销的真相记录会立即停止具备检索资格，向量清理由现有同步器处理；页面不会为了执行动作启动模型或 embedding 服务。正常聊天错误与模型失败公共事件使用脱敏文案，即使内部 Trace 开启内容捕获，也不把上游异常中的共享凭证复制到网页。
+
+旧 Markdown 文件移至页面的兼容入口，对应 `GET /api/memory/legacy`，保持当前账号私有目录隔离，不自动迁移或改写旧文件。
 
 ## 1. 本地先跑通
 
@@ -349,14 +378,15 @@ curl -u agent:你的密码 http://127.0.0.1:8000/api/runtime-health
 
 ```text
 ./skills          共享技能文档与启停设置
+./.runtime        Web 模型热更新配置（包含密钥）
 ./storage         文件区和分析记录
-./memory          长期记忆 Markdown
+./memory          旧版记忆 Markdown 兼容资料
 ./.task_sessions 任务会话
 ./.task_sandbox  会话隔离的临时文件，默认保留 168 小时
 ./.tasks         task 数据
 ./.team          team inbox
 ./.transcripts   transcript
-./.users         多用户私有数据，每个账号拥有独立 storage/ 和 memory/
+./.users         多用户私有文件区与旧版记忆兼容资料
 ```
 
 注册账号和浏览器登录会话保存在 PostgreSQL。密码以 PBKDF2 哈希保存，不会明文写入数据库。
@@ -489,7 +519,7 @@ docker compose up -d --build
 最少备份：
 
 ```bash
-tar czf agent-console-backup-$(date +%F).tar.gz storage memory .sessions .task_sessions .tasks .team .transcripts .env
+tar czf agent-console-backup-$(date +%F).tar.gz storage memory .runtime .sessions .task_sessions .tasks .team .transcripts .env
 ```
 
 恢复时把这些目录放回项目根目录，再：

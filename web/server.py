@@ -133,11 +133,8 @@ def _parse_multipart_form(headers, body: bytes) -> tuple[dict[str, list[str]], l
 
 
 def _friendly_runtime_error(exc: BaseException) -> str:
-    if isinstance(exc, KeyError) and exc.args and exc.args[0] == "DEEPSEEK_API_KEY":
-        return "缺少 DEEPSEEK_API_KEY。请在环境变量或 .env 中配置后再使用聊天功能。"
-    if isinstance(exc, ModuleNotFoundError):
-        return f"缺少 Python 模块：{exc.name}。现有 CLI 依赖需要先安装完整。"
-    return "".join(traceback.format_exception_only(type(exc), exc)).strip()
+    from web.error_messages import public_runtime_error
+    return public_runtime_error(exc)
 
 
 def read_sessions(user_id: str = DEFAULT_USER_ID) -> list[dict[str, Any]]:
@@ -1042,6 +1039,10 @@ class RequestHandler(ChatRunsHttpMixin, CodingWorkspacesHttpMixin, BaseHTTPReque
             self._handle_skills(parsed, mutation=False)
             return
 
+        if parsed.path == "/api/settings/models":
+            self._handle_model_settings(mutation=False)
+            return
+
         if parsed.path == "/api/health":
             user = self._current_user()
             coding_workspace = _default_coding_workspace()
@@ -1127,8 +1128,8 @@ class RequestHandler(ChatRunsHttpMixin, CodingWorkspacesHttpMixin, BaseHTTPReque
             })
             return
 
-        if parsed.path == "/api/memory":
-            self._send_json({"files": read_memory_files(self._current_user().user_id)})
+        if parsed.path in {"/api/memory", "/api/memory/legacy"}:
+            self._handle_memory(parsed)
             return
 
         if parsed.path == "/api/files":
@@ -1169,6 +1170,15 @@ class RequestHandler(ChatRunsHttpMixin, CodingWorkspacesHttpMixin, BaseHTTPReque
 
         if parsed.path in {"/api/skills/reload", "/api/skills/update"}:
             self._handle_skills(parsed, mutation=True)
+            return
+
+        if parsed.path in {"/api/settings/models", "/api/settings/models/probe", "/api/settings/models/preview"}:
+            operation = parsed.path.rsplit("/", 1)[-1]
+            self._handle_model_settings(mutation=True, operation=operation)
+            return
+
+        if parsed.path == "/api/memory/action":
+            self._handle_memory_action()
             return
 
         if parsed.path.startswith("/api/coding/"):
@@ -1223,6 +1233,121 @@ class RequestHandler(ChatRunsHttpMixin, CodingWorkspacesHttpMixin, BaseHTTPReque
             return
 
         self._send_json({"error": "Not found"}, status=HTTPStatus.NOT_FOUND)
+
+    def _handle_model_settings(self, *, mutation: bool, operation: str = "models") -> None:
+        if not self._require_admin():
+            return
+        from web.runtime_settings import (
+            RuntimeSettingsStore, SettingsConflictError,
+            SettingsStorageError, SettingsValidationError,
+        )
+
+        if mutation:
+            media_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if media_type != "application/json":
+                self._send_json({"error": "Content-Type must be application/json."},
+                                status=HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
+                return
+            try:
+                origin = self.headers.get("Origin", "")
+                origin_url = urlparse(origin)
+                origin_allowed = not origin or (
+                    origin_url.scheme in {"http", "https"}
+                    and origin_url.netloc.lower() == self.headers.get("Host", "").lower()
+                )
+            except ValueError:
+                origin_allowed = False
+            if self.headers.get("Sec-Fetch-Site", "") == "cross-site" or not origin_allowed:
+                self._send_json({"error": "Model settings require a same-origin request."},
+                                status=HTTPStatus.FORBIDDEN)
+                return
+        try:
+            store = RuntimeSettingsStore(root=ROOT)
+            if mutation:
+                length = int(self.headers.get("Content-Length", "0"))
+                limit = 64 * 1024 if operation == "probe" else 1024 * 1024
+                if length < 0 or length > limit:
+                    raise ValueError("Invalid or oversized model settings request body.")
+                payload = self._read_json_body()
+                if operation == "probe":
+                    from web.model_diagnostics import probe_models
+                    result = probe_models(store, payload)
+                elif operation == "preview":
+                    result = store.preview(payload)
+                else:
+                    result = store.update(payload)
+            else:
+                result = store.get_public()
+            self._send_json(result, headers={"Cache-Control": "no-store"})
+        except SettingsConflictError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.CONFLICT)
+        except (SettingsValidationError, ValueError) as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except (SettingsStorageError, OSError):
+            # File paths and credentials from provider configuration stay private.
+            logger.error("Model settings storage is unavailable")
+            self._send_json({"error": "模型设置暂时不可用，请检查配置目录及文件权限。"},
+                            status=HTTPStatus.SERVICE_UNAVAILABLE)
+
+    def _handle_memory(self, parsed) -> None:
+        from web.memory_view import MemoryContextUnavailable, load_memory_session, read_memory_overview
+
+        user_id = self._current_user().user_id
+        try:
+            params = parse_qs(parsed.query, keep_blank_values=True)
+            if parsed.path == "/api/memory/legacy":
+                if params:
+                    raise ValueError("Legacy memory does not accept scope parameters.")
+                result = {"files": read_memory_files(user_id)}
+            else:
+                if set(params) - {"session_id", "limit", "offset", "query", "status", "kind"} or any(
+                    len(values) != 1 for values in params.values()
+                ):
+                    raise ValueError("Only single session, pagination and memory filter parameters are accepted.")
+                limit = int(params.get("limit", ["100"])[0])
+                offset = int(params.get("offset", ["0"])[0])
+                if not 1 <= limit <= 200 or offset < 0:
+                    raise ValueError("Memory limit must be 1–200 and offset must be nonnegative.")
+                session_id = params.get("session_id", [""])[0]
+                session = load_memory_session(session_id, user_id) if session_id else None
+                filters = {key: params[key][0] for key in ("query", "status", "kind") if key in params}
+                result = read_memory_overview(user_id, session=session, limit=limit, offset=offset, **filters)
+            self._send_json(result, headers={"Cache-Control": "no-store"})
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except MemoryContextUnavailable as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+        except Exception:
+            logger.error("Memory overview storage is unavailable")
+            self._send_json({"error": "记忆数据暂时不可用，请检查数据库连接。"},
+                            status=HTTPStatus.SERVICE_UNAVAILABLE)
+
+    def _handle_memory_action(self) -> None:
+        if not self._require_json_same_origin():
+            return
+        from memory.repository import InvalidTransition, MemoryNotFound, ScopeDenied, VersionConflict
+        from web.memory_management import MemoryStorageUnavailable, apply_memory_action
+        from web.memory_view import MemoryContextUnavailable
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length < 0 or length > 16 * 1024:
+                raise ValueError("Invalid or oversized memory action request body.")
+            result = apply_memory_action(self._current_user().user_id, self._read_json_body())
+            self._send_json(result, headers={"Cache-Control": "no-store"})
+        except (MemoryNotFound, ScopeDenied):
+            self._send_json({"error": "记忆不存在或当前账号不能管理该记忆。"}, status=HTTPStatus.NOT_FOUND)
+        except (VersionConflict, InvalidTransition):
+            self._send_json({"error": "记忆版本或状态已变化，请刷新后重新确认。"}, status=HTTPStatus.CONFLICT)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except (MemoryStorageUnavailable, MemoryContextUnavailable):
+            self._send_json({"error": "记忆管理暂不可用，请检查存储连接后重试。"},
+                            status=HTTPStatus.SERVICE_UNAVAILABLE)
+        except Exception:
+            logger.error("Memory action storage is unavailable")
+            self._send_json({"error": "记忆管理暂不可用，请检查存储连接后重试。"},
+                            status=HTTPStatus.SERVICE_UNAVAILABLE)
 
     def _handle_skills(self, parsed, *, mutation: bool) -> None:
         """Manage the same catalog consumed by tool_search and load_skill."""
@@ -1828,12 +1953,35 @@ class RequestHandler(ChatRunsHttpMixin, CodingWorkspacesHttpMixin, BaseHTTPReque
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = 0
-        if length > MAX_BODY_BYTES:
+        if length < 0 or length > MAX_BODY_BYTES:
             raise ValueError("Request body is too large.")
         raw = self.rfile.read(length)
         if not raw:
             return {}
-        return json.loads(raw.decode("utf-8"))
+        # Bound structural depth independently of a process-wide recursion
+        # limit; brackets inside JSON strings do not count as structure.
+        depth = 0
+        quoted = escaped = False
+        for byte in raw:
+            if quoted:
+                if escaped:
+                    escaped = False
+                elif byte == 92:
+                    escaped = True
+                elif byte == 34:
+                    quoted = False
+            elif byte == 34:
+                quoted = True
+            elif byte in (91, 123):
+                depth += 1
+                if depth > 64:
+                    raise ValueError("JSON request nesting is too deep.")
+            elif byte in (93, 125):
+                depth -= 1
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except RecursionError:
+            raise ValueError("JSON request nesting is too deep.") from None
 
     def _send_json(
         self,
@@ -2045,7 +2193,10 @@ def _configured_model_options() -> tuple[list[dict[str, Any]], str]:
     try:
         from models.model_pool import build_model_pool_from_env
 
-        pool = build_model_pool_from_env(os.environ)
+        from web.runtime_settings import effective_environ
+
+        pool = build_model_pool_from_env(effective_environ())
+        default_profile = pool.primary_profile_name("chat")
     except Exception:
         return [], ""
     options = [
@@ -2059,7 +2210,7 @@ def _configured_model_options() -> tuple[list[dict[str, Any]], str]:
         }
         for profile in pool.profiles.values()
     ]
-    return options, pool.primary_profile_name("chat")
+    return options, default_profile
 
 
 def _validated_model_profile(value: Any) -> str:

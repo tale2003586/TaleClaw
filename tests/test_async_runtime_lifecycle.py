@@ -199,7 +199,7 @@ class AgentServiceLifecycleTests(unittest.TestCase):
             finally:
                 replacement.stop()
 
-    def test_worker_failure_keeps_primary_error_and_supervisor_available(self) -> None:
+    def test_worker_failure_keeps_primary_error_category_and_supervisor_available(self) -> None:
         import tempfile
         import time
         with tempfile.TemporaryDirectory() as root:
@@ -213,7 +213,10 @@ class AgentServiceLifecycleTests(unittest.TestCase):
                         break
                     self.assertLess(time.monotonic(), deadline)
                     time.sleep(0.01)
-                self.assertIn("fake primary model failure", state["error"])
+                # The public state preserves the primary error category while
+                # keeping potentially sensitive upstream text private.
+                self.assertIn("RuntimeError", state["error"])
+                self.assertNotIn("fake primary model failure", state["error"])
                 self.assertEqual("reply:hello", service.ask(session_id="a", content="hello", user_id="local"))
             finally:
                 service.stop()

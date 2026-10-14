@@ -31,7 +31,7 @@ const accountNavigation: Array<{ view: AppView; label: string; description: stri
   { view: "analysis", label: "分析", description: "文本分析工具", icon: BarChart3 },
   { view: "memory", label: "记忆", description: "Agent 记忆", icon: Brain },
   { view: "status", label: "状态", description: "运行时状态", icon: Gauge },
-  { view: "settings", label: "设置", description: "界面与工作区", icon: Settings },
+  { view: "settings", label: "设置", description: "模型、技能与偏好", icon: Settings },
 ];
 
 export function AppShell() {

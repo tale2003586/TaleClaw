@@ -15,6 +15,11 @@ from urllib.parse import unquote
 from user_scope import web_chat_id, web_session_id, storage_root_for_user
 
 
+# This module is imported by the supervisor too. Populate the model snapshot
+# only inside the isolated production worker, never in the server process.
+_MODEL_ENVIRONMENT: dict[str, str] | None = None
+
+
 def _process(pid):
     try:
         fields = Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1].split()
@@ -130,8 +135,11 @@ def _cleanup_descendants() -> bool:
 
 def worker_entry(target: str, request: dict, sender, cancelled) -> None:
     """All worker events carry the immutable admitted identity and attempt."""
+    global _MODEL_ENVIRONMENT
     lock = threading.Lock()
     def emit(event):
+        from web.error_messages import public_worker_event
+        event = public_worker_event(event)
         envelope = {**event, 'run_id': request['run_id'], 'attempt': request['attempt']}
         with lock:
             sender.send(envelope)
@@ -142,19 +150,25 @@ def worker_entry(target: str, request: dict, sender, cancelled) -> None:
         if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
             raise RuntimeError('Could not establish worker descendant ownership.')
         os.environ['TALECLAW_RUN_ID'] = request['run_id']
+        if target == 'web.run_worker:run_agent':
+            from web.runtime_settings import effective_environ
+            _MODEL_ENVIRONMENT = effective_environ()
+            os.environ.update(_MODEL_ENVIRONMENT)
         module, name = target.split(':', 1)
         function = getattr(importlib.import_module(module), name)
         result = function(request, emit, cancelled)
         if not isinstance(result, dict):
             raise TypeError('Worker target must return a result mapping.')
     except BaseException as exc:
-        result = {'status': 'failed', 'error': f'{type(exc).__name__}: {exc}', 'reply': ''}
+        from web.error_messages import public_runtime_error
+        result = {'status': 'failed', 'error': public_runtime_error(exc), 'reply': ''}
     finally:
         try:
             result['cleanup_confirmed'] = _cleanup_descendants()
         except BaseException as cleanup_error:
             result['cleanup_confirmed'] = False
-            result['cleanup_error'] = f'{type(cleanup_error).__name__}: {cleanup_error}'
+            from web.error_messages import public_runtime_error
+            result['cleanup_error'] = public_runtime_error(cleanup_error)
         try:
             emit({'type': '_result', 'result': result})
         finally:
@@ -198,7 +212,18 @@ def _save_fallback_title(runtime, storage_id):
 
 def run_agent(request, emit, cancelled):
     """Production target: one fresh runtime, provider pool and session cache/run."""
-    from applications.bootstrap import build_runtime
+    from web.runtime_settings import effective_environ
+
+    model_environ = dict(_MODEL_ENVIRONMENT) if _MODEL_ENVIRONMENT is not None else effective_environ()
+    os.environ.update(model_environ)
+    bootstrap = importlib.import_module('applications.bootstrap')
+    # Spawn may import the entrypoint and config before worker_entry runs.
+    # Construct the pool explicitly from this run's snapshot even in that case.
+    if hasattr(bootstrap, '_MODEL_POOL'):
+        from models.model_pool import build_model_pool_from_env
+        bootstrap._MODEL_POOL = build_model_pool_from_env(model_environ)
+        bootstrap._MODEL_HEALTHCHECK_RESULTS = None
+    build_runtime = bootstrap.build_runtime
     from runtime.trace.trace_store import TraceStore
 
     class WorkerTraceStore(TraceStore):
