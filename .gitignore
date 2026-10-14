@@ -20,6 +20,7 @@ node_modules/
 .tool_results/
 .users/
 .runs/
+.runtime/
 .worktree_data/
 .evals/
 .backup/

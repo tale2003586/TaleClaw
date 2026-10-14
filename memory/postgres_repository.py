@@ -23,6 +23,7 @@ from memory.repository import (
     InvalidTransition,
     MemoryIndexOutboxEvent,
     MemoryNotFound,
+    ScopeDenied,
     VersionConflict,
 )
 from runtime.db import connect, resolve_database_config, row_get
@@ -33,14 +34,15 @@ class PostgresMemoryRepository:
 
     SCHEMA_VERSION = 1
 
-    def __init__(self, database_url: str | None = None) -> None:
+    def __init__(self, database_url: str | None = None, *, initialize_schema: bool = True) -> None:
         self.config = resolve_database_config(
             database_url,
             env_names=("MEMORY_DATABASE_URL", "DATABASE_URL"),
             purpose="semantic memory repository",
         )
         self._schema_lock = threading.Lock()
-        self._init_schema()
+        if initialize_schema:
+            self._init_schema()
 
     def _connect(self):
         return connect(self.config)
@@ -262,6 +264,30 @@ class PostgresMemoryRepository:
         return [_item_from_row(row) for row in rows]
 
     def transition(self, command: MemoryTransition) -> MemoryItem:
+        return self._transition(command)[0]
+
+    def transition_scoped(
+        self,
+        command: MemoryTransition,
+        scopes: Sequence[OwnerKey],
+        *,
+        expected_status: MemoryStatus,
+    ) -> tuple[MemoryItem, list[MemoryEvidence]]:
+        """Authorize and compare-and-swap under the same row lock.
+
+        The console can change only an explicitly permitted owner and the
+        expected lifecycle state. Evidence is read before commit so the result
+        describes the same transaction without an ambiguous post-commit read.
+        """
+        return self._transition(command, scopes=tuple(scopes), expected_status=expected_status)
+
+    def _transition(
+        self,
+        command: MemoryTransition,
+        *,
+        scopes: tuple[OwnerKey, ...] | None = None,
+        expected_status: MemoryStatus | None = None,
+    ) -> tuple[MemoryItem, list[MemoryEvidence]]:
         with closing(self._connect()) as conn:
             try:
                 row = conn.execute(
@@ -271,11 +297,20 @@ class PostgresMemoryRepository:
                 if row is None:
                     raise MemoryNotFound(command.memory_id)
                 item = _item_from_row(row)
+                if scopes is not None and item.owner not in scopes:
+                    raise ScopeDenied(command.memory_id)
                 if item.version != command.expected_version:
                     raise VersionConflict(command.memory_id)
+                now = datetime.now(timezone.utc)
+                if expected_status is not None:
+                    if item.status is not expected_status:
+                        raise InvalidTransition("Memory lifecycle changed; refresh before acting.")
+                    if item.valid_until is not None and item.valid_until <= now:
+                        raise InvalidTransition("Expired memories cannot be managed; refresh before acting.")
                 try:
                     updated = item.transitioned(
                         command.target_status,
+                        now=now,
                         metadata={**command.metadata, "reason": command.reason},
                     )
                 except ValueError as exc:
@@ -287,8 +322,15 @@ class PostgresMemoryRepository:
                     else MemoryIndexOperation.DELETE
                 )
                 self._schedule(conn, updated, operation)
+                evidence = []
+                if scopes is not None:
+                    rows = conn.execute(
+                        "SELECT * FROM memory_evidence WHERE memory_id = %s ORDER BY created_at, id",
+                        (item.id,),
+                    ).fetchall()
+                    evidence = [_evidence_from_row(value) for value in rows]
                 conn.commit()
-                return updated
+                return updated, evidence
             except Exception:
                 conn.rollback()
                 raise

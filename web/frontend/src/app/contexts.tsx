@@ -8,6 +8,7 @@ export interface AppContextValue {
   health: HealthResponse;
   codingWorkspace: string;
   setCodingWorkspace(value: string): void;
+  refreshHealth?(): Promise<void>;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);

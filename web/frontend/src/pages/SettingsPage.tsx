@@ -5,9 +5,10 @@ import { useAppContext } from "../app/contexts";
 import { useTheme } from "../hooks/useTheme";
 import { Button, PageHeader } from "../components/ui";
 import SkillsSettings from "../components/SkillsSettings";
+import ModelSettings from "../components/ModelSettings";
 
 export default function SettingsPage() {
-  const { user, health, codingWorkspace, setCodingWorkspace } = useAppContext();
+  const { user, health, codingWorkspace, setCodingWorkspace, refreshHealth } = useAppContext();
   const theme = useTheme();
   const serverWorkspace = health.coding_workspace || "";
   const [workspace, setWorkspace] = useState(codingWorkspace);
@@ -25,7 +26,7 @@ export default function SettingsPage() {
   };
 
   return <div className="page settings-page">
-    <PageHeader eyebrow="Preferences" title="设置" description="管理浏览器偏好及服务端共享技能。" />
+    <PageHeader eyebrow="Preferences" title="设置" description="管理浏览器偏好、服务端模型与共享技能。" />
     <div className="page-body settings-body">
       {notice && <div className="settings-success" role="status"><Check aria-hidden="true" /><span>{notice}</span></div>}
       <div className="settings-grid">
@@ -43,6 +44,7 @@ export default function SettingsPage() {
             <div className="workspace-setting-meta"><span>服务端默认：<code>{serverWorkspace || "未配置"}</code></span><div className="button-row"><Button type="button" onClick={resetWorkspace}><RotateCcw aria-hidden="true" size={14} />恢复默认</Button><Button className="primary" type="submit" disabled={workspace.trim() === codingWorkspace.trim()}>保存工作区</Button></div></div>
           </form>
         </SettingsCard>
+        <ModelSettings canManage={user.role === "admin"} onSaved={refreshHealth} />
         <SkillsSettings canManage={user.role === "admin"} />
       </div>
     </div>

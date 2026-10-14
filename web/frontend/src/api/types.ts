@@ -62,7 +62,55 @@ export interface SessionsResponse {
 export interface SessionResponse { session: SessionDto }
 
 export interface MemoryFile { name: string; content: string }
-export interface MemoryResponse { files: MemoryFile[] }
+export interface LegacyMemoryResponse { files: MemoryFile[] }
+export interface MemoryEvidence {
+  id: string;
+  source_type: string;
+  source_ref: string;
+  session_id: string | null;
+  task_id: string | null;
+  workspace_id: string | null;
+  project_id: string | null;
+  excerpt: string;
+  created_at: string | null;
+}
+export interface MemoryItem {
+  id: string;
+  owner_scope: string;
+  owner_id: string;
+  kind: string;
+  content: string;
+  status: string;
+  confidence: number;
+  salience: number;
+  version: number;
+  retrievable: boolean;
+  manageable: boolean;
+  valid_from: string | null;
+  valid_until: string | null;
+  last_confirmed_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  supersedes_id: string | null;
+  source_types: string[];
+  evidence: MemoryEvidence[];
+}
+export interface MemoryResponse {
+  backend: string;
+  available: boolean;
+  items: MemoryItem[];
+  scopes: { scope: string; id: string }[];
+  counts: { total: number; retrievable: number; by_status: Record<string, number> };
+  filtered_total: number;
+  filters: { query: string; status: string; kind: string };
+  has_more: boolean;
+  next_offset: number | null;
+  runtime: { write_enabled: boolean; read_enabled: boolean; context_enabled: boolean };
+  message: string;
+  context_message?: string;
+}
+export type MemoryAction = "confirm" | "reject" | "revoke";
+export interface MemoryActionResponse { item: MemoryItem; index_sync: "queued"; message: string }
 
 export interface FileEntry {
   name: string;
