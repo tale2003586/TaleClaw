@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 SETTINGS_PATH_ENV = "TALECLAW_SETTINGS_PATH"
-_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")
+_NAME = re.compile(r"[a-zA-Z0-9_.-]{1,64}")
 _TOKEN_FIELDS = (
     "context_window_tokens", "max_input_tokens", "max_output_tokens",
     "output_reserve_tokens",
@@ -56,7 +56,7 @@ class SettingsStorageError(RuntimeError):
 
 def _name(value: Any, field: str) -> str:
     if not isinstance(value, str) or not _NAME.fullmatch(value.strip()):
-        raise SettingsValidationError(f"{field} must contain letters, numbers, underscores or hyphens.")
+        raise SettingsValidationError(f"{field} must contain 1–64 letters, numbers, dots, underscores or hyphens.")
     return value.strip().lower().replace("-", "_")
 
 

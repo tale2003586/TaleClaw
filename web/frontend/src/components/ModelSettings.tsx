@@ -198,8 +198,8 @@ function ModelManager({ onSaved }: { onSaved?: () => Promise<void> }) {
     if (!settings) throw new Error("请先读取模型设置。");
     const names = profiles.map(({ profile }) => normalizedName(profile.name));
     if (!names.length) throw new Error("请至少配置一个模型。");
-    const invalidProfile = profiles.find(({ profile }) => !/^[a-zA-Z0-9_-]{1,64}$/.test(profile.name.trim()));
-    if (invalidProfile) throw new Error(`配置名称「${invalidProfile.profile.name || "（空）"}」无效：只能包含英文字母、数字、下划线和短横线，长度为 1–64 个字符。`);
+    const invalidProfile = profiles.find(({ profile }) => !/^[a-zA-Z0-9_.-]{1,64}$/.test(profile.name.trim()));
+    if (invalidProfile) throw new Error(`配置名称「${invalidProfile.profile.name || "（空）"}」无效：只能包含英文字母、数字、点号、下划线和短横线，长度为 1–64 个字符。`);
     if (new Set(names).size !== names.length) throw new Error("模型配置名称不能重复。");
     if (!names.includes(normalizedName(defaultProfile))) throw new Error("请选择有效的默认模型。");
     const payload = {
@@ -272,7 +272,7 @@ function ModelManager({ onSaved }: { onSaved?: () => Promise<void> }) {
   const names = profiles.map(({ profile }) => profile.name);
   const addPurpose = () => {
     const purpose = newPurpose.trim().toLowerCase();
-    if (!/^[a-z0-9_-]+$/.test(purpose)) { setError("任务用途只能包含字母、数字、下划线和短横线。"); return; }
+    if (!/^[a-z0-9_.-]{1,64}$/.test(purpose)) { setError("任务用途只能包含英文字母、数字、点号、下划线和短横线，长度为 1–64 个字符。"); return; }
     if (purposes.includes(purpose)) { setError("该任务用途已在路由列表中。"); return; }
     setCustomPurposes((current) => [...current, purpose]); setNewPurpose("");
     markDirty();
@@ -316,7 +316,7 @@ function ModelProfileEditor({ draft, index, providerDefaults, retainsKey, probeS
   return <article className="model-profile" aria-label={`模型配置 ${label}`}>
     <div className="model-profile-heading"><h4>{label}</h4><Button type="button" className="model-delete" onClick={onRemove} aria-label={`删除模型 ${label}`}><Trash2 aria-hidden="true" size={14} />删除</Button></div>
     <div className="model-profile-fields">
-      <label className="field"><span>配置名称</span><input aria-label={`${label} 配置名称`} value={profile.name} onChange={(event) => onRename(event.target.value)} readOnly={draft.saved} required autoComplete="off" spellCheck={false} /><small>{draft.saved ? "此标识用于路由和 Key 绑定" : "使用字母、数字、下划线或短横线"}</small></label>
+      <label className="field"><span>配置名称</span><input aria-label={`${label} 配置名称`} value={profile.name} onChange={(event) => onRename(event.target.value)} readOnly={draft.saved} required autoComplete="off" spellCheck={false} /><small>{draft.saved ? "此标识用于路由和 Key 绑定" : "使用英文字母、数字、点号、下划线或短横线"}</small></label>
       <label className="field"><span>Provider</span><input aria-label={`${label} Provider`} list="model-provider-options" value={profile.provider} onChange={(event) => update({ provider: event.target.value })} required autoComplete="off" spellCheck={false} /><small>支持自定义 OpenAI 兼容服务</small></label>
       <label className="field"><span>Base URL</span><input aria-label={`${label} Base URL`} type="url" value={profile.base_url} onChange={(event) => update({ base_url: event.target.value })} required autoComplete="off" spellCheck={false} placeholder="https://example.com/v1" /></label>
       <label className="field"><span>模型名称</span><input aria-label={`${label} 模型名称`} value={profile.model} onChange={(event) => update({ model: event.target.value })} required autoComplete="off" spellCheck={false} /></label>
