@@ -198,7 +198,8 @@ function ModelManager({ onSaved }: { onSaved?: () => Promise<void> }) {
     if (!settings) throw new Error("请先读取模型设置。");
     const names = profiles.map(({ profile }) => normalizedName(profile.name));
     if (!names.length) throw new Error("请至少配置一个模型。");
-    if (names.some((name) => !/^[a-z0-9][a-z0-9_]{0,63}$/.test(name))) throw new Error("配置名称只能包含字母、数字、下划线和短横线，长度最多 64 个字符。");
+    const invalidProfile = profiles.find(({ profile }) => !/^[a-zA-Z0-9_-]{1,64}$/.test(profile.name.trim()));
+    if (invalidProfile) throw new Error(`配置名称「${invalidProfile.profile.name || "（空）"}」无效：只能包含英文字母、数字、下划线和短横线，长度为 1–64 个字符。`);
     if (new Set(names).size !== names.length) throw new Error("模型配置名称不能重复。");
     if (!names.includes(normalizedName(defaultProfile))) throw new Error("请选择有效的默认模型。");
     const payload = {

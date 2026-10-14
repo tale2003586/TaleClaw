@@ -280,3 +280,15 @@ def test_worker_rebuilds_imported_pool_from_one_run_snapshot(tmp_path, monkeypat
     assert run_worker.run_agent({}, lambda event: None, cancelled) == {"status": "stopped", "reply": ""}
     assert bootstrap._MODEL_POOL.profile_for().model == ("relay-model" if frozen_snapshot else "second-model")
     assert bootstrap._MODEL_HEALTHCHECK_RESULTS is None
+
+
+@pytest.mark.parametrize("name", ["_Relay", "-Relay", "Relay-1", "a" * 64])
+def test_permitted_profile_names_round_trip(tmp_path, name):
+    store = RuntimeSettingsStore(tmp_path, environ=environment())
+    public = store.update({"revision": 0, "default_profile": name,
+                           "profiles": [relay(name)], "routes": {"default": [name]}})
+    normalized = name.lower().replace("-", "_")
+    assert public["default_profile"] == normalized
+    restored = RuntimeSettingsStore(tmp_path, environ=environment())
+    assert restored.get_public()["profiles"][0]["name"] == normalized
+    assert build_model_pool_from_env(restored.effective_environ()).profile_named(normalized).model == "relay-model"
