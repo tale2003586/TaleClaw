@@ -74,6 +74,34 @@ describe("hot model settings", () => {
     expect(screen.getByText(/已运行的任务保持启动时的配置/)).toBeInTheDocument();
   });
 
+  it.each(["_Relay", "-Relay", "Relay-1", "a".repeat(64)])("saves a permitted profile name %s", async (name) => {
+    const user = userEvent.setup();
+    const fetchMock = mockApi((init) => init?.method === "POST" ? undefined : json(settings({
+      default_profile: name, profiles: [profile(name)], routes: { default: [name] },
+    })));
+    render(<ModelSettings canManage />);
+    const model = await screen.findByRole("textbox", { name: `${name} 模型名称` });
+    await user.clear(model); await user.type(model, "next-model");
+    await user.click(saveButton());
+    await waitFor(() => expect(posts(fetchMock)).toHaveLength(1));
+    expect(lastPayload(fetchMock).profiles[0].name).toBe(name);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it.each(["bad.name", "bad name", "中文", "a".repeat(65)])("identifies the invalid profile %s without losing edits", async (name) => {
+    const user = userEvent.setup();
+    const fetchMock = mockApi((init) => init?.method === "POST" ? undefined : json(settings({
+      default_profile: name, profiles: [profile(name)], routes: { default: [name] },
+    })));
+    render(<ModelSettings canManage />);
+    const model = await screen.findByRole("textbox", { name: `${name} 模型名称` });
+    await user.clear(model); await user.type(model, "unsaved-model");
+    await user.click(saveButton());
+    expect(await screen.findByRole("alert")).toHaveTextContent(`配置名称「${name}」无效`);
+    expect(posts(fetchMock)).toHaveLength(0);
+    expect(model).toHaveValue("unsaved-model");
+  });
+
   it("keeps keys out of local storage and clears replacement input after a successful save", async () => {
     const user = userEvent.setup();
     const store = vi.spyOn(Storage.prototype, "setItem");

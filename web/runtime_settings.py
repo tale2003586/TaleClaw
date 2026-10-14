@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 SETTINGS_PATH_ENV = "TALECLAW_SETTINGS_PATH"
-_NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}")
+_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 _TOKEN_FIELDS = (
     "context_window_tokens", "max_input_tokens", "max_output_tokens",
     "output_reserve_tokens",
